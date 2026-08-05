@@ -9,6 +9,9 @@ and correction.
 Current phase: technical feasibility through a line-oriented CLI for a typical
 dumb terminal. Implement the assigned ticket without expanding into a TUI or
 production product.
+The repository is one Rust package: `rde` is the executable and `src/lib.rs`
+exposes reusable tool modules. Recognition chunking lives in the `chunking`
+module rather than a separate product or crate.
 
 ## Read when needed
 
@@ -32,6 +35,10 @@ large design.
 - Edits may make alignment stale or unavailable; never claim false precision.
 - Missing audio or optional metadata must not prevent reading and editing text.
 - Async or refreshed recognition must not overwrite newer user edits.
+- Canonical audio and recognition-plan positions use mono 16 kHz sample offsets;
+  plan JSON and identities exclude local paths and nondeterministic diagnostics.
+- Detector failure creates a recorded fixed-window plan; it never removes audio
+  or prevents complete legal core coverage.
 
 ## MVP boundary
 
