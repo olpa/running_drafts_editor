@@ -20,26 +20,22 @@ boundary verifies missing/corrupt model failures without network access.
 
 ## Experimental chunk-plan command
 
-The input must already be canonical mono, 16 kHz, 32-bit float WAV. Every
-experimental planner value is explicit; no product-policy threshold is hidden.
-The caller supplies the model and its SHA-256 is checked before loading it.
+The input must already be canonical mono, 16 kHz, 32-bit float WAV. The caller
+supplies the model; its SHA-256 is derived and checked before loading it.
 
 ```console
 rde chunk plan \
   --input recording-f32.wav \
-  --model silero_vad.onnx \
-  --model-sha256 64_LOWERCASE_HEX_CHARACTERS \
-  --model-version v5 \
-  --recognizer-version PINNED_FUTURE_WHISPER_COMMIT \
-  --search-back-samples 80000 \
-  --minimum-chunk-samples 160000 \
-  --speech-threshold 0.5 \
-  --minimum-low-speech-samples 1600
+  --model silero_vad.onnx
 ```
 
-Those numbers are example inputs, not settled product policy. Plan JSON goes to
-stdout and diagnostics to stderr. Detector failures produce a recorded fixed
-plan; the command never downloads a model.
+The CLI defaults to Silero v5, an 80,000-sample boundary search, a
+160,000-sample minimum chunk, a 0.5 speech threshold, 1,600 consecutive
+low-speech samples, and a 480,000-sample recognizer limit. Every value and the
+derived model hash can still be overridden for reproducible experiments. The
+model must exist and be readable before planning starts. Plan JSON goes to
+stdout and diagnostics to stderr. Detector failures after model preflight
+produce a recorded fixed plan; the command never downloads a model.
 
 ## Reproducibility and licenses
 

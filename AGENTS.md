@@ -39,6 +39,9 @@ large design.
   plan JSON and identities exclude local paths and nondeterministic diagnostics.
 - Detector failure creates a recorded fixed-window plan; it never removes audio
   or prevents complete legal core coverage.
+- `rde chunk plan` requires only canonical audio and a Silero model; planner,
+  detector, and provisional recognizer values have inspectable CLI defaults.
+- A missing or unreadable CLI model is a preflight error and emits no plan JSON.
 
 ## MVP boundary
 

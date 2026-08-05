@@ -5,6 +5,7 @@ use running_drafts_editor::chunking::{
     plan, plan_with_detector, read_canonical_wav, CanonicalAudio, DetectorIdentity, PlannerConfig,
     RecognizerContract, SileroConfig, SileroDetector,
 };
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Parser)]
 #[command(name = "rde", version, about = "Running Drafts Editor (experimental)")]
@@ -35,22 +36,22 @@ struct PlanArgs {
     #[arg(long)]
     model: PathBuf,
     #[arg(long)]
-    model_sha256: String,
-    #[arg(long)]
+    model_sha256: Option<String>,
+    #[arg(long, default_value = "v5")]
     model_version: String,
-    #[arg(long)]
+    #[arg(long, default_value_t = 80_000)]
     search_back_samples: u64,
-    #[arg(long)]
+    #[arg(long, default_value_t = 160_000)]
     minimum_chunk_samples: u64,
-    #[arg(long)]
+    #[arg(long, default_value_t = 0.5)]
     speech_threshold: f32,
-    #[arg(long)]
+    #[arg(long, default_value_t = 1_600)]
     minimum_low_speech_samples: u64,
     #[arg(long, default_value_t = 1)]
     intra_threads: usize,
     #[arg(long, default_value = "whisper-rs/backtrack")]
     recognizer_name: String,
-    #[arg(long)]
+    #[arg(long, default_value = "unspecified")]
     recognizer_version: String,
     #[arg(long, default_value_t = 480_000)]
     max_submitted_samples: u64,
@@ -77,6 +78,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
     let wav = read_canonical_wav(&args.input)?;
+    let derived_model_sha256 = hash_model(&args.model)?;
+    let model_sha256 = args.model_sha256.unwrap_or(derived_model_sha256);
     let audio = CanonicalAudio {
         samples: &wav.samples,
         sample_rate_hz: wav.sample_rate_hz,
@@ -98,7 +101,7 @@ fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     let detector_config = SileroConfig {
         model_version: args.model_version.clone(),
-        expected_model_sha256: args.model_sha256.clone(),
+        expected_model_sha256: model_sha256.clone(),
         intra_threads: args.intra_threads,
     };
     let result = match SileroDetector::load(&args.model, detector_config) {
@@ -110,7 +113,7 @@ fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
             DetectorIdentity {
                 name: "silero-vad-onnx".into(),
                 version: args.model_version,
-                model_sha256: args.model_sha256,
+                model_sha256,
                 frame_samples: 512,
                 sample_rate_hz: 16_000,
                 runtime: format!("ort-2.0.0-rc.10/cpu/intra-threads-{}", args.intra_threads),
@@ -127,4 +130,63 @@ fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
         result.failures.len()
     );
     Ok(())
+}
+
+fn hash_model(path: &std::path::Path) -> Result<String, ModelReadError> {
+    let bytes = std::fs::read(path).map_err(|source| ModelReadError {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("could not read model '{}': {source}", path.display())]
+struct ModelReadError {
+    path: PathBuf,
+    #[source]
+    source: std::io::Error,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_requires_only_input_and_model() {
+        let cli = Cli::try_parse_from([
+            "rde",
+            "chunk",
+            "plan",
+            "--input",
+            "audio.wav",
+            "--model",
+            "silero.onnx",
+        ])
+        .unwrap();
+        let Command::Chunk {
+            command: ChunkCommand::Plan(args),
+        } = cli.command;
+
+        assert_eq!(args.model_version, "v5");
+        assert_eq!(args.search_back_samples, 80_000);
+        assert_eq!(args.minimum_chunk_samples, 160_000);
+        assert_eq!(args.speech_threshold, 0.5);
+        assert_eq!(args.minimum_low_speech_samples, 1_600);
+        assert_eq!(args.recognizer_version, "unspecified");
+        assert_eq!(args.max_submitted_samples, 480_000);
+        assert!(args.model_sha256.is_none());
+    }
+
+    #[test]
+    fn absent_model_fails_preflight() {
+        let error = hash_model(std::path::Path::new(
+            "/path/which/does/not/exist/silero.onnx",
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.source.kind(), std::io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("could not read model"));
+        assert!(error.to_string().contains("silero.onnx"));
+    }
 }
