@@ -33,9 +33,13 @@ The CLI defaults to Silero v5, an 80,000-sample boundary search, a
 160,000-sample minimum chunk, a 0.5 speech threshold, 1,600 consecutive
 low-speech samples, and a 480,000-sample recognizer limit. Every value and the
 derived model hash can still be overridden for reproducible experiments. The
-model must exist and be readable before planning starts. Plan JSON goes to
-stdout and diagnostics to stderr. Detector failures after model preflight
-produce a recorded fixed plan; the command never downloads a model.
+model must exist and be readable before planning starts. JSONL events go to
+stdout and diagnostics to stderr. The stream starts with `plan_started`, emits one
+`detector_evidence` record per frame, and ends with `plan_complete`. Detector
+failures after model preflight
+produce a recorded fixed plan; the command never downloads a model. Audio
+hashing uses a bounded buffer, while validation and Silero inference consume
+512-sample frames without retaining the full decoded recording.
 
 ## Reproducibility and licenses
 

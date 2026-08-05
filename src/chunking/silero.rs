@@ -5,8 +5,8 @@ use ort::{session::Session, value::Value};
 use sha2::{Digest, Sha256};
 
 use super::{
-    CanonicalAudio, DetectorError, DetectorErrorCode, DetectorIdentity, FrameEvidence,
-    SpeechDetector,
+    stream_canonical_wav, CanonicalAudio, DetectorError, DetectorErrorCode, DetectorIdentity,
+    FrameEvidence, SpeechDetector, WavError, WavFacts,
 };
 
 const SAMPLE_RATE: u32 = 16_000;
@@ -73,6 +73,39 @@ impl SileroDetector {
             state: ArrayD::zeros([2, 1, 128].as_slice()),
             context: Array1::zeros(CONTEXT_SAMPLES),
         })
+    }
+
+    pub fn detect_streamed_wav(
+        &mut self,
+        path: impl AsRef<Path>,
+        mut observe: impl FnMut(&FrameEvidence),
+    ) -> Result<(WavFacts, Result<Vec<FrameEvidence>, DetectorError>), WavError> {
+        self.reset();
+        let mut evidence = Vec::new();
+        let mut failure = None;
+        let facts = stream_canonical_wav(path, |start_sample, source_frame| {
+            if failure.is_some() {
+                return;
+            }
+            let mut padded = [0.0; FRAME_SAMPLES];
+            padded[..source_frame.len()].copy_from_slice(source_frame);
+            match self.infer_frame(&padded) {
+                Ok(speech_probability) => {
+                    let frame = FrameEvidence {
+                        start_sample,
+                        end_sample: start_sample + source_frame.len() as u64,
+                        speech_probability,
+                    };
+                    observe(&frame);
+                    evidence.push(frame);
+                }
+                Err(error) => {
+                    evidence.clear();
+                    failure = Some(error);
+                }
+            }
+        })?;
+        Ok((facts, failure.map_or(Ok(evidence), Err)))
     }
 
     fn reset(&mut self) {

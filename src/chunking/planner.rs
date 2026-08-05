@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, io::Write};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -63,9 +63,32 @@ pub fn plan(
     detector_result: Result<Vec<FrameEvidence>, DetectorError>,
 ) -> Result<RecognitionPlan, PlanError> {
     validate_inputs(audio, &recognizer, &config)?;
-    validate_detector_identity(&detector_identity)?;
     let sample_count =
         u64::try_from(audio.samples.len()).map_err(|_| PlanError::IntegerOverflow)?;
+    plan_from_source(
+        SourceFacts {
+            sha256: audio.source_sha256.to_owned(),
+            sample_rate_hz: audio.sample_rate_hz,
+            channels: audio.channels,
+            decoded_sample_count: sample_count,
+        },
+        recognizer,
+        config,
+        detector_identity,
+        detector_result,
+    )
+}
+
+pub fn plan_from_source(
+    source: SourceFacts,
+    recognizer: RecognizerContract,
+    config: PlannerConfig,
+    detector_identity: DetectorIdentity,
+    detector_result: Result<Vec<FrameEvidence>, DetectorError>,
+) -> Result<RecognitionPlan, PlanError> {
+    validate_source_inputs(&source, &recognizer, &config)?;
+    validate_detector_identity(&detector_identity)?;
+    let sample_count = source.decoded_sample_count;
 
     let (status, evidence, error_code) = match detector_result {
         Ok(evidence) => match validate_evidence(&evidence, sample_count) {
@@ -88,13 +111,6 @@ pub fn plan(
         version: PLANNER_VERSION.to_owned(),
         config,
     };
-    let source = SourceFacts {
-        sha256: audio.source_sha256.to_owned(),
-        sample_rate_hz: audio.sample_rate_hz,
-        channels: audio.channels,
-        decoded_sample_count: sample_count,
-    };
-
     let mut chunks = build_chunks(sample_count, &recognizer, &detector, &planner.config)?;
     let failures = detector
         .error_code
@@ -133,6 +149,64 @@ pub fn plan(
     };
     validate_plan(&plan)?;
     Ok(plan)
+}
+
+fn validate_source_inputs(
+    source: &SourceFacts,
+    recognizer: &RecognizerContract,
+    config: &PlannerConfig,
+) -> Result<(), PlanError> {
+    if source.sample_rate_hz != 16_000 {
+        return Err(PlanError::InvalidAudio(
+            "sample rate must be 16000 Hz".into(),
+        ));
+    }
+    if source.channels != 1 {
+        return Err(PlanError::InvalidAudio("audio must be mono".into()));
+    }
+    if !valid_sha256(&source.sha256) {
+        return Err(PlanError::InvalidAudio(
+            "source SHA-256 must be 64 lowercase hexadecimal characters".into(),
+        ));
+    }
+    validate_config(recognizer, config)
+}
+
+fn validate_config(
+    recognizer: &RecognizerContract,
+    config: &PlannerConfig,
+) -> Result<(), PlanError> {
+    if recognizer.max_submitted_samples == 0 {
+        return Err(PlanError::InvalidConfiguration(
+            "recognizer maximum must be non-zero".into(),
+        ));
+    }
+    if config.minimum_chunk_samples == 0 {
+        return Err(PlanError::InvalidConfiguration(
+            "minimum chunk length must be non-zero".into(),
+        ));
+    }
+    if config.minimum_chunk_samples > recognizer.max_submitted_samples {
+        return Err(PlanError::InvalidConfiguration(
+            "minimum chunk length exceeds recognizer maximum".into(),
+        ));
+    }
+    if !config.speech_threshold.is_finite() || !(0.0..=1.0).contains(&config.speech_threshold) {
+        return Err(PlanError::InvalidConfiguration(
+            "speech threshold must be finite and in [0, 1]".into(),
+        ));
+    }
+    if config.minimum_low_speech_samples == 0 {
+        return Err(PlanError::InvalidConfiguration(
+            "minimum low-speech length must be non-zero".into(),
+        ));
+    }
+    if config.left_padding_samples != 0 || config.right_padding_samples != 0 {
+        return Err(PlanError::InvalidConfiguration(
+            "padding is unsupported in recognition-plan/v1-experimental".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_inputs(
@@ -420,10 +494,24 @@ fn chunk_material(chunks: &[RecognitionChunk]) -> Vec<ChunkIdentityMaterial<'_>>
         .collect()
 }
 
+struct DigestWriter(Sha256);
+
+impl Write for DigestWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn canonical_hash(value: &impl Serialize) -> Result<String, PlanError> {
-    let bytes =
-        serde_json::to_vec(value).map_err(|error| PlanError::Serialization(error.to_string()))?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    let mut writer = DigestWriter(Sha256::new());
+    serde_json::to_writer(&mut writer, value)
+        .map_err(|error| PlanError::Serialization(error.to_string()))?;
+    Ok(hex::encode(writer.0.finalize()))
 }
 
 fn assign_chunk_ids(chunks: &mut [RecognitionChunk], plan_id: &str) -> Result<(), PlanError> {

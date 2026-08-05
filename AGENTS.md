@@ -42,6 +42,10 @@ large design.
 - `rde chunk plan` requires only canonical audio and a Silero model; planner,
   detector, and provisional recognizer values have inspectable CLI defaults.
 - A missing or unreadable CLI model is a preflight error and emits no plan JSON.
+- The chunk-plan CLI hashes with bounded I/O and streams canonical WAV validation
+  and Silero inference in 512-sample frames; it does not retain full decoded PCM.
+- Chunk-plan stdout is JSONL: `plan_started`, streamed `detector_evidence`, then
+  `plan_complete`; diagnostics remain on stderr.
 
 ## MVP boundary
 
