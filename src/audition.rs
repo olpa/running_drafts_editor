@@ -4,7 +4,7 @@ use std::{
     fmt,
     io::{self, BufRead, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use crate::chunking::{BoundaryKind, RecognitionPlan, SampleRange};
@@ -138,7 +138,6 @@ impl AudioPlayer for Ffplay {
         let duration = samples_as_seconds(range.len(), sample_rate_hz);
         let status = Command::new(&self.program)
             .args([
-                "-nostdin",
                 "-nodisp",
                 "-autoexit",
                 "-loglevel",
@@ -150,6 +149,7 @@ impl AudioPlayer for Ffplay {
                 "-i",
             ])
             .arg(source)
+            .stdin(Stdio::null())
             .status()
             .map_err(|source| PlaybackError::Start {
                 program: self.program.clone(),
