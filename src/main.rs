@@ -6,6 +6,7 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand};
+use running_drafts_editor::audition::{run_session, Ffplay};
 use running_drafts_editor::chunking::{
     plan_from_source, stream_canonical_wav, DetectorErrorCode, DetectorIdentity, DetectorStatus,
     FrameEvidence, PlanFailure, PlannerConfig, PlannerRun, RecognitionChunk, RecognitionPlan,
@@ -36,12 +37,32 @@ enum Command {
 enum ChunkCommand {
     /// Produce a recognition plan from canonical float WAV audio.
     Plan(PlanArgs),
+    /// List planned chunks and interactively play them for development.
+    Audition(AuditionArgs),
 }
 
 #[derive(Debug, Args)]
 struct PlanArgs {
     #[arg(long)]
     input: PathBuf,
+    #[command(flatten)]
+    planning: PlanningArgs,
+}
+
+#[derive(Debug, Args)]
+struct AuditionArgs {
+    /// Canonical mono 16 kHz float WAV audio.
+    #[arg(long)]
+    input: PathBuf,
+    #[command(flatten)]
+    planning: PlanningArgs,
+    /// ffplay-compatible playback executable.
+    #[arg(long, default_value = "ffplay")]
+    player: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct PlanningArgs {
     #[arg(long)]
     model: PathBuf,
     #[arg(long)]
@@ -123,15 +144,58 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::Chunk {
             command: ChunkCommand::Plan(args),
         } => run_plan(args),
+        Command::Chunk {
+            command: ChunkCommand::Audition(args),
+        } => run_audition(args),
     }
 }
 
 fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let stdout = std::io::stdout();
+    let mut output = BufWriter::new(stdout.lock());
+    let (result, evidence_records_emitted) =
+        create_plan(&args.input, &args.planning, Some(&mut output))?;
+    emit_plan_complete(&mut output, &result, evidence_records_emitted)?;
+    output.flush()?;
+    eprintln!(
+        "planned {} samples into {} chunks ({} fallbacks)",
+        result.source.decoded_sample_count,
+        result.chunks.len(),
+        result.failures.len()
+    );
+    Ok(())
+}
+
+fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let (plan, _) = create_plan(&args.input, &args.planning, None)?;
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let stderr = std::io::stderr();
+    let mut input = stdin.lock();
+    let mut output = stdout.lock();
+    let mut errors = stderr.lock();
+    let mut player = Ffplay::new(args.player);
+    run_session(
+        &plan,
+        &args.input,
+        &mut input,
+        &mut output,
+        &mut errors,
+        &mut player,
+    )?;
+    Ok(())
+}
+
+fn create_plan(
+    input: &std::path::Path,
+    args: &PlanningArgs,
+    mut jsonl: Option<&mut dyn Write>,
+) -> Result<(RecognitionPlan, u64), Box<dyn std::error::Error>> {
     let derived_model_sha256 = hash_model(&args.model)?;
-    let model_sha256 = args.model_sha256.unwrap_or(derived_model_sha256);
+    let model_sha256 = args.model_sha256.clone().unwrap_or(derived_model_sha256);
     let recognizer = RecognizerContract {
-        name: args.recognizer_name,
-        version: args.recognizer_version,
+        name: args.recognizer_name.clone(),
+        version: args.recognizer_version.clone(),
         max_submitted_samples: args.max_submitted_samples,
     };
     let planner = PlannerConfig {
@@ -147,27 +211,30 @@ fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
         expected_model_sha256: model_sha256.clone(),
         intra_threads: args.intra_threads,
     };
-    let stdout = std::io::stdout();
-    let mut output = BufWriter::new(stdout.lock());
     let mut evidence_records_emitted = 0_u64;
     let (wav, detector_identity, detector_result) =
         match SileroDetector::load(&args.model, detector_config) {
             Ok(mut detector) => {
                 let identity = detector.identity();
-                emit_jsonl(
-                    &mut output,
-                    &PlanStarted {
-                        kind: "plan_started",
-                        schema: JSONL_SCHEMA,
-                        detector: &identity,
-                    },
-                )?;
-                output.flush()?;
+                if let Some(output) = jsonl.as_deref_mut() {
+                    emit_jsonl(
+                        output,
+                        &PlanStarted {
+                            kind: "plan_started",
+                            schema: JSONL_SCHEMA,
+                            detector: &identity,
+                        },
+                    )?;
+                    output.flush()?;
+                }
                 let mut output_error = None;
-                let (wav, result) = detector.detect_streamed_wav(&args.input, |evidence| {
+                let (wav, result) = detector.detect_streamed_wav(input, |evidence| {
+                    let Some(output) = jsonl.as_deref_mut() else {
+                        return;
+                    };
                     if output_error.is_none() {
                         match emit_jsonl(
-                            &mut output,
+                            output,
                             &EvidenceEvent {
                                 kind: "detector_evidence",
                                 evidence,
@@ -186,22 +253,24 @@ fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
             Err(error) => {
                 let identity = DetectorIdentity {
                     name: "silero-vad-onnx".into(),
-                    version: args.model_version,
+                    version: args.model_version.clone(),
                     model_sha256,
                     frame_samples: 512,
                     sample_rate_hz: 16_000,
                     runtime: format!("ort-2.0.0-rc.10/cpu/intra-threads-{}", args.intra_threads),
                 };
-                emit_jsonl(
-                    &mut output,
-                    &PlanStarted {
-                        kind: "plan_started",
-                        schema: JSONL_SCHEMA,
-                        detector: &identity,
-                    },
-                )?;
-                output.flush()?;
-                let wav = stream_canonical_wav(&args.input, |_, _| {})?;
+                if let Some(output) = jsonl {
+                    emit_jsonl(
+                        output,
+                        &PlanStarted {
+                            kind: "plan_started",
+                            schema: JSONL_SCHEMA,
+                            detector: &identity,
+                        },
+                    )?;
+                    output.flush()?;
+                }
+                let wav = stream_canonical_wav(input, |_, _| {})?;
                 (wav, identity, Err(error))
             }
         };
@@ -217,15 +286,7 @@ fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
         detector_identity,
         detector_result,
     )?;
-    emit_plan_complete(&mut output, &result, evidence_records_emitted)?;
-    output.flush()?;
-    eprintln!(
-        "planned {} samples into {} chunks ({} fallbacks)",
-        result.source.decoded_sample_count,
-        result.chunks.len(),
-        result.failures.len()
-    );
-    Ok(())
+    Ok((result, evidence_records_emitted))
 }
 
 fn emit_plan_complete(
@@ -259,7 +320,7 @@ fn emit_plan_complete(
 }
 
 fn emit_jsonl(
-    output: &mut impl Write,
+    output: &mut (impl Write + ?Sized),
     value: &impl Serialize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     serde_json::to_writer(&mut *output, value)?;
@@ -313,16 +374,42 @@ mod tests {
         .unwrap();
         let Command::Chunk {
             command: ChunkCommand::Plan(args),
-        } = cli.command;
+        } = cli.command
+        else {
+            panic!("expected plan command");
+        };
 
-        assert_eq!(args.model_version, "v5");
-        assert_eq!(args.search_back_samples, 80_000);
-        assert_eq!(args.minimum_chunk_samples, 160_000);
-        assert_eq!(args.speech_threshold, 0.5);
-        assert_eq!(args.minimum_low_speech_samples, 1_600);
-        assert_eq!(args.recognizer_version, "unspecified");
-        assert_eq!(args.max_submitted_samples, 480_000);
-        assert!(args.model_sha256.is_none());
+        assert_eq!(args.planning.model_version, "v5");
+        assert_eq!(args.planning.search_back_samples, 80_000);
+        assert_eq!(args.planning.minimum_chunk_samples, 160_000);
+        assert_eq!(args.planning.speech_threshold, 0.5);
+        assert_eq!(args.planning.minimum_low_speech_samples, 1_600);
+        assert_eq!(args.planning.recognizer_version, "unspecified");
+        assert_eq!(args.planning.max_submitted_samples, 480_000);
+        assert!(args.planning.model_sha256.is_none());
+    }
+
+    #[test]
+    fn audition_matches_plan_input_flag_and_uses_ffplay_by_default() {
+        let cli = Cli::try_parse_from([
+            "rde",
+            "chunk",
+            "audition",
+            "--input",
+            "audio.wav",
+            "--model",
+            "silero.onnx",
+        ])
+        .unwrap();
+        let Command::Chunk {
+            command: ChunkCommand::Audition(args),
+        } = cli.command
+        else {
+            panic!("expected audition command");
+        };
+
+        assert_eq!(args.input, PathBuf::from("audio.wav"));
+        assert_eq!(args.player, PathBuf::from("ffplay"));
     }
 
     #[test]
