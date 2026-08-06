@@ -6,7 +6,7 @@ terminal. Waveforms, full-screen terminal UI, publishing, rich annotations,
 multiple speakers, collaboration, and language-server integration are out of
 scope.
 
-## Detect pauses and create recognition chunks
+## [x] Detect pauses and create recognition chunks
 
 Divide long audio into legal recognition ranges of about 30 seconds or less.
 Store boundaries and overlap explicitly.

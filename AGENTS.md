@@ -16,8 +16,9 @@ module rather than a separate product or crate.
 ## Read when needed
 
 1. `doc/cli-mvp1.md` — ordered CLI work plan and current scope.
-2. `doc/transcript-cleanup-ui-proposal-v0.1.md` — technical model and invariants.
-3. `doc/thought-recovery-transcriber-prd-v0.1.md` — product intent and non-goals.
+2. `doc/chunking.md` — durable recognition-chunking context.
+3. `doc/transcript-cleanup-ui-proposal-v0.1.md` — technical model and invariants.
+4. `doc/thought-recovery-transcriber-prd-v0.1.md` — product intent and non-goals.
 
 When documents disagree, preserve visible text and data recoverability, follow
 the CLI plan for MVP scope, and surface the conflict instead of inventing a
