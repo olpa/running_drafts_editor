@@ -47,6 +47,9 @@ large design.
   and Silero inference in 512-sample frames; it does not retain full decoded PCM.
 - Chunk-plan stdout is JSONL: `plan_started`, streamed `detector_evidence`, then
   `plan_complete`; diagnostics remain on stderr.
+- `rde chunk audition --input <audio.wav> --model <model.onnx>` is a developer-only
+  dumb-terminal harness: it lists submitted chunk ranges and plays them through
+  a replaceable, ffplay-compatible subprocess selected with `--player`.
 
 ## MVP boundary
 
