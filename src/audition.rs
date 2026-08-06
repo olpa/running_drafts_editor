@@ -22,7 +22,7 @@ pub enum AuditionCommand {
 pub enum CommandParseError {
     #[error("unknown command '{0}'; type 'help' for available commands")]
     Unknown(String),
-    #[error("play requires one chunk number")]
+    #[error("play requires a numeric prefix, for example '3play'")]
     MissingChunkNumber,
     #[error("invalid chunk number '{0}'; expected a positive integer")]
     InvalidChunkNumber(String),
@@ -35,19 +35,25 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
     let Some(command) = words.next() else {
         return Ok(AuditionCommand::Empty);
     };
-    match command {
-        "play" | "p" => {
-            let value = words.next().ok_or(CommandParseError::MissingChunkNumber)?;
-            if words.next().is_some() {
-                return Err(CommandParseError::ExtraArguments);
-            }
-            let number = value
-                .parse::<usize>()
-                .ok()
-                .filter(|number| *number > 0)
-                .ok_or_else(|| CommandParseError::InvalidChunkNumber(value.into()))?;
-            Ok(AuditionCommand::Play(number))
+    if matches!(command, "play" | "p") {
+        return Err(CommandParseError::MissingChunkNumber);
+    }
+    if command.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        let value = command
+            .strip_suffix("play")
+            .or_else(|| command.strip_suffix('p'))
+            .ok_or_else(|| CommandParseError::Unknown(command.into()))?;
+        if words.next().is_some() {
+            return Err(CommandParseError::ExtraArguments);
         }
+        let number = value
+            .parse::<usize>()
+            .ok()
+            .filter(|number| *number > 0)
+            .ok_or_else(|| CommandParseError::InvalidChunkNumber(value.into()))?;
+        return Ok(AuditionCommand::Play(number));
+    }
+    match command {
         "list" | "l" => no_arguments(words, AuditionCommand::List),
         "help" | "h" => no_arguments(words, AuditionCommand::Help),
         "quit" | "q" => no_arguments(words, AuditionCommand::Quit),
@@ -252,7 +258,7 @@ pub fn render_chunks(
 
 fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output)?;
-    writeln!(output, "Commands: play N, list, help, quit")
+    writeln!(output, "Commands: Nplay (or Np), list, help, quit")
 }
 
 fn boundary_label(kind: &BoundaryKind) -> &'static str {
@@ -324,10 +330,8 @@ mod tests {
 
     #[test]
     fn parser_accepts_commands_aliases_and_whitespace() {
-        assert_eq!(
-            parse_command(" p 12 \n").unwrap(),
-            AuditionCommand::Play(12)
-        );
+        assert_eq!(parse_command(" 12p \n").unwrap(), AuditionCommand::Play(12));
+        assert_eq!(parse_command("12play").unwrap(), AuditionCommand::Play(12));
         assert_eq!(parse_command("list").unwrap(), AuditionCommand::List);
         assert_eq!(parse_command("h").unwrap(), AuditionCommand::Help);
         assert_eq!(parse_command(" q ").unwrap(), AuditionCommand::Quit);
@@ -341,7 +345,7 @@ mod tests {
             CommandParseError::MissingChunkNumber
         );
         assert_eq!(
-            parse_command("play 0").unwrap_err(),
+            parse_command("0play").unwrap_err(),
             CommandParseError::InvalidChunkNumber("0".into())
         );
         assert_eq!(
@@ -349,7 +353,7 @@ mod tests {
             CommandParseError::Unknown("7".into())
         );
         assert_eq!(
-            parse_command("play 1 now").unwrap_err(),
+            parse_command("1play now").unwrap_err(),
             CommandParseError::ExtraArguments
         );
     }

@@ -38,7 +38,7 @@ impl AudioPlayer for FakePlayer {
 #[test]
 fn session_lists_chunks_and_plays_exact_submitted_range() {
     let plan = fixture_plan();
-    let mut input = Cursor::new(b"play 1\nlist\nhelp\nquit\n");
+    let mut input = Cursor::new(b"1play\nlist\nhelp\nquit\n");
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
@@ -76,7 +76,7 @@ fn session_lists_chunks_and_plays_exact_submitted_range() {
 #[test]
 fn session_reports_errors_and_remains_usable_until_eof() {
     let plan = fixture_plan();
-    let mut input = Cursor::new(b"play 9\nwat\nplay 2\n");
+    let mut input = Cursor::new(b"9play\nwat\n2play\n");
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut player = FakePlayer {

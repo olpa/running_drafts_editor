@@ -50,6 +50,8 @@ large design.
 - `rde chunk audition --input <audio.wav> --model <model.onnx>` is a developer-only
   dumb-terminal harness: it lists submitted chunk ranges and plays them through
   a replaceable, ffplay-compatible subprocess selected with `--player`.
+  Its session grammar addresses a chunk with a numeric prefix, such as `3play`
+  or `3p`.
 
 ## MVP boundary
 
