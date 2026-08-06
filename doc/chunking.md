@@ -23,10 +23,12 @@ the long-term design so future work does not join them by accident.
 The board has selected:
 
 - **Rust** for the implementation language.
-- **Silero VAD** for detecting speech activity.
-- The official Silero Rust example as implementation guidance:
+- **Whisper** as the speech recognizer and source of phrase-level timestamp
+  boundaries.
+- **Silero VAD** remains an experimental/fallback planner, but its low
+  probabilities are not authoritative recognition boundaries.
+- The official Silero Rust example remains implementation guidance:
   <https://github.com/snakers4/silero-vad/tree/master/examples/rust-example>
-- **Whisper** as the speech recognizer.
 - The `backtrack` branch of this Rust binding:
   <https://github.com/olpa/whisper-rs/tree/backtrack>
 - Whisper-compatible input: mono, 16 kHz, normalized `f32` PCM samples.
@@ -116,19 +118,26 @@ A pause is usually a better cut position, but recordings are not simple:
 - music may be mistaken for speech or non-speech;
 - duration metadata may be missing or inaccurate.
 
-The system therefore treats Silero output as useful evidence, not as truth.
+The system therefore treats Silero output as optional experimental evidence,
+not as truth. The active recognition path instead preserves Whisper timestamp
+segments and uses them to advance bounded processing windows.
 
 ## 6. Long-term architecture
 
 The design has separate stages:
 
 1. **Decode and normalize:** convert media into canonical audio.
-2. **Detect:** run Silero and produce speech evidence.
-3. **Plan:** choose legal chunk boundaries using evidence and fallback rules.
-4. **Recognize:** send submitted ranges to Whisper.
-5. **Reconcile:** resolve duplicated or conflicting text if overlap exists.
-6. **Align:** connect recognized words or spans to source time.
-7. **Form paragraphs:** create readable text units.
+2. **Recognize:** send explicit bounded, overlapping windows to Whisper, carry
+   accepted text as prompt context, and preserve all decoded hypotheses.
+3. **Derive chunks:** use advancing Whisper timestamps for seams and bounded
+   fixed advancement when no timestamp is usable.
+4. **Reconcile:** use midpoint ownership for the minimal initial deduplication;
+   later work resolves ambiguous duplicated or conflicting text.
+5. **Align:** connect recognized words or spans to source time.
+6. **Form paragraphs:** create readable text units.
+
+Silero detection and the old planner remain inspectable experiments and
+fallback research. They are no longer prerequisites for recognition.
 
 Stages may share types, but they must not be merged into one hidden operation.
 Each stage should preserve enough input identity, configuration, and output to
@@ -148,8 +157,17 @@ This limit includes any left or right padding. If the selected `backtrack`
 branch later exposes a different safe contract, that change must be documented,
 tested, and revisioned rather than silently changing the planner.
 
-Whisper result timestamps use a coarser unit than the source sample clock. They
-must not replace the sample-accurate plan boundaries.
+The current experimental window has a 384,000-sample target core and up to
+48,000 samples of context on either side, keeping the submitted range within
+480,000 samples. A bounded tail of accepted prior text is supplied as the next
+prompt; the experimental CLI default retains at most 1,000 UTF-8 characters.
+
+Whisper timestamps use 10 ms units in the binding. They are converted to
+canonical sample offsets and preserved as decoded evidence. Any strictly
+advancing timestamp may become the next seam; if none is usable, the
+orchestrator advances by a configured bounded minimum so it cannot loop or
+silently jump a full window. Timestamp ranges remain approximate recognition
+evidence rather than sample-precise word alignment.
 
 ## 8. Detector contract
 
@@ -197,12 +215,11 @@ chunk[i].end = chunk[i + 1].start
 chunk.start < chunk.end
 ```
 
-Initial submitted ranges equal core ranges. Initial overlap is zero.
-
-Future overlap can add context on both sides of a seam. However, it also causes
-Whisper to recognize some speech twice. Text reconciliation is a separate
-problem and must be implemented and tested before non-zero overlap becomes a
-default.
+Submitted processing windows overlap their neighboring core ranges explicitly.
+Every raw hypothesis remains in the immutable recognition run. The accepted
+sequence uses a deterministic midpoint-ownership rule so a segment mostly owned
+by the previous core is not emitted twice. This is only minimal seam handling;
+textual reconciliation of ambiguous overlap remains separate work.
 
 ## 11. Paragraph relationship
 

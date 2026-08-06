@@ -6,12 +6,14 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand};
-use running_drafts_editor::audition::{run_session, Ffplay};
+use running_drafts_editor::audition::{run_recognition_session, Ffplay};
 use running_drafts_editor::chunking::{
-    plan_from_source, stream_canonical_wav, DetectorErrorCode, DetectorIdentity, DetectorStatus,
-    FrameEvidence, PlanFailure, PlannerConfig, PlannerRun, RecognitionChunk, RecognitionPlan,
-    RecognizerContract, SileroConfig, SileroDetector, SourceFacts, SpeechDetector,
+    plan_from_source, read_canonical_wav, stream_canonical_wav, DetectorErrorCode,
+    DetectorIdentity, DetectorStatus, FrameEvidence, PlanFailure, PlannerConfig, PlannerRun,
+    RecognitionChunk, RecognitionPlan, RecognizerContract, SileroConfig, SileroDetector,
+    SourceFacts, SpeechDetector,
 };
+use running_drafts_editor::recognition::{recognize, RecognitionConfig, WhisperDecoder};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -54,8 +56,25 @@ struct AuditionArgs {
     /// Canonical mono 16 kHz float WAV audio.
     #[arg(long)]
     input: PathBuf,
-    #[command(flatten)]
-    planning: PlanningArgs,
+    /// Whisper ggml model.
+    #[arg(long)]
+    model: PathBuf,
+    #[arg(long, default_value = "auto")]
+    language: String,
+    #[arg(long, default_value_t = 4)]
+    threads: usize,
+    #[arg(long, default_value_t = 384_000)]
+    target_core_samples: u64,
+    #[arg(long, default_value_t = 48_000)]
+    left_context_samples: u64,
+    #[arg(long, default_value_t = 48_000)]
+    right_context_samples: u64,
+    #[arg(long, default_value_t = 160_000)]
+    minimum_advance_samples: u64,
+    #[arg(long, default_value_t = 5)]
+    top_candidates: usize,
+    #[arg(long, default_value_t = 1_000)]
+    max_prompt_chars: usize,
     /// ffplay-compatible playback executable.
     #[arg(long, default_value = "ffplay")]
     player: PathBuf,
@@ -167,7 +186,27 @@ fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let (plan, _) = create_plan(&args.input, &args.planning, None)?;
+    let wav = read_canonical_wav(&args.input)?;
+    let source = SourceFacts {
+        sha256: wav.source_sha256,
+        sample_rate_hz: wav.sample_rate_hz,
+        channels: wav.channels,
+        decoded_sample_count: u64::try_from(wav.samples.len())?,
+    };
+    let config = RecognitionConfig {
+        target_core_samples: args.target_core_samples,
+        left_context_samples: args.left_context_samples,
+        right_context_samples: args.right_context_samples,
+        minimum_advance_samples: args.minimum_advance_samples,
+        language: args.language,
+        threads: args.threads,
+        top_candidates: args.top_candidates,
+        max_prompt_chars: args.max_prompt_chars,
+        ..RecognitionConfig::default()
+    };
+    let mut decoder = WhisperDecoder::load(&args.model, &config)?;
+    let run = recognize(source, &wav.samples, config, &mut decoder)?;
+
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let stderr = std::io::stderr();
@@ -175,8 +214,8 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    run_session(
-        &plan,
+    run_recognition_session(
+        &run,
         &args.input,
         &mut input,
         &mut output,
@@ -390,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn audition_matches_plan_input_flag_and_uses_ffplay_by_default() {
+    fn audition_has_inspectable_whisper_window_defaults() {
         let cli = Cli::try_parse_from([
             "rde",
             "chunk",
@@ -398,7 +437,7 @@ mod tests {
             "--input",
             "audio.wav",
             "--model",
-            "silero.onnx",
+            "whisper.bin",
         ])
         .unwrap();
         let Command::Chunk {
@@ -410,6 +449,15 @@ mod tests {
 
         assert_eq!(args.input, PathBuf::from("audio.wav"));
         assert_eq!(args.player, PathBuf::from("ffplay"));
+        assert_eq!(args.model, PathBuf::from("whisper.bin"));
+        assert_eq!(args.language, "auto");
+        assert_eq!(args.threads, 4);
+        assert_eq!(args.target_core_samples, 384_000);
+        assert_eq!(args.left_context_samples, 48_000);
+        assert_eq!(args.right_context_samples, 48_000);
+        assert_eq!(args.minimum_advance_samples, 160_000);
+        assert_eq!(args.top_candidates, 5);
+        assert_eq!(args.max_prompt_chars, 1_000);
     }
 
     #[test]

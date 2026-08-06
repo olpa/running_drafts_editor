@@ -89,6 +89,18 @@ pub fn read_canonical_wav(path: impl AsRef<Path>) -> Result<WavInput, WavError> 
     let spec = reader.spec();
     validate_spec(spec)?;
     let samples = reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?;
+    for (index, sample) in samples.iter().enumerate() {
+        if !sample.is_finite() {
+            return Err(WavError::NonFiniteSample {
+                index: index as u64,
+            });
+        }
+        if !(-1.0..=1.0).contains(sample) {
+            return Err(WavError::UnnormalizedSample {
+                index: index as u64,
+            });
+        }
+    }
     Ok(WavInput {
         samples,
         source_sha256,
@@ -166,6 +178,9 @@ mod tests {
     fn rejects_unnormalized_sample_at_stream_position() {
         let file = write_wav(&[0.0, 1.01, 0.0]);
         let error = stream_canonical_wav(file.path(), |_, _| {}).unwrap_err();
+
+        assert!(matches!(error, WavError::UnnormalizedSample { index: 1 }));
+        let error = read_canonical_wav(file.path()).unwrap_err();
 
         assert!(matches!(error, WavError::UnnormalizedSample { index: 1 }));
     }

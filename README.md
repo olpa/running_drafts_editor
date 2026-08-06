@@ -1,9 +1,10 @@
 # Running Drafts Editor
 
 Running Drafts Editor (`rde`) is an experimental line-oriented tool for turning
-existing recordings and imperfect recognition into usable text. The first
-implemented module creates legal, revisioned recognition chunk plans. It does
-not run Whisper or edit transcript text yet.
+existing recordings and imperfect recognition into usable text. It can create
+experimental Silero recognition plans and can run bounded, overlapping Whisper
+recognition for decoded-text audition. Transcript editing is not implemented
+yet.
 
 ## Build and test
 
@@ -15,8 +16,16 @@ cargo test --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-Tests use synthetic PCM and do not download a Silero model. The integration
-boundary verifies missing/corrupt model failures without network access.
+Tests use synthetic PCM and do not download speech models. The pinned
+`olpa/whisper-rs` fork links a prebuilt whisper.cpp 1.8.2 distribution and
+currently requires `HANDSFREEVC_DEV_HOME` at build time. On Linux its shared
+library directory must also be available at runtime, for example:
+
+```console
+HANDSFREEVC_DEV_HOME=/path/to/hfvc_dev \
+LD_LIBRARY_PATH=/path/to/hfvc_dev/whisper.cpp/linux-x86_64 \
+cargo test --all-targets
+```
 
 ## Experimental chunk-plan command
 
@@ -40,6 +49,25 @@ failures after model preflight
 produce a recorded fixed plan; the command never downloads a model. Audio
 hashing uses a bounded buffer, while validation and Silero inference consume
 512-sample frames without retaining the full decoded recording.
+
+## Experimental decoded-audition command
+
+The audition command now accepts a Whisper ggml model. It uses explicit
+processing windows no longer than 30 seconds, overlap on both sides of the
+target core, a bounded tail of accepted text as prompt context, and Whisper timestamps
+to select advancing seams.
+
+```console
+rde chunk audition \
+  --input recording-f32.wav \
+  --model ggml-tiny.bin \
+  --language de
+```
+
+The listing contains accepted decoded text segments and timestamp-derived
+sample ranges. `3play` or `3p` replays the exact listed range. All overlapping
+window hypotheses remain immutable evidence; midpoint ownership is only the
+initial deterministic deduplication rule.
 
 ## Reproducibility and licenses
 

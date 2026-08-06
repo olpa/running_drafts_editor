@@ -11,7 +11,7 @@ scope.
 Divide long audio into legal recognition ranges of about 30 seconds or less.
 Store boundaries and overlap explicitly.
 
-## Transcribe chunks and preserve recognition runs
+## [x] Transcribe chunks and preserve recognition runs
 
 Store tokens, confidence, alternatives, timing, and failures as immutable run
 output. Retrying creates another run.

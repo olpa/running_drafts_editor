@@ -47,11 +47,17 @@ large design.
   and Silero inference in 512-sample frames; it does not retain full decoded PCM.
 - Chunk-plan stdout is JSONL: `plan_started`, streamed `detector_evidence`, then
   `plan_complete`; diagnostics remain on stderr.
-- `rde chunk audition --input <audio.wav> --model <model.onnx>` is a developer-only
-  dumb-terminal harness: it lists submitted chunk ranges and plays them through
-  a replaceable, ffplay-compatible subprocess selected with `--player`.
-  Its session grammar addresses a chunk with a numeric prefix, such as `3play`
-  or `3p`.
+- `rde chunk audition --input <audio.wav> --model <whisper.bin>` is a
+  developer-only dumb-terminal harness: it runs Whisper, lists accepted decoded
+  segments with text and timestamp-derived sample ranges, and plays them through
+  a replaceable, ffplay-compatible subprocess selected with `--player`. Its
+  session grammar addresses a chunk with a numeric prefix, such as `3play` or `3p`.
+- Whisper recognition uses explicit windows of at most 480,000 samples. The
+  experimental default targets a 384,000-sample core with 48,000 samples of
+  context per side, carries a bounded accepted-text tail as the next prompt, advances at any
+  usable Whisper timestamp, and otherwise advances by a bounded minimum.
+- Every window hypothesis is retained in the immutable run; midpoint ownership
+  provides only minimal overlap deduplication pending full reconciliation.
 
 ## MVP boundary
 

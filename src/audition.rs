@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::chunking::{BoundaryKind, RecognitionPlan, SampleRange};
+use crate::recognition::RecognitionRun;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditionCommand {
@@ -219,6 +220,79 @@ pub fn run_session(
     }
 }
 
+pub fn run_recognition_session(
+    run: &RecognitionRun,
+    source: &Path,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+    player: &mut impl AudioPlayer,
+) -> io::Result<()> {
+    render_recognition_chunks(run, source, output)?;
+    if run.segments.is_empty() {
+        return Ok(());
+    }
+    render_help(output)?;
+    loop {
+        write!(output, "chunk> ")?;
+        output.flush()?;
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0 {
+            return Ok(());
+        }
+        match parse_command(&line) {
+            Ok(AuditionCommand::Play(number)) => {
+                let Some(segment) = run.segments.get(number - 1) else {
+                    writeln!(
+                        errors,
+                        "invalid chunk number {number}; expected 1..={}",
+                        run.segments.len()
+                    )?;
+                    continue;
+                };
+                if let Err(error) =
+                    player.play(source, run.source.sample_rate_hz, segment.audio_range)
+                {
+                    writeln!(errors, "playback failed for chunk {number}: {error}")?;
+                }
+            }
+            Ok(AuditionCommand::List) => render_recognition_chunks(run, source, output)?,
+            Ok(AuditionCommand::Help) => render_help(output)?,
+            Ok(AuditionCommand::Quit) => return Ok(()),
+            Ok(AuditionCommand::Empty) => {}
+            Err(error) => writeln!(errors, "{error}")?,
+        }
+    }
+}
+
+pub fn render_recognition_chunks(
+    run: &RecognitionRun,
+    source: &Path,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    writeln!(
+        output,
+        "Decoded {} chunks from {}",
+        run.segments.len(),
+        source.display()
+    )?;
+    if run.segments.is_empty() {
+        return Ok(());
+    }
+    writeln!(output)?;
+    for (index, segment) in run.segments.iter().enumerate() {
+        writeln!(
+            output,
+            "{:>3}  {} – {}  {:>9}  whisper timestamp",
+            index + 1,
+            Timestamp::new(segment.audio_range.start_sample, run.source.sample_rate_hz),
+            Timestamp::new(segment.audio_range.end_sample, run.source.sample_rate_hz),
+            Duration::new(segment.audio_range.len(), run.source.sample_rate_hz),
+        )?;
+        writeln!(output, "     {}", segment.text.trim())?;
+    }
+    Ok(())
+}
 pub fn render_chunks(
     plan: &RecognitionPlan,
     source: &Path,
