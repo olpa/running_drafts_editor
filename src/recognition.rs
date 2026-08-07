@@ -174,18 +174,18 @@ pub fn recognize<D: WindowDecoder>(
         let window_prompt = prompt.clone();
 
         let decoded = decoder.decode(&samples[start..end], &window_prompt);
-        let (hypotheses, seam, advance_reason, error) = match decoded {
+        let (hypotheses, boundary, advance_reason, error) = match decoded {
             Ok(relative) => {
                 let hypotheses = normalize_segments(relative, submitted, ordinal);
-                let (seam, reason) = choose_seam(cursor, total, &hypotheses, &config);
-                (hypotheses, seam, reason, None)
+                let (boundary, reason) = choose_boundary(cursor, total, &hypotheses, &config);
+                (hypotheses, boundary, reason, None)
             }
             Err(error) => {
                 failures += 1;
-                let seam = fallback_seam(cursor, total, &config);
+                let boundary = fallback_boundary(cursor, total, &config);
                 (
                     Vec::new(),
-                    seam,
+                    boundary,
                     AdvanceReason::FixedDecodeFailure,
                     Some(error),
                 )
@@ -196,7 +196,7 @@ pub fn recognize<D: WindowDecoder>(
         for segment in &hypotheses {
             let midpoint = segment.audio_range.start_sample + segment.audio_range.len() / 2;
             if midpoint >= cursor
-                && segment.audio_range.end_sample <= seam
+                && segment.audio_range.end_sample <= boundary
                 && !segment.audio_range.is_empty()
             {
                 accepted_ids.push(segment.id.clone());
@@ -211,7 +211,7 @@ pub fn recognize<D: WindowDecoder>(
             submitted,
             core: SampleRange {
                 start_sample: cursor,
-                end_sample: seam,
+                end_sample: boundary,
             },
             prompt: window_prompt,
             advance_reason,
@@ -219,7 +219,7 @@ pub fn recognize<D: WindowDecoder>(
             accepted_segment_ids: accepted_ids,
             error,
         });
-        cursor = seam;
+        cursor = boundary;
     }
 
     let status = if failures == 0 {
@@ -332,7 +332,7 @@ fn normalize_segments(
         .collect()
 }
 
-fn choose_seam(
+fn choose_boundary(
     cursor: u64,
     total: u64,
     segments: &[DecodedSegment],
@@ -352,16 +352,16 @@ fn choose_seam(
         .filter(|end| *end > cursor && *end <= submitted_end)
         .min_by_key(|end| (end.abs_diff(target), std::cmp::Reverse(*end)));
     candidate
-        .map(|seam| (seam, AdvanceReason::WhisperTimestamp))
+        .map(|boundary| (boundary, AdvanceReason::WhisperTimestamp))
         .unwrap_or_else(|| {
             (
-                fallback_seam(cursor, total, config),
+                fallback_boundary(cursor, total, config),
                 AdvanceReason::FixedNoTimestamp,
             )
         })
 }
 
-fn fallback_seam(cursor: u64, total: u64, config: &RecognitionConfig) -> u64 {
+fn fallback_boundary(cursor: u64, total: u64, config: &RecognitionConfig) -> u64 {
     cursor
         .saturating_add(config.minimum_advance_samples)
         .min(total)

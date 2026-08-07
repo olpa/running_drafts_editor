@@ -1,33 +1,86 @@
 # Recognition chunking: technical context
 
-**Status:** durable project context  
-**Date:** 2026-08-07
+## Terms
 
-## Purpose
+**Source audio** is the complete recording being recognized. It is decoded as
+mono 16 kHz audio.
 
-Running Drafts Editor divides long audio into bounded recognition operations
-and turns their timestamped results into replayable text chunks. Recognition
-chunks are processing units; paragraphs remain independent user-editable units.
+**Sample** is one audio value. Sample offsets are the exact internal time unit;
+at 16 kHz, 16,000 samples equal one second.
 
-## Current decision
+**Cursor** is the first source sample not yet owned by a completed processing
+step. It moves forward after every recognition call.
 
-Chunking happens as part of Whisper recognition. The recognizer receives
-overlapping windows of canonical mono 16 kHz audio, each no longer than its
-native 30-second limit. Timestamped decoded segments determine advancing seams.
-A bounded tail of accepted text is passed as context for the next window.
+**Window** or **submitted window** is the audio range sent to Whisper in one
+call. It can contain audio before and after the range that this call is expected
+to own, and is never longer than 30 seconds.
 
-The default experiment uses:
+**Core** is the non-overlapping source range assigned to one processing window.
+It starts at the cursor and ends at the selected boundary. Consecutive cores cover
+the source without gaps or overlap.
 
-- a 384,000-sample target core (24 seconds);
-- 48,000 samples (3 seconds) of context on each side;
-- a 480,000-sample (30-second) maximum submitted window;
-- a 160,000-sample (10-second) minimum fallback advance;
-- at most 1,000 characters of previous accepted text as a prompt.
+**Target core** is the preferred core length, currently 24 seconds. It guides
+boundary selection but is not necessarily the final core length.
 
-Every submitted-window hypothesis is immutable recognition evidence. Midpoint
-ownership is the initial deterministic overlap rule, not a final reconciliation
-algorithm. A decode failure records the failed window and advances by the
-bounded fallback so that processing always terminates and covers the source.
+**Context** is audio submitted outside the intended core so Whisper can decode
+speech near a boundary with surrounding sound. Neighboring windows therefore
+overlap even though their cores do not.
+
+**Segment** is a timestamped piece of decoded text returned by Whisper for one
+window. A segment is a recognition hypothesis, not an editing paragraph.
+
+**Accepted segment** is a segment selected as the initial text result for a
+core. Other segments from the same window are retained as evidence even when
+they are not accepted.
+
+**Boundary** is the source position where one core ends and the next begins. The
+implementation normally chooses a Whisper segment end timestamp near the target
+core end.
+
+**Prompt** is the bounded tail of previously accepted text supplied to the next
+Whisper call for linguistic context. It does not change ownership of audio.
+
+**Recognition run** is the immutable record of all windows, hypotheses,
+accepted segments, prompts, boundaries, and failures produced by one execution.
+
+**Chunk** is the user-facing replay unit listed by `chunk audition`. In the
+current implementation each listed chunk corresponds to one accepted segment.
+It is distinct from a processing window and from a future editable paragraph.
+
+**Fragment** has no precise meaning in the current data model. Use it only
+informally for an unspecified piece of audio or text; use window, core, segment,
+or chunk when one of those meanings is intended.
+
+## Recognition-driven chunking
+
+Chunking is performed while Whisper recognizes the audio. There is no separate
+pass that decides all boundaries in advance.
+
+The implementation keeps a cursor at the first unowned sample. For every step
+it submits an overlapping Whisper window containing:
+
+- up to 3 seconds before the cursor;
+- a target core of 24 seconds starting at the cursor;
+- up to 3 seconds after the target core.
+
+The submitted window is therefore at most Whisper's 30-second input limit.
+Whisper returns decoded segments with timestamps. Their ranges are translated
+from window-relative timestamps to absolute source sample positions.
+
+The next boundary is the end timestamp of the decoded segment closest to the
+24-second target. A timestamp must be after the current cursor and inside the
+submitted window. If two candidates are equally close, the later one wins. The
+last window always ends at the end of the source.
+
+Only segments whose midpoint is at or after the current cursor and whose end is
+at or before the chosen boundary are accepted for that chunk. This is the
+initial overlap-deduplication rule; all window hypotheses are still retained as
+recognition evidence.
+
+The accepted text is carried into the next recognition call as context, limited
+to its last 1,000 characters. If recognition fails or yields no usable
+timestamp, the cursor advances by 10 seconds so processing remains bounded and
+eventually covers the complete source.
 
 ## Earlier experiment
 
@@ -36,44 +89,3 @@ sample data it assigned very low speech probabilities to clearly audible,
 continuously recognized speech and therefore proposed misleading boundaries.
 We removed that implementation and decided to derive chunks simultaneously
 with recognition, using Whisper timestamps and decoded text as the evidence.
-
-## Canonical positions and identity
-
-Audio positions use mono 16 kHz sample offsets. Seconds are display values only.
-Source and recognition identities exclude local paths and nondeterministic
-diagnostics. Model identity uses a hash of the caller-supplied model file.
-
-Each processing window records:
-
-- its submitted audio range;
-- its non-overlapping core range;
-- the prompt supplied to recognition;
-- all decoded segment and token hypotheses;
-- accepted segment identities;
-- the reason for its advancing seam;
-- any decoding error.
-
-Recognition runs are immutable. Retrying with another model, language, prompt,
-or boundary policy creates a new run rather than mutating old evidence.
-
-## Replay and visible text
-
-The developer audition command lists accepted decoded segments with their text
-and timestamp-derived sample ranges. Playback uses exactly the listed range.
-Later document work may group several chunks into a paragraph or split a chunk
-across paragraphs. Chunk metadata must never appear in clean text export.
-
-Visible paragraph text remains authoritative. Recognition metadata supports
-replay and correction but must not overwrite newer edits or claim precision
-after alignment becomes stale.
-
-## Dependencies and reproducibility
-
-The selected `olpa/whisper-rs` and `olpa/whisper.cpp` source snapshots are
-vendored under `vendor/whisper-rs`. Their exact commits and local static-build
-adaptation are recorded in `vendor/whisper-rs/RDE-VENDOR.md`. Recognition model
-binaries remain external and should be identified by SHA-256.
-
-Tests should cover bounded complete core coverage, overlap ownership, timestamp
-normalization, prompt propagation, decode failure, missing models, invalid
-audio, replay precision, and stable recognition-run serialization.

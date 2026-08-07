@@ -74,6 +74,8 @@ annotations, multi-speaker UI, collaboration, LSP, and mobile UX design.
 - Add focused tests for implemented behavior and failure paths.
 - Do not commit editor swap files, recordings, credentials, or generated output.
 - Record unresolved choices rather than silently fixing open product questions.
+- Use clear B2-level English in project text whenever possible. Prefer common
+  words such as “boundary” over less familiar technical metaphors.
 
 ## Keep this context current
 

@@ -28,7 +28,7 @@ compiler, CMake, and libclang for bindgen.
 The audition command now accepts a Whisper ggml model. It uses explicit
 processing windows no longer than 30 seconds, overlap on both sides of the
 target core, a bounded tail of accepted text as prompt context, and Whisper
-timestamps to select advancing seams.
+timestamps to select advancing boundaries.
 
 ```console
 rde chunk audition \
