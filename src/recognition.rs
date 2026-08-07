@@ -20,7 +20,6 @@ pub struct RecognitionConfig {
     pub target_core_samples: u64,
     pub left_context_samples: u64,
     pub right_context_samples: u64,
-    pub minimum_advance_samples: u64,
     pub language: String,
     pub threads: usize,
     pub max_prompt_chars: usize,
@@ -34,7 +33,6 @@ impl Default for RecognitionConfig {
             target_core_samples: 384_000,
             left_context_samples: 48_000,
             right_context_samples: 48_000,
-            minimum_advance_samples: 160_000,
             language: "auto".into(),
             threads: 4,
             top_candidates: 5,
@@ -182,7 +180,7 @@ pub fn recognize<D: WindowDecoder>(
             }
             Err(error) => {
                 failures += 1;
-                let boundary = fallback_boundary(cursor, total, &config);
+                let boundary = target_boundary(cursor, total, &config);
                 (
                     Vec::new(),
                     boundary,
@@ -262,11 +260,9 @@ fn validate_config(
     if config.max_window_samples == 0
         || config.max_prompt_chars == 0
         || config.target_core_samples == 0
-        || config.minimum_advance_samples == 0
-        || config.minimum_advance_samples > config.target_core_samples
     {
         return Err(RecognitionError::InvalidConfiguration(
-            "window, core, and minimum advance must be positive and ordered".into(),
+            "window and target core must be positive".into(),
         ));
     }
     let submitted = config
@@ -349,23 +345,20 @@ fn choose_boundary(
     let candidate = segments
         .iter()
         .map(|segment| segment.audio_range.end_sample)
-        .filter(|end| *end > cursor && *end <= submitted_end)
-        .min_by_key(|end| (end.abs_diff(target), std::cmp::Reverse(*end)));
+        .filter(|end| *end >= target && *end <= submitted_end)
+        .max();
     candidate
         .map(|boundary| (boundary, AdvanceReason::WhisperTimestamp))
         .unwrap_or_else(|| {
             (
-                fallback_boundary(cursor, total, config),
+                target_boundary(cursor, total, config),
                 AdvanceReason::FixedNoTimestamp,
             )
         })
 }
 
-fn fallback_boundary(cursor: u64, total: u64, config: &RecognitionConfig) -> u64 {
-    cursor
-        .saturating_add(config.minimum_advance_samples)
-        .min(total)
-        .max(cursor.saturating_add(1).min(total))
+fn target_boundary(cursor: u64, total: u64, config: &RecognitionConfig) -> u64 {
+    cursor.saturating_add(config.target_core_samples).min(total)
 }
 
 fn trailing_chars(value: &str, maximum: usize) -> String {

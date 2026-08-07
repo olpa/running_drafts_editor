@@ -45,8 +45,6 @@ struct AuditionArgs {
     left_context_samples: u64,
     #[arg(long, default_value_t = 48_000)]
     right_context_samples: u64,
-    #[arg(long, default_value_t = 160_000)]
-    minimum_advance_samples: u64,
     #[arg(long, default_value_t = 5)]
     top_candidates: usize,
     #[arg(long, default_value_t = 1_000)]
@@ -87,7 +85,6 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
         target_core_samples: args.target_core_samples,
         left_context_samples: args.left_context_samples,
         right_context_samples: args.right_context_samples,
-        minimum_advance_samples: args.minimum_advance_samples,
         language: args.language,
         threads: args.threads,
         top_candidates: args.top_candidates,
@@ -143,7 +140,6 @@ mod tests {
         assert_eq!(args.target_core_samples, 384_000);
         assert_eq!(args.left_context_samples, 48_000);
         assert_eq!(args.right_context_samples, 48_000);
-        assert_eq!(args.minimum_advance_samples, 160_000);
         assert_eq!(args.top_candidates, 5);
         assert_eq!(args.max_prompt_chars, 1_000);
     }

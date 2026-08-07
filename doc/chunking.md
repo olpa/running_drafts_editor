@@ -67,10 +67,11 @@ The submitted window is therefore at most Whisper's 30-second input limit.
 Whisper returns decoded segments with timestamps. Their ranges are translated
 from window-relative timestamps to absolute source sample positions.
 
-The next boundary is the end timestamp of the decoded segment closest to the
-24-second target. A timestamp must be after the current cursor and inside the
-submitted window. If two candidates are equally close, the later one wins. The
-last window always ends at the end of the source.
+The last 3 seconds form the boundary search area. The implementation uses the
+latest Whisper segment-end timestamp between 24 and 27 seconds after the
+cursor. Timestamps before the 24-second target are ignored. If the search area
+has no usable timestamp, the boundary stays at the 24-second target. The last
+window always ends at the end of the source.
 
 Only segments whose midpoint is at or after the current cursor and whose end is
 at or before the chosen boundary are accepted for that chunk. This is the
@@ -78,9 +79,9 @@ initial overlap-deduplication rule; all window hypotheses are still retained as
 recognition evidence.
 
 The accepted text is carried into the next recognition call as context, limited
-to its last 1,000 characters. If recognition fails or yields no usable
-timestamp, the cursor advances by 10 seconds so processing remains bounded and
-eventually covers the complete source.
+to its last 1,000 characters. If recognition fails, the boundary also stays at
+the 24-second target. Normal cores are therefore between 24 and 27 seconds;
+only the final core can be shorter.
 
 ## Earlier experiment
 

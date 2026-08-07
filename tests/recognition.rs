@@ -62,7 +62,6 @@ fn small_config() -> RecognitionConfig {
         left_context_samples: 3,
         max_prompt_chars: 3,
         right_context_samples: 3,
-        minimum_advance_samples: 10,
         language: "de".into(),
         threads: 1,
         top_candidates: 2,
@@ -93,7 +92,7 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
     assert_eq!(run.status, RecognitionStatus::Succeeded);
     assert_eq!(
         decoder.calls,
-        vec![(27, String::new()), (30, "AB".into()), (24, "BCD".into())]
+        vec![(27, String::new()), (30, "ail".into()), (20, "lCD".into())]
     );
     assert_eq!(
         run.windows
@@ -106,11 +105,11 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
                 end_sample: 27,
             },
             SampleRange {
-                start_sample: 20,
-                end_sample: 50,
+                start_sample: 24,
+                end_sample: 54,
             },
             SampleRange {
-                start_sample: 46,
+                start_sample: 50,
                 end_sample: 70,
             },
         ]
@@ -123,14 +122,14 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
         vec![
             SampleRange {
                 start_sample: 0,
-                end_sample: 23,
+                end_sample: 27,
             },
             SampleRange {
-                start_sample: 23,
-                end_sample: 49,
+                start_sample: 27,
+                end_sample: 53,
             },
             SampleRange {
-                start_sample: 49,
+                start_sample: 53,
                 end_sample: 70,
             },
         ]
@@ -151,7 +150,7 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
             .iter()
             .map(|segment| segment.text.as_str())
             .collect::<Vec<_>>(),
-        vec!["A", "B", "C", "D", "E"]
+        vec!["A", "B", "tail", "C", "D", "E"]
     );
     assert!(run
         .windows
@@ -160,16 +159,59 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
 }
 
 #[test]
-fn decode_failures_still_create_complete_bounded_core_coverage() {
+fn latest_timestamp_in_search_area_wins_and_early_timestamp_does_not_shorten_core() {
     let mut decoder = FakeDecoder {
         results: VecDeque::from([
-            Err("one".into()),
-            Err("two".into()),
-            Err("three".into()),
-            Err("four".into()),
-            Err("five".into()),
-            Err("six".into()),
+            Ok(vec![
+                segment(0, 2, "early"),
+                segment(20, 25, "first"),
+                segment(25, 26, "latest"),
+            ]),
+            Ok(Vec::new()),
         ]),
+        ..FakeDecoder::default()
+    };
+
+    let run = recognize(source(50), &[0.0; 50], small_config(), &mut decoder).unwrap();
+
+    assert_eq!(
+        run.windows
+            .iter()
+            .map(|window| window.core)
+            .collect::<Vec<_>>(),
+        vec![
+            SampleRange {
+                start_sample: 0,
+                end_sample: 26,
+            },
+            SampleRange {
+                start_sample: 26,
+                end_sample: 50,
+            },
+        ]
+    );
+    assert_eq!(
+        run.windows[0].advance_reason,
+        AdvanceReason::WhisperTimestamp
+    );
+
+    let mut early_only = FakeDecoder {
+        results: VecDeque::from([Ok(vec![segment(0, 2, "early")]), Ok(Vec::new())]),
+        ..FakeDecoder::default()
+    };
+    let run = recognize(source(50), &[0.0; 50], small_config(), &mut early_only).unwrap();
+
+    assert_eq!(run.windows[0].core.end_sample, 24);
+    assert_eq!(
+        run.windows[0].advance_reason,
+        AdvanceReason::FixedNoTimestamp
+    );
+}
+
+#[test]
+fn decode_failures_still_create_complete_bounded_core_coverage() {
+    let mut decoder = FakeDecoder {
+        results: VecDeque::from([Err("one".into()), Err("two".into()), Err("three".into())]),
         ..FakeDecoder::default()
     };
 
@@ -185,26 +227,14 @@ fn decode_failures_still_create_complete_bounded_core_coverage() {
         vec![
             SampleRange {
                 start_sample: 0,
-                end_sample: 10,
+                end_sample: 24,
             },
             SampleRange {
-                start_sample: 10,
-                end_sample: 20,
+                start_sample: 24,
+                end_sample: 48,
             },
             SampleRange {
-                start_sample: 20,
-                end_sample: 30,
-            },
-            SampleRange {
-                start_sample: 30,
-                end_sample: 40,
-            },
-            SampleRange {
-                start_sample: 40,
-                end_sample: 50,
-            },
-            SampleRange {
-                start_sample: 50,
+                start_sample: 48,
                 end_sample: 55,
             },
         ]
@@ -246,7 +276,6 @@ fn decoded_audition_shows_text_and_replays_exact_timestamp_range() {
             target_core_samples: 640,
             left_context_samples: 0,
             right_context_samples: 0,
-            minimum_advance_samples: 1,
             ..small_config()
         },
         &mut decoder,

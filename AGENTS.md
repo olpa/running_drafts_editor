@@ -48,8 +48,9 @@ large design.
   session grammar addresses a chunk with a numeric prefix, such as `3play` or `3p`.
 - Whisper recognition uses explicit windows of at most 480,000 samples. The
   experimental default targets a 384,000-sample core with 48,000 samples of
-  context per side, carries a bounded accepted-text tail as the next prompt, advances at any
-  usable Whisper timestamp, and otherwise advances by a bounded minimum.
+  context per side and carries a bounded accepted-text tail as the next prompt.
+  It uses the latest segment end in the 48,000-sample right context as the
+  boundary, or the target core end when that area has no usable timestamp.
 - Every window hypothesis is retained in the immutable run; midpoint ownership
   provides only minimal overlap deduplication pending full reconciliation.
 - Whisper Rust and C++ sources are pinned and vendored under
