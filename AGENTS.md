@@ -36,17 +36,11 @@ large design.
 - Edits may make alignment stale or unavailable; never claim false precision.
 - Missing audio or optional metadata must not prevent reading and editing text.
 - Async or refreshed recognition must not overwrite newer user edits.
-- Canonical audio and recognition-plan positions use mono 16 kHz sample offsets;
-  plan JSON and identities exclude local paths and nondeterministic diagnostics.
-- Detector failure creates a recorded fixed-window plan; it never removes audio
-  or prevents complete legal core coverage.
-- `rde chunk plan` requires only canonical audio and a Silero model; planner,
-  detector, and provisional recognizer values have inspectable CLI defaults.
-- A missing or unreadable CLI model is a preflight error and emits no plan JSON.
-- The chunk-plan CLI hashes with bounded I/O and streams canonical WAV validation
-  and Silero inference in 512-sample frames; it does not retain full decoded PCM.
-- Chunk-plan stdout is JSONL: `plan_started`, streamed `detector_evidence`, then
-  `plan_complete`; diagnostics remain on stderr.
+- Canonical audio and recognition positions use mono 16 kHz sample offsets;
+  recognition identities exclude local paths and nondeterministic diagnostics.
+- Chunk boundaries are derived during Whisper recognition from timestamped
+  decoded segments; there is no separate pre-recognition planner.
+- A missing or unreadable CLI model is a preflight error.
 - `rde chunk audition --input <audio.wav> --model <whisper.bin>` is a
   developer-only dumb-terminal harness: it runs Whisper, lists accepted decoded
   segments with text and timestamp-derived sample ranges, and plays them through

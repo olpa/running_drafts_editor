@@ -7,7 +7,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use crate::chunking::{BoundaryKind, RecognitionPlan, SampleRange};
+use crate::chunking::SampleRange;
 use crate::recognition::RecognitionRun;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,50 +176,6 @@ fn samples_as_seconds(samples: u64, sample_rate_hz: u32) -> String {
     )
 }
 
-pub fn run_session(
-    plan: &RecognitionPlan,
-    source: &Path,
-    input: &mut impl BufRead,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-    player: &mut impl AudioPlayer,
-) -> io::Result<()> {
-    render_chunks(plan, source, output)?;
-    if plan.chunks.is_empty() {
-        return Ok(());
-    }
-    render_help(output)?;
-    loop {
-        write!(output, "chunk> ")?;
-        output.flush()?;
-        let mut line = String::new();
-        if input.read_line(&mut line)? == 0 {
-            return Ok(());
-        }
-        match parse_command(&line) {
-            Ok(AuditionCommand::Play(number)) => {
-                let Some(chunk) = plan.chunks.get(number - 1) else {
-                    writeln!(
-                        errors,
-                        "invalid chunk number {number}; expected 1..={}",
-                        plan.chunks.len()
-                    )?;
-                    continue;
-                };
-                if let Err(error) = player.play(source, plan.source.sample_rate_hz, chunk.submitted)
-                {
-                    writeln!(errors, "playback failed for chunk {number}: {error}")?;
-                }
-            }
-            Ok(AuditionCommand::List) => render_chunks(plan, source, output)?,
-            Ok(AuditionCommand::Help) => render_help(output)?,
-            Ok(AuditionCommand::Quit) => return Ok(()),
-            Ok(AuditionCommand::Empty) => {}
-            Err(error) => writeln!(errors, "{error}")?,
-        }
-    }
-}
-
 pub fn run_recognition_session(
     run: &RecognitionRun,
     source: &Path,
@@ -293,55 +249,9 @@ pub fn render_recognition_chunks(
     }
     Ok(())
 }
-pub fn render_chunks(
-    plan: &RecognitionPlan,
-    source: &Path,
-    output: &mut impl Write,
-) -> io::Result<()> {
-    writeln!(
-        output,
-        "Planned {} chunks from {}",
-        plan.chunks.len(),
-        source.display()
-    )?;
-    if plan.chunks.is_empty() {
-        return Ok(());
-    }
-    writeln!(output)?;
-    for (index, chunk) in plan.chunks.iter().enumerate() {
-        writeln!(
-            output,
-            "{:>3}  {} – {}  {:>9}  {}",
-            index + 1,
-            Timestamp::new(chunk.submitted.start_sample, plan.source.sample_rate_hz),
-            Timestamp::new(chunk.submitted.end_sample, plan.source.sample_rate_hz),
-            Duration::new(chunk.submitted.len(), plan.source.sample_rate_hz),
-            boundary_label(&chunk.boundary.kind),
-        )?;
-        if chunk.core != chunk.submitted {
-            writeln!(
-                output,
-                "     core {} – {}",
-                Timestamp::new(chunk.core.start_sample, plan.source.sample_rate_hz),
-                Timestamp::new(chunk.core.end_sample, plan.source.sample_rate_hz),
-            )?;
-        }
-    }
-    Ok(())
-}
-
 fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output)?;
     writeln!(output, "Commands: Nplay (or Np), list, help, quit")
-}
-
-fn boundary_label(kind: &BoundaryKind) -> &'static str {
-    match kind {
-        BoundaryKind::SourceEnd => "source end",
-        BoundaryKind::VadValley => "vad valley",
-        BoundaryKind::HardLimitNoCandidate => "hard limit (no candidate)",
-        BoundaryKind::HardLimitDetectorUnavailable => "hard limit (detector unavailable)",
-    }
 }
 
 struct Timestamp {
