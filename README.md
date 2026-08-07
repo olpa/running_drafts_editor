@@ -27,8 +27,8 @@ compiler, CMake, and libclang for bindgen.
 
 The audition command now accepts a Whisper ggml model. It uses explicit
 processing windows no longer than 30 seconds, overlap on both sides of the
-target core, a bounded tail of accepted text as prompt context, and Whisper
-timestamps to select advancing boundaries.
+target core, direct text-token context from the previous accepted segment, and
+Whisper timestamps to select advancing boundaries.
 
 ```console
 rde chunk audition \
@@ -37,10 +37,11 @@ rde chunk audition \
   --language de
 ```
 
-The listing contains accepted decoded text segments and timestamp-derived
-sample ranges. `3play` or `3p` replays the exact listed range. All overlapping
-window hypotheses remain immutable evidence; midpoint ownership is only the
-initial deterministic deduplication rule.
+The listing contains replay chunks built from whole accepted Whisper segments.
+Pause length and normal text-token count choose their boundaries. `3play` or
+`3p` replays the exact listed range. All overlapping window hypotheses remain
+immutable evidence; midpoint ownership is only the initial deterministic
+deduplication rule.
 
 ## Reproducibility and licenses
 

@@ -3,7 +3,9 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::{Args, Parser, Subcommand};
 use running_drafts_editor::audition::{run_recognition_session, Ffplay};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
-use running_drafts_editor::recognition::{recognize, RecognitionConfig, WhisperDecoder};
+use running_drafts_editor::recognition::{
+    recognize, PostChunkConfig, RecognitionConfig, WhisperDecoder,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "rde", version, about = "Running Drafts Editor (experimental)")]
@@ -47,6 +49,20 @@ struct AuditionArgs {
     right_context_samples: u64,
     #[arg(long, default_value_t = 5)]
     top_candidates: usize,
+    #[arg(long, default_value_t = 8)]
+    chunk_minimum_tokens: usize,
+    #[arg(long, default_value_t = 32)]
+    chunk_target_tokens: usize,
+    #[arg(long, default_value_t = 64)]
+    chunk_maximum_tokens: usize,
+    #[arg(long, default_value_t = 300)]
+    chunk_usable_pause_ms: u64,
+    #[arg(long, default_value_t = 800)]
+    chunk_strong_pause_ms: u64,
+    #[arg(long, default_value_t = 2_000)]
+    chunk_long_pause_ms: u64,
+    #[arg(long, default_value_t = 20)]
+    chunk_distance_penalty_ms: u64,
     /// ffplay-compatible playback executable.
     #[arg(long, default_value = "ffplay")]
     player: PathBuf,
@@ -86,6 +102,15 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
         language: args.language,
         threads: args.threads,
         top_candidates: args.top_candidates,
+        post_chunking: PostChunkConfig {
+            minimum_tokens: args.chunk_minimum_tokens,
+            target_tokens: args.chunk_target_tokens,
+            maximum_tokens: args.chunk_maximum_tokens,
+            usable_pause_ms: args.chunk_usable_pause_ms,
+            strong_pause_ms: args.chunk_strong_pause_ms,
+            long_pause_ms: args.chunk_long_pause_ms,
+            distance_penalty_ms: args.chunk_distance_penalty_ms,
+        },
         ..RecognitionConfig::default()
     };
     let mut decoder = WhisperDecoder::load(&args.model, &config)?;
@@ -138,5 +163,12 @@ mod tests {
         assert_eq!(args.left_context_samples, 48_000);
         assert_eq!(args.right_context_samples, 48_000);
         assert_eq!(args.top_candidates, 5);
+        assert_eq!(args.chunk_minimum_tokens, 8);
+        assert_eq!(args.chunk_target_tokens, 32);
+        assert_eq!(args.chunk_maximum_tokens, 64);
+        assert_eq!(args.chunk_usable_pause_ms, 300);
+        assert_eq!(args.chunk_strong_pause_ms, 800);
+        assert_eq!(args.chunk_long_pause_ms, 2_000);
+        assert_eq!(args.chunk_distance_penalty_ms, 20);
     }
 }

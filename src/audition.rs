@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::chunking::SampleRange;
-use crate::recognition::RecognitionRun;
+use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditionCommand {
@@ -185,7 +185,7 @@ pub fn run_recognition_session(
     player: &mut impl AudioPlayer,
 ) -> io::Result<()> {
     render_recognition_chunks(run, source, output)?;
-    if run.segments.is_empty() {
+    if run.chunks.is_empty() {
         return Ok(());
     }
     render_help(output)?;
@@ -198,16 +198,16 @@ pub fn run_recognition_session(
         }
         match parse_command(&line) {
             Ok(AuditionCommand::Play(number)) => {
-                let Some(segment) = run.segments.get(number - 1) else {
+                let Some(chunk) = run.chunks.get(number - 1) else {
                     writeln!(
                         errors,
                         "invalid chunk number {number}; expected 1..={}",
-                        run.segments.len()
+                        run.chunks.len()
                     )?;
                     continue;
                 };
                 if let Err(error) =
-                    player.play(source, run.source.sample_rate_hz, segment.audio_range)
+                    player.play(source, run.source.sample_rate_hz, chunk.audio_range)
                 {
                     writeln!(errors, "playback failed for chunk {number}: {error}")?;
                 }
@@ -228,26 +228,48 @@ pub fn render_recognition_chunks(
 ) -> io::Result<()> {
     writeln!(
         output,
-        "Decoded {} chunks from {}",
-        run.segments.len(),
+        "Built {} chunks from {}",
+        run.chunks.len(),
         source.display()
     )?;
-    if run.segments.is_empty() {
+    if run.chunks.is_empty() {
         return Ok(());
     }
     writeln!(output)?;
-    for (index, segment) in run.segments.iter().enumerate() {
+    for (index, chunk) in run.chunks.iter().enumerate() {
         writeln!(
             output,
-            "{:>3}  {} – {}  {:>9}  whisper timestamp",
+            "{:>3}  {} – {}  {:>9}  {:>3} tokens  {}",
             index + 1,
-            Timestamp::new(segment.audio_range.start_sample, run.source.sample_rate_hz),
-            Timestamp::new(segment.audio_range.end_sample, run.source.sample_rate_hz),
-            Duration::new(segment.audio_range.len(), run.source.sample_rate_hz),
+            Timestamp::new(chunk.audio_range.start_sample, run.source.sample_rate_hz),
+            Timestamp::new(chunk.audio_range.end_sample, run.source.sample_rate_hz),
+            Duration::new(chunk.audio_range.len(), run.source.sample_rate_hz),
+            chunk.token_count,
+            chunk_boundary_label(run, index),
         )?;
-        writeln!(output, "     {}", segment.text.trim())?;
+        writeln!(output, "     {}", chunk.text)?;
     }
     Ok(())
+}
+
+fn chunk_boundary_label(run: &RecognitionRun, index: usize) -> String {
+    let chunk = &run.chunks[index];
+    let reason = match chunk.boundary.reason {
+        ChunkBoundaryReason::LongPause => "long pause",
+        ChunkBoundaryReason::StrongPause => "strong pause",
+        ChunkBoundaryReason::ScoredPause => "scored pause",
+        ChunkBoundaryReason::MaximumTokens => "maximum tokens",
+        ChunkBoundaryReason::SourceEnd => "source end",
+    };
+    chunk.boundary.pause_samples.map_or_else(
+        || reason.to_owned(),
+        |samples| {
+            format!(
+                "{reason} ({})",
+                Duration::new(samples, run.source.sample_rate_hz)
+            )
+        },
+    )
 }
 fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output)?;

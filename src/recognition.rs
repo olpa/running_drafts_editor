@@ -23,6 +23,7 @@ pub struct RecognitionConfig {
     pub language: String,
     pub threads: usize,
     pub top_candidates: usize,
+    pub post_chunking: PostChunkConfig,
 }
 
 impl Default for RecognitionConfig {
@@ -35,6 +36,32 @@ impl Default for RecognitionConfig {
             language: "auto".into(),
             threads: 4,
             top_candidates: 5,
+            post_chunking: PostChunkConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostChunkConfig {
+    pub minimum_tokens: usize,
+    pub target_tokens: usize,
+    pub maximum_tokens: usize,
+    pub usable_pause_ms: u64,
+    pub strong_pause_ms: u64,
+    pub long_pause_ms: u64,
+    pub distance_penalty_ms: u64,
+}
+
+impl Default for PostChunkConfig {
+    fn default() -> Self {
+        Self {
+            minimum_tokens: 8,
+            target_tokens: 32,
+            maximum_tokens: 64,
+            usable_pause_ms: 300,
+            strong_pause_ms: 800,
+            long_pause_ms: 2_000,
+            distance_penalty_ms: 20,
         }
     }
 }
@@ -90,6 +117,34 @@ pub struct DecodedSegment {
     pub tokens: Vec<RecognitionToken>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChunkBoundaryReason {
+    LongPause,
+    StrongPause,
+    ScoredPause,
+    MaximumTokens,
+    SourceEnd,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkBoundary {
+    pub reason: ChunkBoundaryReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause_samples: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecognitionChunk {
+    pub id: String,
+    pub ordinal: u32,
+    pub segment_ids: Vec<String>,
+    pub audio_range: SampleRange,
+    pub text: String,
+    pub token_count: usize,
+    pub boundary: ChunkBoundary,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProcessingWindow {
     pub ordinal: u32,
@@ -114,6 +169,7 @@ pub struct RecognitionRun {
     pub status: RecognitionStatus,
     pub windows: Vec<ProcessingWindow>,
     pub segments: Vec<DecodedSegment>,
+    pub chunks: Vec<RecognitionChunk>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -241,7 +297,8 @@ pub fn recognize<D: WindowDecoder>(
         RecognitionStatus::Partial
     };
     let recognizer = decoder.identity();
-    let id = run_id(&source, &recognizer, &config, &windows, &accepted);
+    let chunks = build_post_chunks(&accepted, source.sample_rate_hz, &config.post_chunking);
+    let id = run_id(&source, &recognizer, &config, &windows, &accepted, &chunks);
     Ok(RecognitionRun {
         schema: RECOGNITION_RUN_SCHEMA.into(),
         id,
@@ -252,6 +309,7 @@ pub fn recognize<D: WindowDecoder>(
         status,
         windows,
         segments: accepted,
+        chunks,
     })
 }
 
@@ -284,7 +342,176 @@ fn validate_config(
             "left context + target core + right context exceeds maximum window".into(),
         ));
     }
+    let post = &config.post_chunking;
+    if post.minimum_tokens == 0
+        || post.minimum_tokens > post.target_tokens
+        || post.target_tokens > post.maximum_tokens
+    {
+        return Err(RecognitionError::InvalidConfiguration(
+            "post-chunk token limits must be positive and ordered".into(),
+        ));
+    }
+    if post.usable_pause_ms > post.strong_pause_ms || post.strong_pause_ms > post.long_pause_ms {
+        return Err(RecognitionError::InvalidConfiguration(
+            "post-chunk pause limits must be ordered".into(),
+        ));
+    }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PauseCandidate {
+    end: usize,
+    token_count: usize,
+    pause_samples: u64,
+    pause_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ChunkChoice {
+    end: usize,
+    reason: ChunkBoundaryReason,
+    pause_samples: Option<u64>,
+}
+
+fn build_post_chunks(
+    segments: &[DecodedSegment],
+    sample_rate_hz: u32,
+    config: &PostChunkConfig,
+) -> Vec<RecognitionChunk> {
+    let mut chunks = Vec::new();
+    let mut start = 0_usize;
+
+    while start < segments.len() {
+        let mut token_count = 0_usize;
+        let mut usable = Vec::new();
+        let mut boundaries = Vec::new();
+        let mut choice = None;
+
+        for end in (start + 1)..=segments.len() {
+            token_count = token_count.saturating_add(normal_token_count(&segments[end - 1]));
+            let pause_samples = pause_after(segments, end);
+            let pause_ms = pause_samples
+                .map(|samples| samples.saturating_mul(1_000) / u64::from(sample_rate_hz));
+            boundaries.push((end, token_count, pause_samples));
+
+            if pause_ms.is_some_and(|pause| pause >= config.long_pause_ms) {
+                choice = Some(ChunkChoice {
+                    end,
+                    reason: ChunkBoundaryReason::LongPause,
+                    pause_samples,
+                });
+                break;
+            }
+            if token_count >= config.minimum_tokens
+                && pause_ms.is_some_and(|pause| pause >= config.strong_pause_ms)
+            {
+                choice = Some(ChunkChoice {
+                    end,
+                    reason: ChunkBoundaryReason::StrongPause,
+                    pause_samples,
+                });
+                break;
+            }
+            if token_count >= config.minimum_tokens
+                && pause_ms.is_some_and(|pause| pause >= config.usable_pause_ms)
+            {
+                usable.push(PauseCandidate {
+                    end,
+                    token_count,
+                    pause_samples: pause_samples.unwrap_or(0),
+                    pause_ms: pause_ms.unwrap_or(0),
+                });
+            }
+            if token_count >= config.target_tokens && !usable.is_empty() {
+                let candidate = best_pause(&usable, config);
+                choice = Some(ChunkChoice {
+                    end: candidate.end,
+                    reason: ChunkBoundaryReason::ScoredPause,
+                    pause_samples: Some(candidate.pause_samples),
+                });
+                break;
+            }
+            if token_count >= config.maximum_tokens {
+                let end = boundaries
+                    .iter()
+                    .filter(|(_, count, _)| *count <= config.maximum_tokens)
+                    .min_by_key(|(_, count, _)| count.abs_diff(config.target_tokens))
+                    .map_or(end, |(boundary, _, _)| *boundary);
+                choice = Some(ChunkChoice {
+                    end,
+                    reason: ChunkBoundaryReason::MaximumTokens,
+                    pause_samples: pause_after(segments, end),
+                });
+                break;
+            }
+            if end == segments.len() {
+                choice = Some(ChunkChoice {
+                    end,
+                    reason: ChunkBoundaryReason::SourceEnd,
+                    pause_samples: None,
+                });
+                break;
+            }
+        }
+
+        let choice = choice.expect("a non-empty segment suffix always produces a chunk");
+        let selected = &segments[start..choice.end];
+        let ordinal = u32::try_from(chunks.len() + 1).unwrap_or(u32::MAX);
+        chunks.push(RecognitionChunk {
+            id: format!("recognition-chunk-{ordinal}"),
+            ordinal,
+            segment_ids: selected.iter().map(|segment| segment.id.clone()).collect(),
+            audio_range: SampleRange {
+                start_sample: selected[0].audio_range.start_sample,
+                end_sample: selected[selected.len() - 1].audio_range.end_sample,
+            },
+            text: selected
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<String>()
+                .trim()
+                .to_owned(),
+            token_count: selected.iter().map(normal_token_count).sum(),
+            boundary: ChunkBoundary {
+                reason: choice.reason,
+                pause_samples: choice.pause_samples,
+            },
+        });
+        start = choice.end;
+    }
+
+    chunks
+}
+
+fn normal_token_count(segment: &DecodedSegment) -> usize {
+    segment
+        .tokens
+        .iter()
+        .filter(|token| !token.is_special)
+        .count()
+}
+
+fn pause_after(segments: &[DecodedSegment], end: usize) -> Option<u64> {
+    (end < segments.len()).then(|| {
+        segments[end]
+            .audio_range
+            .start_sample
+            .saturating_sub(segments[end - 1].audio_range.end_sample)
+    })
+}
+
+fn best_pause(candidates: &[PauseCandidate], config: &PostChunkConfig) -> PauseCandidate {
+    *candidates
+        .iter()
+        .max_by_key(|candidate| {
+            let pause = i128::from(candidate.pause_ms);
+            let distance = i128::try_from(candidate.token_count.abs_diff(config.target_tokens))
+                .unwrap_or(i128::MAX);
+            let penalty = i128::from(config.distance_penalty_ms).saturating_mul(distance);
+            (pause.saturating_sub(penalty), candidate.end)
+        })
+        .expect("best_pause requires at least one candidate")
 }
 
 fn normalize_segments(
@@ -377,8 +604,9 @@ fn run_id(
     config: &RecognitionConfig,
     windows: &[ProcessingWindow],
     segments: &[DecodedSegment],
+    chunks: &[RecognitionChunk],
 ) -> String {
-    let encoded = serde_json::to_vec(&(source, recognizer, config, windows, segments))
+    let encoded = serde_json::to_vec(&(source, recognizer, config, windows, segments, chunks))
         .expect("recognition identity values are serializable");
     let digest = Sha256::digest(encoded);
     format!("recognition-{}", hex::encode(&digest[..16]))

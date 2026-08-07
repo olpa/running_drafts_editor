@@ -8,8 +8,8 @@ use running_drafts_editor::{
     audition::{run_recognition_session, AudioPlayer, PlaybackError},
     chunking::{SampleRange, SourceFacts},
     recognition::{
-        recognize, AdvanceReason, RecognitionConfig, RecognitionStatus, RecognitionToken,
-        RecognizerIdentity, WindowDecoder, WindowSegment,
+        recognize, AdvanceReason, ChunkBoundaryReason, PostChunkConfig, RecognitionConfig,
+        RecognitionStatus, RecognitionToken, RecognizerIdentity, WindowDecoder, WindowSegment,
     },
 };
 
@@ -86,6 +86,37 @@ fn source(samples: u64) -> SourceFacts {
     }
 }
 
+fn token_ids(count: usize, first: i32) -> Vec<i32> {
+    (0..count)
+        .map(|offset| first + i32::try_from(offset).unwrap())
+        .collect()
+}
+
+fn recognize_post_chunks(
+    segments: Vec<WindowSegment>,
+    total: u64,
+    post_chunking: PostChunkConfig,
+) -> running_drafts_editor::recognition::RecognitionRun {
+    let mut decoder = FakeDecoder {
+        results: VecDeque::from([Ok(segments)]),
+        ..FakeDecoder::default()
+    };
+    recognize(
+        source(total),
+        &vec![0.0; usize::try_from(total).unwrap()],
+        RecognitionConfig {
+            max_window_samples: total,
+            target_core_samples: total,
+            left_context_samples: 0,
+            right_context_samples: 0,
+            post_chunking,
+            ..small_config()
+        },
+        &mut decoder,
+    )
+    .unwrap()
+}
+
 fn small_config() -> RecognitionConfig {
     RecognitionConfig {
         max_window_samples: 30,
@@ -95,6 +126,7 @@ fn small_config() -> RecognitionConfig {
         language: "de".into(),
         threads: 1,
         top_candidates: 2,
+        post_chunking: PostChunkConfig::default(),
     }
 }
 
@@ -305,6 +337,97 @@ fn decode_failures_still_create_complete_bounded_core_coverage() {
     }));
 }
 
+#[test]
+fn long_pause_splits_without_minimum_tokens_and_strong_pause_respects_minimum() {
+    let one = token_ids(1, 10);
+    let four_a = token_ids(4, 20);
+    let four_b = token_ids(4, 30);
+    let run = recognize_post_chunks(
+        vec![
+            segment_with_tokens(0, 16_000, "one", &one),
+            segment_with_tokens(48_000, 64_000, "four-a", &four_a),
+            segment_with_tokens(76_800, 92_800, "four-b", &four_b),
+            segment_with_tokens(105_600, 121_600, "tail", &one),
+        ],
+        121_600,
+        PostChunkConfig::default(),
+    );
+
+    assert_eq!(run.chunks.len(), 3);
+    assert_eq!(run.chunks[0].token_count, 1);
+    assert_eq!(
+        run.chunks[0].boundary.reason,
+        ChunkBoundaryReason::LongPause
+    );
+    assert_eq!(run.chunks[1].token_count, 8);
+    assert_eq!(
+        run.chunks[1].boundary.reason,
+        ChunkBoundaryReason::StrongPause
+    );
+    assert_eq!(
+        run.chunks[2].boundary.reason,
+        ChunkBoundaryReason::SourceEnd
+    );
+}
+
+#[test]
+fn usable_pauses_are_scored_near_target_and_maximum_uses_whole_segment_boundary() {
+    let twenty = token_ids(20, 100);
+    let ten = token_ids(10, 200);
+    let two = token_ids(2, 300);
+    let run = recognize_post_chunks(
+        vec![
+            segment_with_tokens(0, 16_000, "a", &twenty),
+            segment_with_tokens(24_000, 40_000, "b", &ten),
+            segment_with_tokens(46_400, 62_400, "c", &two),
+            segment_with_tokens(62_400, 78_400, "d", &two),
+        ],
+        78_400,
+        PostChunkConfig::default(),
+    );
+
+    assert_eq!(run.chunks[0].segment_ids.len(), 2);
+    assert_eq!(run.chunks[0].token_count, 30);
+    assert_eq!(
+        run.chunks[0].boundary.reason,
+        ChunkBoundaryReason::ScoredPause
+    );
+
+    let twenty_a = token_ids(20, 400);
+    let twenty_b = token_ids(20, 500);
+    let twenty_c = token_ids(20, 600);
+    let twenty_d = token_ids(20, 700);
+    let run = recognize_post_chunks(
+        vec![
+            segment_with_tokens(0, 16_000, "a", &twenty_a),
+            segment_with_tokens(16_000, 32_000, "b", &twenty_b),
+            segment_with_tokens(32_000, 48_000, "c", &twenty_c),
+            segment_with_tokens(48_000, 64_000, "d", &twenty_d),
+        ],
+        64_000,
+        PostChunkConfig::default(),
+    );
+
+    assert_eq!(run.chunks[0].token_count, 40);
+    assert_eq!(
+        run.chunks[0].boundary.reason,
+        ChunkBoundaryReason::MaximumTokens
+    );
+    assert_eq!(run.chunks[0].segment_ids.len(), 2);
+}
+
+#[test]
+fn post_chunk_settings_must_be_ordered() {
+    let mut config = small_config();
+    config.post_chunking.minimum_tokens = 33;
+    config.post_chunking.target_tokens = 32;
+    let mut decoder = FakeDecoder::default();
+
+    let error = recognize(source(1), &[0.0], config, &mut decoder).unwrap_err();
+
+    assert!(error.to_string().contains("token limits"));
+}
+
 #[derive(Default)]
 struct FakePlayer {
     calls: Vec<(PathBuf, u32, SampleRange)>,
@@ -358,8 +481,8 @@ fn decoded_audition_shows_text_and_replays_exact_timestamp_range() {
     .unwrap();
 
     let output = String::from_utf8(output).unwrap();
-    assert!(output.contains("Decoded 1 chunks from audio.wav"));
-    assert!(output.contains("whisper timestamp"));
+    assert!(output.contains("Built 1 chunks from audio.wav"));
+    assert!(output.contains("source end"));
     assert!(output.contains("decoded words"));
     assert_eq!(
         player.calls,

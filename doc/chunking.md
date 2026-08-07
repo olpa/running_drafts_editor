@@ -46,8 +46,9 @@ audio.
 accepted segments, prompts, boundaries, and failures produced by one execution.
 
 **Chunk** is the user-facing replay unit listed by `chunk audition`. In the
-current implementation each listed chunk corresponds to one accepted segment.
-It is distinct from a processing window and from a future editable paragraph.
+current implementation it groups one or more whole accepted segments according
+to pause length and token count. It is distinct from a processing window and
+from a future editable paragraph.
 
 **Fragment** has no precise meaning in the current data model. Use it only
 informally for an unspecified piece of audio or text; use window, core, segment,
@@ -119,15 +120,59 @@ whether it is special, and alternative token candidates. The default limit is
 values to absolute mono 16 kHz sample positions before storing them. Special
 tokens remain in this evidence even though they are removed from prompts.
 
-All segment hypotheses from every submitted window are kept. The initial
-accepted segments form the list shown by `chunk audition`, but they do not
-replace or delete the other hypotheses. If one window fails, its error is
-recorded and recognition continues with the next core. A run is marked as
-successful, partial, or failed according to its window results.
+All segment hypotheses from every submitted window are kept. Accepted segments
+are the input to post-recognition chunking, but they do not replace or delete
+the other hypotheses. If one window fails, its error is recorded and
+recognition continues with the next core. A run is marked as successful,
+partial, or failed according to its window results.
 
 Each recognition run is immutable and has an identity based on the source,
 recognizer, model, settings, windows, and accepted segments. Running recognition
 again creates another result instead of changing the old evidence.
+
+## Post-recognition chunking
+
+Recognition windows are technical units. After recognition, the tool groups
+accepted Whisper segments into larger chunks for reading and replay. It keeps
+each Whisper segment whole, so it does not cut inside a word or invent a more
+precise audio boundary.
+
+The initial settings are:
+
+- minimum size: 8 normal text tokens;
+- target size: 32 normal text tokens;
+- maximum size: 64 normal text tokens;
+- usable pause: 300 ms;
+- strong pause: 800 ms;
+- long pause: 2,000 ms.
+
+Only normal text tokens count toward size. Timestamp and control tokens remain
+recognition evidence but do not affect the count.
+
+A pause is the gap between the end of one accepted Whisper segment and the
+start of the next. Overlapping segments have a pause of zero. The rules are
+applied from left to right:
+
+1. A long pause always ends the current chunk, even when it is short.
+2. A strong pause ends a chunk that has at least the minimum token count.
+3. Usable pauses are candidates for a boundary near the target token count.
+4. At the maximum token count, the best earlier pause is used. If there is no
+   pause candidate, the tool uses the nearest whole-segment boundary.
+5. The last accepted segment ends the final chunk.
+
+When several usable pauses are candidates, the tool scores each one as:
+
+```text
+pause milliseconds - 20 × distance from the 32-token target
+```
+
+The higher score wins. A long-pause boundary must not be removed later merely
+to make a short chunk larger.
+
+Each chunk stores its source segment IDs, text, audio range, normal text-token
+count, boundary reason, and pause length when available. Boundary reasons are
+`long_pause`, `strong_pause`, `scored_pause`, `maximum_tokens`, and
+`source_end`.
 
 ## Earlier experiment
 

@@ -55,6 +55,10 @@ large design.
   boundary, or the target core end when that area has no usable timestamp.
 - Every window hypothesis is retained in the immutable run; midpoint ownership
   provides only minimal overlap deduplication pending full reconciliation.
+- After recognition, accepted Whisper segments are grouped whole into replay
+  chunks. Defaults are 8/32/64 normal text tokens and 300/800/2,000 ms usable,
+  strong, and unconditional long pauses; stored boundary reasons remain
+  inspectable.
 - Whisper Rust and C++ sources are pinned and vendored under
   `vendor/whisper-rs`; `RDE-VENDOR.md` records their exact provenance. The
   backend builds statically without project-specific build variables or a
