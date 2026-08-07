@@ -8,14 +8,14 @@ use running_drafts_editor::{
     audition::{run_recognition_session, AudioPlayer, PlaybackError},
     chunking::{SampleRange, SourceFacts},
     recognition::{
-        recognize, AdvanceReason, RecognitionConfig, RecognitionStatus, RecognizerIdentity,
-        WindowDecoder, WindowSegment,
+        recognize, AdvanceReason, RecognitionConfig, RecognitionStatus, RecognitionToken,
+        RecognizerIdentity, WindowDecoder, WindowSegment,
     },
 };
 
 #[derive(Default)]
 struct FakeDecoder {
-    calls: Vec<(usize, String)>,
+    calls: Vec<(usize, Vec<i32>)>,
     results: VecDeque<Result<Vec<WindowSegment>, String>>,
 }
 
@@ -28,13 +28,34 @@ impl WindowDecoder for FakeDecoder {
         }
     }
 
-    fn decode(&mut self, audio: &[f32], prompt: &str) -> Result<Vec<WindowSegment>, String> {
-        self.calls.push((audio.len(), prompt.into()));
+    fn decode(
+        &mut self,
+        audio: &[f32],
+        prompt_token_ids: &[i32],
+    ) -> Result<Vec<WindowSegment>, String> {
+        self.calls.push((audio.len(), prompt_token_ids.to_vec()));
         self.results.pop_front().unwrap_or_else(|| Ok(Vec::new()))
     }
 }
 
 fn segment(start: u64, end: u64, text: &str) -> WindowSegment {
+    segment_with_tokens(start, end, text, &[])
+}
+
+fn segment_with_tokens(start: u64, end: u64, text: &str, token_ids: &[i32]) -> WindowSegment {
+    let tokens = token_ids
+        .iter()
+        .map(|token_id| (*token_id, false))
+        .collect::<Vec<_>>();
+    segment_with_token_kinds(start, end, text, &tokens)
+}
+
+fn segment_with_token_kinds(
+    start: u64,
+    end: u64,
+    text: &str,
+    tokens: &[(i32, bool)],
+) -> WindowSegment {
     WindowSegment {
         audio_range: SampleRange {
             start_sample: start,
@@ -42,7 +63,17 @@ fn segment(start: u64, end: u64, text: &str) -> WindowSegment {
         },
         text: text.into(),
         no_speech_probability: 0.1,
-        tokens: Vec::new(),
+        tokens: tokens
+            .iter()
+            .map(|(token_id, is_special)| RecognitionToken {
+                token_id: *token_id,
+                text: format!("token-{token_id}"),
+                probability: 0.9,
+                is_special: *is_special,
+                audio_range: None,
+                alternatives: Vec::new(),
+            })
+            .collect(),
     }
 }
 
@@ -60,7 +91,6 @@ fn small_config() -> RecognitionConfig {
         max_window_samples: 30,
         target_core_samples: 24,
         left_context_samples: 3,
-        max_prompt_chars: 3,
         right_context_samples: 3,
         language: "de".into(),
         threads: 1,
@@ -75,12 +105,28 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
             Ok(vec![
                 segment(0, 10, "A"),
                 segment(10, 23, "B"),
-                segment(23, 27, "tail"),
+                segment_with_token_kinds(
+                    23,
+                    27,
+                    "tail",
+                    &[(50_364, true), (30, false), (31, false), (50_464, true)],
+                ),
             ]),
             Ok(vec![
                 segment(0, 4, "old-B"),
                 segment(3, 20, "C"),
-                segment(20, 29, "D"),
+                segment_with_token_kinds(
+                    20,
+                    29,
+                    "D",
+                    &[
+                        (50_364, true),
+                        (40, false),
+                        (41, false),
+                        (42, false),
+                        (50_464, true),
+                    ],
+                ),
             ]),
             Ok(vec![segment(0, 3, "old-D"), segment(3, 24, "E")]),
         ]),
@@ -92,7 +138,7 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
     assert_eq!(run.status, RecognitionStatus::Succeeded);
     assert_eq!(
         decoder.calls,
-        vec![(27, String::new()), (30, "ail".into()), (20, "lCD".into())]
+        vec![(27, vec![]), (30, vec![30, 31]), (20, vec![40, 41, 42])]
     );
     assert_eq!(
         run.windows
@@ -151,6 +197,21 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
             .map(|segment| segment.text.as_str())
             .collect::<Vec<_>>(),
         vec!["A", "B", "tail", "C", "D", "E"]
+    );
+    assert_eq!(run.windows[0].prompt_token_ids, Vec::<i32>::new());
+    assert_eq!(run.windows[1].prompt_token_ids, vec![30, 31]);
+    assert_eq!(run.windows[2].prompt_token_ids, vec![40, 41, 42]);
+    let tail = run
+        .segments
+        .iter()
+        .find(|segment| segment.text == "tail")
+        .unwrap();
+    assert_eq!(
+        tail.tokens
+            .iter()
+            .map(|token| (token.token_id, token.is_special))
+            .collect::<Vec<_>>(),
+        vec![(50_364, true), (30, false), (31, false), (50_464, true)]
     );
     assert!(run
         .windows

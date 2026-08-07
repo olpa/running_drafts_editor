@@ -22,7 +22,6 @@ pub struct RecognitionConfig {
     pub right_context_samples: u64,
     pub language: String,
     pub threads: usize,
-    pub max_prompt_chars: usize,
     pub top_candidates: usize,
 }
 
@@ -36,7 +35,6 @@ impl Default for RecognitionConfig {
             language: "auto".into(),
             threads: 4,
             top_candidates: 5,
-            max_prompt_chars: 1_000,
         }
     }
 }
@@ -77,6 +75,7 @@ pub struct RecognitionToken {
     pub token_id: i32,
     pub text: String,
     pub probability: f32,
+    pub is_special: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_range: Option<SampleRange>,
     pub alternatives: Vec<TokenAlternative>,
@@ -96,7 +95,7 @@ pub struct ProcessingWindow {
     pub ordinal: u32,
     pub submitted: SampleRange,
     pub core: SampleRange,
-    pub prompt: String,
+    pub prompt_token_ids: Vec<i32>,
     pub advance_reason: AdvanceReason,
     pub hypotheses: Vec<DecodedSegment>,
     pub accepted_segment_ids: Vec<String>,
@@ -127,7 +126,11 @@ pub struct WindowSegment {
 
 pub trait WindowDecoder {
     fn identity(&self) -> RecognizerIdentity;
-    fn decode(&mut self, audio: &[f32], prompt: &str) -> Result<Vec<WindowSegment>, String>;
+    fn decode(
+        &mut self,
+        audio: &[f32],
+        prompt_token_ids: &[i32],
+    ) -> Result<Vec<WindowSegment>, String>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -153,7 +156,7 @@ pub fn recognize<D: WindowDecoder>(
     let mut cursor = 0_u64;
     let mut windows = Vec::new();
     let mut accepted = Vec::new();
-    let mut prompt = String::new();
+    let mut prompt_token_ids = Vec::new();
     let mut failures = 0_usize;
 
     while cursor < total {
@@ -169,9 +172,9 @@ pub fn recognize<D: WindowDecoder>(
         let start = usize::try_from(submitted_start).map_err(|_| RecognitionError::AudioTooLong)?;
         let end = usize::try_from(submitted_end).map_err(|_| RecognitionError::AudioTooLong)?;
         let ordinal = u32::try_from(windows.len() + 1).unwrap_or(u32::MAX);
-        let window_prompt = prompt.clone();
+        let window_prompt_token_ids = prompt_token_ids.clone();
 
-        let decoded = decoder.decode(&samples[start..end], &window_prompt);
+        let decoded = decoder.decode(&samples[start..end], &window_prompt_token_ids);
         let (hypotheses, boundary, advance_reason, error) = match decoded {
             Ok(relative) => {
                 let hypotheses = normalize_segments(relative, submitted, ordinal);
@@ -191,6 +194,7 @@ pub fn recognize<D: WindowDecoder>(
         };
 
         let mut accepted_ids = Vec::new();
+        let mut next_prompt_token_ids = None;
         for segment in &hypotheses {
             let midpoint = segment.audio_range.start_sample + segment.audio_range.len() / 2;
             if midpoint >= cursor
@@ -198,12 +202,21 @@ pub fn recognize<D: WindowDecoder>(
                 && !segment.audio_range.is_empty()
             {
                 accepted_ids.push(segment.id.clone());
+                next_prompt_token_ids = Some(
+                    segment
+                        .tokens
+                        .iter()
+                        .filter(|token| !token.is_special)
+                        .map(|token| token.token_id)
+                        .collect(),
+                );
                 accepted.push(segment.clone());
-                prompt.push_str(&segment.text);
             }
         }
+        if let Some(next) = next_prompt_token_ids {
+            prompt_token_ids = next;
+        }
 
-        prompt = trailing_chars(&prompt, config.max_prompt_chars);
         windows.push(ProcessingWindow {
             ordinal,
             submitted,
@@ -211,7 +224,7 @@ pub fn recognize<D: WindowDecoder>(
                 start_sample: cursor,
                 end_sample: boundary,
             },
-            prompt: window_prompt,
+            prompt_token_ids: window_prompt_token_ids,
             advance_reason,
             hypotheses,
             accepted_segment_ids: accepted_ids,
@@ -257,10 +270,7 @@ fn validate_config(
             "source facts do not match decoded samples".into(),
         ));
     }
-    if config.max_window_samples == 0
-        || config.max_prompt_chars == 0
-        || config.target_core_samples == 0
-    {
+    if config.max_window_samples == 0 || config.target_core_samples == 0 {
         return Err(RecognitionError::InvalidConfiguration(
             "window and target core must be positive".into(),
         ));
@@ -361,15 +371,6 @@ fn target_boundary(cursor: u64, total: u64, config: &RecognitionConfig) -> u64 {
     cursor.saturating_add(config.target_core_samples).min(total)
 }
 
-fn trailing_chars(value: &str, maximum: usize) -> String {
-    let start = value
-        .char_indices()
-        .rev()
-        .nth(maximum.saturating_sub(1))
-        .map_or(0, |(index, _)| index);
-    value[start..].to_owned()
-}
-
 fn run_id(
     source: &SourceFacts,
     recognizer: &RecognizerIdentity,
@@ -445,6 +446,7 @@ impl WhisperDecoder {
                     token_id: token.token_id(),
                     text: token.to_string().unwrap_or_default(),
                     probability: token.token_probability(),
+                    is_special: token.token_id() >= self.context.token_eot(),
                     audio_range,
                     alternatives,
                 });
@@ -470,7 +472,11 @@ impl WindowDecoder for WhisperDecoder {
         self.identity.clone()
     }
 
-    fn decode(&mut self, audio: &[f32], prompt: &str) -> Result<Vec<WindowSegment>, String> {
+    fn decode(
+        &mut self,
+        audio: &[f32],
+        prompt_token_ids: &[i32],
+    ) -> Result<Vec<WindowSegment>, String> {
         let mut state = self
             .context
             .create_state()
@@ -491,8 +497,8 @@ impl WindowDecoder for WhisperDecoder {
         params.set_print_special(false);
         params.set_capture_top_candidates(self.top_candidates > 0);
         params.set_n_top_candidates(i32::try_from(self.top_candidates).unwrap_or(i32::MAX));
-        if !prompt.is_empty() {
-            params.set_initial_prompt(prompt);
+        if !prompt_token_ids.is_empty() {
+            params.set_tokens(prompt_token_ids);
         }
         state
             .full(params, audio)

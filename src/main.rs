@@ -47,8 +47,6 @@ struct AuditionArgs {
     right_context_samples: u64,
     #[arg(long, default_value_t = 5)]
     top_candidates: usize,
-    #[arg(long, default_value_t = 1_000)]
-    max_prompt_chars: usize,
     /// ffplay-compatible playback executable.
     #[arg(long, default_value = "ffplay")]
     player: PathBuf,
@@ -88,7 +86,6 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
         language: args.language,
         threads: args.threads,
         top_candidates: args.top_candidates,
-        max_prompt_chars: args.max_prompt_chars,
         ..RecognitionConfig::default()
     };
     let mut decoder = WhisperDecoder::load(&args.model, &config)?;
@@ -141,6 +138,5 @@ mod tests {
         assert_eq!(args.left_context_samples, 48_000);
         assert_eq!(args.right_context_samples, 48_000);
         assert_eq!(args.top_candidates, 5);
-        assert_eq!(args.max_prompt_chars, 1_000);
     }
 }

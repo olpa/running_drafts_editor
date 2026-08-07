@@ -16,8 +16,8 @@ call. It can contain audio before and after the range that this call is expected
 to own, and is never longer than 30 seconds.
 
 **Core** is the non-overlapping source range assigned to one processing window.
-It starts at the cursor and ends at the selected boundary. Consecutive cores cover
-the source without gaps or overlap.
+It starts at the cursor and ends at the selected boundary. Consecutive cores
+cover the source without gaps or overlap.
 
 **Target core** is the preferred core length, currently 24 seconds. It guides
 boundary selection but is not necessarily the final core length.
@@ -37,8 +37,10 @@ they are not accepted.
 implementation normally chooses a Whisper segment end timestamp near the target
 core end.
 
-**Prompt** is the bounded tail of previously accepted text supplied to the next
-Whisper call for linguistic context. It does not change ownership of audio.
+**Prompt** is the sequence of normal text tokens from the previous accepted
+segment, supplied to the next Whisper call for linguistic context. Timestamp
+and other special tokens are excluded. A prompt does not change ownership of
+audio.
 
 **Recognition run** is the immutable record of all windows, hypotheses,
 accepted segments, prompts, boundaries, and failures produced by one execution.
@@ -78,10 +80,54 @@ at or before the chosen boundary are accepted for that chunk. This is the
 initial overlap-deduplication rule; all window hypotheses are still retained as
 recognition evidence.
 
-The accepted text is carried into the next recognition call as context, limited
-to its last 1,000 characters. If recognition fails, the boundary also stays at
-the 24-second target. Normal cores are therefore between 24 and 27 seconds;
-only the final core can be shorter.
+If recognition fails, the boundary also stays at the 24-second target. Normal
+cores are therefore between 24 and 27 seconds; only the final core can be
+shorter.
+
+## Recognition
+
+The tool uses Whisper through the vendored `whisper-rs` and `whisper.cpp`
+sources. The user supplies a Whisper model file. The tool hashes the model and
+stores the hash with the recognition result, so results from different models
+can be distinguished.
+
+Whisper receives mono 16 kHz floating-point audio. Each window described above
+is recognized separately with beam search. The current beam size is 5.
+Recognition keeps the source language and does not translate it. The language
+can be set on the command line or left as `auto`.
+
+Whisper's automatic context between calls is disabled because the tool manages
+the windows. Instead, normal text-token IDs from the last accepted segment are
+passed directly as the prompt for the next window. Timestamp tokens are
+relative to their old window, and control tokens belong to the old recognition
+call, so neither type is copied into the next prompt. The tool does not convert
+the remaining tokens to text and tokenize the text again. Direct reuse
+preserves the exact text-token sequence and helps names, spelling, and sentence
+flow remain consistent across boundaries.
+
+Timestamp output is enabled for both segments and tokens. For every segment,
+the tool stores:
+
+- the decoded text;
+- its audio range;
+- its no-speech probability;
+- its tokens.
+
+For every token, the tool stores its text, probability, optional audio range,
+whether it is special, and alternative token candidates. The default limit is
+5 alternatives. Whisper reports time in centiseconds. The tool converts these
+values to absolute mono 16 kHz sample positions before storing them. Special
+tokens remain in this evidence even though they are removed from prompts.
+
+All segment hypotheses from every submitted window are kept. The initial
+accepted segments form the list shown by `chunk audition`, but they do not
+replace or delete the other hypotheses. If one window fails, its error is
+recorded and recognition continues with the next core. A run is marked as
+successful, partial, or failed according to its window results.
+
+Each recognition run is immutable and has an identity based on the source,
+recognizer, model, settings, windows, and accepted segments. Running recognition
+again creates another result instead of changing the old evidence.
 
 ## Earlier experiment
 
