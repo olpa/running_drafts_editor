@@ -1,9 +1,9 @@
 # Running Drafts Editor
 
 Running Drafts Editor (`rde`) is an experimental line-oriented tool for turning
-existing recordings and imperfect recognition into usable text. The first
-implemented module creates legal, revisioned recognition chunk plans. It does
-not run Whisper or edit transcript text yet.
+existing recordings and imperfect recognition into usable text. It can run
+bounded, overlapping Whisper recognition for decoded-text audition. Transcript
+editing is not implemented yet.
 
 ## Build and test
 
@@ -15,39 +15,37 @@ cargo test --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-Tests use synthetic PCM and do not download a Silero model. The integration
-boundary verifies missing/corrupt model failures without network access.
+Tests use synthetic PCM and do not download speech models. Exact source
+snapshots of the selected `olpa/whisper-rs` fork and its `whisper.cpp` backend
+live under `vendor/whisper-rs`; their provenance is recorded there. Cargo and
+CMake compile whisper.cpp into the executable, so no HandsfreeVC checkout,
+project-specific environment variable, or runtime shared-library path is
+needed. A first native build can take about a minute and requires a C/C++
+compiler, CMake, and libclang for bindgen.
 
-## Experimental chunk-plan command
+## Experimental decoded-audition command
 
-The input must already be canonical mono, 16 kHz, 32-bit float WAV. The caller
-supplies the model; its SHA-256 is derived and checked before loading it.
+The audition command now accepts a Whisper ggml model. It uses explicit
+processing windows no longer than 30 seconds, overlap on both sides of the
+target core, direct text-token context from the previous accepted segment, and
+Whisper timestamps to select advancing boundaries.
 
 ```console
-rde chunk plan \
+rde chunk audition \
   --input recording-f32.wav \
-  --model silero_vad.onnx
+  --model ggml-tiny.bin \
+  --language de
 ```
 
-The CLI defaults to Silero v5, an 80,000-sample boundary search, a
-160,000-sample minimum chunk, a 0.5 speech threshold, 1,600 consecutive
-low-speech samples, and a 480,000-sample recognizer limit. Every value and the
-derived model hash can still be overridden for reproducible experiments. The
-model must exist and be readable before planning starts. JSONL events go to
-stdout and diagnostics to stderr. The stream starts with `plan_started`, emits one
-`detector_evidence` record per frame, and ends with `plan_complete`. Detector
-failures after model preflight
-produce a recorded fixed plan; the command never downloads a model. Audio
-hashing uses a bounded buffer, while validation and Silero inference consume
-512-sample frames without retaining the full decoded recording.
+The listing contains replay chunks built from whole accepted Whisper segments.
+Pause length and normal text-token count choose their boundaries. `3play` or
+`3p` replays the exact listed range. All overlapping window hypotheses remain
+immutable evidence; midpoint ownership is only the initial deterministic
+deduplication rule.
 
 ## Reproducibility and licenses
 
-The adapter follows the Silero VAD V5 ONNX contract from upstream commit
-`76e3dc408eb2a5c655c34e230d2d5459b4439daa`: 512 new samples at 16 kHz,
-64 carried context samples, and recurrent state shaped `[2, 1, 128]`. Callers
-must also provide an exact model-file SHA-256.
-
-Silero VAD code and published models are MIT-licensed. `ort` is MIT/Apache-2.0;
-prebuilt ONNX Runtime artifacts have their own MIT license. This repository
-does not redistribute model files. Review licenses again before packaging.
+The command hashes the caller-supplied Whisper model. This repository does not
+redistribute recognition models. The vendored whisper-rs and whisper.cpp
+license files remain with their source snapshots. Review licenses again before
+packaging.

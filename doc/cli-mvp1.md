@@ -6,12 +6,13 @@ terminal. Waveforms, full-screen terminal UI, publishing, rich annotations,
 multiple speakers, collaboration, and language-server integration are out of
 scope.
 
-## [x] Detect pauses and create recognition chunks
+## [x] Recognize audio and create recognition chunks
 
-Divide long audio into legal recognition ranges of about 30 seconds or less.
-Store boundaries and overlap explicitly.
+Recognize long audio through overlapping ranges of about 30 seconds or less.
+Derive advancing chunk boundaries from recognition timestamps and store the
+boundaries and overlap explicitly.
 
-## Transcribe chunks and preserve recognition runs
+## [x] Transcribe chunks and preserve recognition runs
 
 Store tokens, confidence, alternatives, timing, and failures as immutable run
 output. Retrying creates another run.

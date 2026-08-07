@@ -1,0 +1,6 @@
+# Rust compiler configuration for Android builds
+
+# Support for 16KB page size alignment (required by Play Store for newer Android devices)
+# This ensures the native library works on devices with 16KB memory pages
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

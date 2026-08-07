@@ -36,22 +36,33 @@ large design.
 - Edits may make alignment stale or unavailable; never claim false precision.
 - Missing audio or optional metadata must not prevent reading and editing text.
 - Async or refreshed recognition must not overwrite newer user edits.
-- Canonical audio and recognition-plan positions use mono 16 kHz sample offsets;
-  plan JSON and identities exclude local paths and nondeterministic diagnostics.
-- Detector failure creates a recorded fixed-window plan; it never removes audio
-  or prevents complete legal core coverage.
-- `rde chunk plan` requires only canonical audio and a Silero model; planner,
-  detector, and provisional recognizer values have inspectable CLI defaults.
-- A missing or unreadable CLI model is a preflight error and emits no plan JSON.
-- The chunk-plan CLI hashes with bounded I/O and streams canonical WAV validation
-  and Silero inference in 512-sample frames; it does not retain full decoded PCM.
-- Chunk-plan stdout is JSONL: `plan_started`, streamed `detector_evidence`, then
-  `plan_complete`; diagnostics remain on stderr.
-- `rde chunk audition --input <audio.wav> --model <model.onnx>` is a developer-only
-  dumb-terminal harness: it lists submitted chunk ranges and plays them through
-  a replaceable, ffplay-compatible subprocess selected with `--player`.
-  Its session grammar addresses a chunk with a numeric prefix, such as `3play`
-  or `3p`.
+- Canonical audio and recognition positions use mono 16 kHz sample offsets;
+  recognition identities exclude local paths and nondeterministic diagnostics.
+- Chunk boundaries are derived during Whisper recognition from timestamped
+  decoded segments; there is no separate pre-recognition planner.
+- A missing or unreadable CLI model is a preflight error.
+- `rde chunk audition --input <audio.wav> --model <whisper.bin>` is a
+  developer-only dumb-terminal harness: it runs Whisper, lists accepted decoded
+  segments with text and timestamp-derived sample ranges, and plays them through
+  a replaceable, ffplay-compatible subprocess selected with `--player`. Its
+  session grammar addresses a chunk with a numeric prefix, such as `3play` or `3p`.
+- Whisper recognition uses explicit windows of at most 480,000 samples. The
+  experimental default targets a 384,000-sample core with 48,000 samples of
+  context per side. It reuses normal text-token IDs from the last accepted
+  segment directly as the next prompt, without converting through text;
+  timestamp and other special tokens remain evidence but are not prompt input.
+  It uses the latest segment end in the 48,000-sample right context as the
+  boundary, or the target core end when that area has no usable timestamp.
+- Every window hypothesis is retained in the immutable run; midpoint ownership
+  provides only minimal overlap deduplication pending full reconciliation.
+- After recognition, accepted Whisper segments are grouped whole into replay
+  chunks. Defaults are 8/32/64 normal text tokens and 300/800/2,000 ms usable,
+  strong, and unconditional long pauses; stored boundary reasons remain
+  inspectable.
+- Whisper Rust and C++ sources are pinned and vendored under
+  `vendor/whisper-rs`; `RDE-VENDOR.md` records their exact provenance. The
+  backend builds statically without project-specific build variables or a
+  runtime shared-library path. Whisper model binaries remain external.
 
 ## MVP boundary
 
@@ -70,6 +81,8 @@ annotations, multi-speaker UI, collaboration, LSP, and mobile UX design.
 - Add focused tests for implemented behavior and failure paths.
 - Do not commit editor swap files, recordings, credentials, or generated output.
 - Record unresolved choices rather than silently fixing open product questions.
+- Use clear B2-level English in project text whenever possible. Prefer common
+  words such as “boundary” over less familiar technical metaphors.
 
 ## Keep this context current
 

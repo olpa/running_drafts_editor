@@ -1,331 +1,183 @@
-# Recognition chunking: long-term technical context
+# Recognition chunking: technical context
 
-**Status:** durable project context  
-**Date:** 2026-08-05  
-**Audience:** software developers who do not need prior audio or speech-recognition knowledge
+## Terms
 
-## 1. Why this document exists
+**Source audio** is the complete recording being recognized. It is decoded as
+mono 16 kHz audio.
 
-The project turns existing audio recordings into text. Long recordings cannot
-always be sent to a speech recognizer as one unit. We therefore need to divide
-audio into smaller ranges.
+**Sample** is one audio value. Sample offsets are the exact internal time unit;
+at 16 kHz, 16,000 samples equal one second.
 
-There are two different structures in the product:
+**Cursor** is the first source sample not yet owned by a completed processing
+step. It moves forward after every recognition call.
 
-- **Recognition chunks** are audio ranges sent to the speech recognizer.
-- **Paragraphs** are readable and editable blocks of visible text.
+**Window** or **submitted window** is the audio range sent to Whisper in one
+call. It can contain audio before and after the range that this call is expected
+to own, and is never longer than 30 seconds.
 
-These structures are related, but they are not the same. This document explains
-the long-term design so future work does not join them by accident.
+**Core** is the non-overlapping source range assigned to one processing window.
+It starts at the cursor and ends at the selected boundary. Consecutive cores
+cover the source without gaps or overlap.
 
-## 2. Decisions already made
+**Target core** is the preferred core length, currently 24 seconds. It guides
+boundary selection but is not necessarily the final core length.
 
-The board has selected:
+**Context** is audio submitted outside the intended core so Whisper can decode
+speech near a boundary with surrounding sound. Neighboring windows therefore
+overlap even though their cores do not.
 
-- **Rust** for the implementation language.
-- **Silero VAD** for detecting speech activity.
-- The official Silero Rust example as implementation guidance:
-  <https://github.com/snakers4/silero-vad/tree/master/examples/rust-example>
-- **Whisper** as the speech recognizer.
-- The `backtrack` branch of this Rust binding:
-  <https://github.com/olpa/whisper-rs/tree/backtrack>
-- Whisper-compatible input: mono, 16 kHz, normalized `f32` PCM samples.
+**Segment** is a timestamped piece of decoded text returned by Whisper for one
+window. A segment is a recognition hypothesis, not an editing paragraph.
 
-Every external repository, native library, and model file must be pinned to an
-exact version or commit in production. A branch name is not a reproducible pin.
+**Accepted segment** is a segment selected as the initial text result for a
+core. Other segments from the same window are retained as evidence even when
+they are not accepted.
 
-## 3. Short glossary
+**Boundary** is the source position where one core ends and the next begins. The
+implementation normally chooses a Whisper segment end timestamp near the target
+core end.
 
-### Audio source
+**Prompt** is the sequence of normal text tokens from the previous accepted
+segment, supplied to the next Whisper call for linguistic context. Timestamp
+and other special tokens are excluded. A prompt does not change ownership of
+audio.
 
-The original recording and its stable content identity. The identity should be
-a cryptographic hash of the source bytes or another immutable content key.
+**Recognition run** is the immutable record of all windows, hypotheses,
+accepted segments, prompts, boundaries, and failures produced by one execution.
 
-### Canonical audio
+**Chunk** is the user-facing replay unit listed by `chunk audition`. In the
+current implementation it groups one or more whole accepted segments according
+to pause length and token count. It is distinct from a processing window and
+from a future editable paragraph.
 
-Decoded audio used by the chunking system: one channel, 16,000 samples per
-second, normalized `f32` PCM. Canonical audio gives Silero and Whisper the same
-sample clock.
+**Fragment** has no precise meaning in the current data model. Use it only
+informally for an unspecified piece of audio or text; use window, core, segment,
+or chunk when one of those meanings is intended.
 
-### Sample
+## Recognition-driven chunking
 
-One audio value. At 16 kHz, 16,000 samples represent one second. Samples are the
-canonical time unit. Seconds are only a display format.
+Chunking is performed while Whisper recognizes the audio. There is no separate
+pass that decides all boundaries in advance.
 
-### Voice activity detection (VAD)
+The implementation keeps a cursor at the first unowned sample. For every step
+it submits an overlapping Whisper window containing:
 
-A model that estimates whether an audio frame contains human speech. VAD does
-not recognize words. Silero VAD returns speech probabilities or speech ranges.
+- up to 3 seconds before the cursor;
+- a target core of 24 seconds starting at the cursor;
+- up to 3 seconds after the target core.
 
-### Recognition chunk
+The submitted window is therefore at most Whisper's 30-second input limit.
+Whisper returns decoded segments with timestamps. Their ranges are translated
+from window-relative timestamps to absolute source sample positions.
 
-A range of source samples prepared for one recognition operation. It has a
-stable identity, a core range, an optional submitted range, and boundary
-evidence.
+The last 3 seconds form the boundary search area. The implementation uses the
+latest Whisper segment-end timestamp between 24 and 27 seconds after the
+cursor. Timestamps before the 24-second target are ignored. If the search area
+has no usable timestamp, the boundary stays at the 24-second target. The last
+window always ends at the end of the source.
 
-### Core range
+Only segments whose midpoint is at or after the current cursor and whose end is
+at or before the chosen boundary are accepted for that chunk. This is the
+initial overlap-deduplication rule; all window hypotheses are still retained as
+recognition evidence.
 
-The samples owned by a chunk for coverage purposes. Core ranges must form an
-exact partition of the intended audio: no missing samples and no duplicated
-samples.
+If recognition fails, the boundary also stays at the 24-second target. Normal
+cores are therefore between 24 and 27 seconds; only the final core can be
+shorter.
 
-### Submitted range
+## Recognition
 
-The samples actually sent to Whisper. It can be wider than the core range when
-padding or overlap is enabled. Submitted ranges may overlap, but this must be
-explicit.
+The tool uses Whisper through the vendored `whisper-rs` and `whisper.cpp`
+sources. The user supplies a Whisper model file. The tool hashes the model and
+stores the hash with the recognition result, so results from different models
+can be distinguished.
 
-### Recognition plan
+Whisper receives mono 16 kHz floating-point audio. Each window described above
+is recognized separately with beam search. The current beam size is 5.
+Recognition keeps the source language and does not translate it. The language
+can be set on the command line or left as `auto`.
 
-A revisioned ordered list of recognition chunks for one source, recognizer
-contract, detector, and configuration.
+Whisper's automatic context between calls is disabled because the tool manages
+the windows. Instead, normal text-token IDs from the last accepted segment are
+passed directly as the prompt for the next window. Timestamp tokens are
+relative to their old window, and control tokens belong to the old recognition
+call, so neither type is copied into the next prompt. The tool does not convert
+the remaining tokens to text and tokenize the text again. Direct reuse
+preserves the exact text-token sequence and helps names, spelling, and sentence
+flow remain consistent across boundaries.
 
-### Paragraph
+Timestamp output is enabled for both segments and tokens. For every segment,
+the tool stores:
 
-A readable, editable range of authoritative text. Paragraphs may use
-punctuation, meaning, pauses, imported formatting, or user edits.
+- the decoded text;
+- its audio range;
+- its no-speech probability;
+- its tokens.
 
-### Boundary evidence
+For every token, the tool stores its text, probability, optional audio range,
+whether it is special, and alternative token candidates. The default limit is
+5 alternatives. Whisper reports time in centiseconds. The tool converts these
+values to absolute mono 16 kHz sample positions before storing them. Special
+tokens remain in this evidence even though they are removed from prompts.
 
-Information explaining a selected cut, such as a low Silero probability, a
-detected pause, or a hard-limit fallback.
+All segment hypotheses from every submitted window are kept. Accepted segments
+are the input to post-recognition chunking, but they do not replace or delete
+the other hypotheses. If one window fails, its error is recorded and
+recognition continues with the next core. A run is marked as successful,
+partial, or failed according to its window results.
 
-## 4. The main design rule
+Each recognition run is immutable and has an identity based on the source,
+recognizer, model, settings, windows, and accepted segments. Running recognition
+again creates another result instead of changing the old evidence.
 
-Recognition chunks and paragraphs must have independent identities.
+## Post-recognition chunking
 
-A paragraph may contain words from several chunks. One chunk may contribute
-words to several paragraphs. The relationship is many-to-many and is recorded
-through time-aligned words or other provenance links.
+Recognition windows are technical units. After recognition, the tool groups
+accepted Whisper segments into larger chunks for reading and replay. It keeps
+each Whisper segment whole, so it does not cut inside a word or invent a more
+precise audio boundary.
 
-Paragraph editing must not silently change recognition chunks. If the product
-later supports re-chunking after an edit, it must create a new recognition-plan
-revision and keep the old revision available for explanation and comparison.
+The initial settings are:
 
-## 5. Why chunk boundaries matter
+- minimum size: 8 normal text tokens;
+- target size: 32 normal text tokens;
+- maximum size: 64 normal text tokens;
+- usable pause: 300 ms;
+- strong pause: 800 ms;
+- long pause: 2,000 ms.
 
-A hard cut can split a word or phoneme. The recognizer then receives incomplete
-acoustic context and may omit, duplicate, or replace text near the cut.
+Only normal text tokens count toward size. Timestamp and control tokens remain
+recognition evidence but do not affect the count.
 
-A pause is usually a better cut position, but recordings are not simple:
+A pause is the gap between the end of one accepted Whisper segment and the
+start of the next. Overlapping segments have a pause of zero. The rules are
+applied from left to right:
 
-- continuous speech may contain no pause near the maximum length;
-- a breath or hesitation may look like a short pause;
-- quiet speech can look like silence;
-- background noise can hide a real pause;
-- music may be mistaken for speech or non-speech;
-- duration metadata may be missing or inaccurate.
+1. A long pause always ends the current chunk, even when it is short.
+2. A strong pause ends a chunk that has at least the minimum token count.
+3. Usable pauses are candidates for a boundary near the target token count.
+4. At the maximum token count, the best earlier pause is used. If there is no
+   pause candidate, the tool uses the nearest whole-segment boundary.
+5. The last accepted segment ends the final chunk.
 
-The system therefore treats Silero output as useful evidence, not as truth.
-
-## 6. Long-term architecture
-
-The design has separate stages:
-
-1. **Decode and normalize:** convert media into canonical audio.
-2. **Detect:** run Silero and produce speech evidence.
-3. **Plan:** choose legal chunk boundaries using evidence and fallback rules.
-4. **Recognize:** send submitted ranges to Whisper.
-5. **Reconcile:** resolve duplicated or conflicting text if overlap exists.
-6. **Align:** connect recognized words or spans to source time.
-7. **Form paragraphs:** create readable text units.
-
-Stages may share types, but they must not be merged into one hidden operation.
-Each stage should preserve enough input identity, configuration, and output to
-explain its result.
-
-## 7. Recognizer contract
-
-The selected Rust binding passes a slice of mono 16 kHz `f32` samples to
-Whisper. Whisper uses a 30-second acoustic window. For the first implementation,
-one submitted chunk must contain no more than:
-
-```text
-30 seconds × 16,000 samples/second = 480,000 samples
-```
-
-This limit includes any left or right padding. If the selected `backtrack`
-branch later exposes a different safe contract, that change must be documented,
-tested, and revisioned rather than silently changing the planner.
-
-Whisper result timestamps use a coarser unit than the source sample clock. They
-must not replace the sample-accurate plan boundaries.
-
-## 8. Detector contract
-
-Silero runs over canonical audio and produces ordered frame evidence. The
-implementation may store every probability for experiments, but a production
-plan may store a compact summary plus the hash/location of the complete evidence.
-
-Detector output must include:
-
-- detector and model version;
-- model-file hash;
-- sample rate and frame size;
-- configuration values;
-- deterministic runtime information where relevant;
-- speech probability or speech/non-speech ranges;
-- an explicit error if detection fails.
-
-Detector failure is not a reason to produce an illegal or incomplete plan. The
-planner must use fixed legal windows as a fallback.
-
-## 9. Planner behavior
-
-The planner starts at the first uncovered core sample. It calculates the last
-legal end sample for the next submitted range. It then searches a configured
-area before that limit for a good low-speech position.
-
-Candidate selection should be deterministic. Given the same source, model,
-versions, and configuration, it must select the same samples.
-
-If no candidate is good enough, the planner cuts at the last legal sample and
-records `hard_limit_no_candidate`. If Silero is unavailable or fails, it uses
-the same legal fixed-window behavior and records the detector error.
-
-The final short range must never be dropped. It may be joined to the previous
-range only when the joined submitted range remains legal.
-
-## 10. Coverage and overlap
-
-Core ranges should normally satisfy all of these rules:
+When several usable pauses are candidates, the tool scores each one as:
 
 ```text
-first.start = 0
-last.end = decoded_sample_count
-chunk[i].end = chunk[i + 1].start
-chunk.start < chunk.end
+pause milliseconds - 20 × distance from the 32-token target
 ```
 
-Initial submitted ranges equal core ranges. Initial overlap is zero.
+The higher score wins. A long-pause boundary must not be removed later merely
+to make a short chunk larger.
 
-Future overlap can add context on both sides of a seam. However, it also causes
-Whisper to recognize some speech twice. Text reconciliation is a separate
-problem and must be implemented and tested before non-zero overlap becomes a
-default.
+Each chunk stores its source segment IDs, text, audio range, normal text-token
+count, boundary reason, and pause length when available. Boundary reasons are
+`long_pause`, `strong_pause`, `scored_pause`, `maximum_tokens`, and
+`source_end`.
 
-## 11. Paragraph relationship
+## Earlier experiment
 
-Paragraph evidence is optional and arrives after recognition or alignment. A
-future planner may give a small preference to an aligned paragraph boundary
-inside its already legal search area.
-
-Paragraph evidence must never:
-
-- remove audio from coverage;
-- move a cut outside the legal area;
-- create or determine a chunk identity;
-- force every paragraph to become one chunk;
-- force every chunk seam to become a paragraph;
-- make recognition depend on an existing transcript.
-
-## 12. Reproducibility and identity
-
-A plan identity should depend on canonical content such as:
-
-- source content hash and decoded sample facts;
-- Whisper adapter and pinned implementation commit;
-- Whisper model identity;
-- Silero code/model identity;
-- planner version and full configuration;
-- selected core and submitted ranges.
-
-Creation time and local file path should not make otherwise equal plans unequal.
-Use canonical serialization before hashing.
-
-Chunk identity should depend on the plan identity, ordinal, and sample ranges.
-It must not depend on paragraph number or recognized text.
-
-## 13. Configuration policy
-
-The following values are experimental until measured on the project corpus:
-
-- Silero speech threshold;
-- hysteresis thresholds;
-- minimum speech and non-speech duration;
-- search-window length;
-- minimum chunk length;
-- boundary scoring and tie-breaking;
-- acoustic padding;
-- overlap length;
-- source-specific profiles.
-
-Code may require these values or provide a named experimental profile. It must
-not present untested numbers as settled product policy. All values must appear
-in plan output.
-
-## 14. Expected difficult cases
-
-| Case | Expected result |
-|---|---|
-| Clear pause before limit | Cut at a deterministic low-speech point |
-| Continuous speech | Cut at hard limit and record fallback |
-| Short hesitation | Avoid unnecessary tiny chunks |
-| Long silence | Select one deterministic point; avoid empty requests |
-| Background noise | Use Silero evidence; fall back if no good valley exists |
-| Music | Preserve coverage even when classification is imperfect |
-| Very short source | Emit one exact legal chunk |
-| Exactly 480,000 samples | Emit one exact legal chunk |
-| One sample over limit | Emit at least two complete legal chunks |
-| Short final tail | Preserve it |
-| Detector error | Emit fixed legal plan with recorded error |
-| Edited paragraph | Do not change existing plan |
-
-## 15. Testing strategy
-
-The project needs several test layers:
-
-- Unit tests for sample arithmetic, scoring, and fallback.
-- Property tests for complete coverage, legality, ordering, and termination.
-- Golden tests for stable serialized plans.
-- Silero integration tests with a pinned model and small reviewed fixtures.
-- Whisper seam experiments comparing boundary-local omissions, duplicates, and
-  substitutions.
-- Portability tests for supported desktop/mobile targets.
-- Failure tests for missing models, invalid audio, runtime errors, and corrupt
-  evidence.
-
-The test corpus should include clean pauses, continuous speech, breaths,
-hesitation, short/long silence, noise, music, short/near-limit/long recordings,
-and correct, wrong, or absent paragraph breaks. Fixtures must be generated
-locally or clearly redistributable.
-
-## 16. Dependencies and pinning
-
-The Silero Rust example currently demonstrates ONNX Runtime through the `ort`
-crate and WAV input through `hound`. The Whisper binding wraps `whisper.cpp`.
-These examples are guidance, not stable dependency specifications.
-
-Before release, record and pin:
-
-- Rust toolchain and target triples;
-- `ort` and ONNX Runtime versions;
-- Silero ONNX model SHA-256;
-- `olpa/whisper-rs` exact commit on `backtrack`;
-- its `whisper.cpp` submodule commit;
-- Whisper model name, format, and SHA-256;
-- decoder/resampler implementation and version.
-
-Check licenses for code, native binaries, codecs, and model files separately.
-
-## 17. What this subsystem does not own
-
-The chunk planner does not own:
-
-- speech recognition execution or retry policy;
-- duplicate-text reconciliation;
-- authoritative transcript construction;
-- paragraph editing or formatting;
-- speaker diarization;
-- waveform or full-screen user interfaces;
-- automatic re-planning after text edits.
-
-These features may consume recognition plans, but must not weaken the plan's
-coverage, legality, identity, or reproducibility rules.
-
-## 18. Future decision record
-
-When experiments select thresholds, padding, or overlap, create a dated decision
-record. It should name the corpus, exact dependency/model pins, compared
-strategies, seam and global recognition results, runtime cost, rejected choices,
-and remaining risks. Do not hide these decisions inside default constants.
+We tried Silero VAD as a separate pre-recognition chunk planner. On representative
+sample data it assigned very low speech probabilities to clearly audible,
+continuously recognized speech and therefore proposed misleading boundaries.
+We removed that implementation and decided to derive chunks simultaneously
+with recognition, using Whisper timestamps and decoded text as the evidence.
