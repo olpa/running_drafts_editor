@@ -16,16 +16,13 @@ cargo test --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-Tests use synthetic PCM and do not download speech models. The pinned
-`olpa/whisper-rs` fork links a prebuilt whisper.cpp 1.8.2 distribution and
-currently requires `HANDSFREEVC_DEV_HOME` at build time. On Linux its shared
-library directory must also be available at runtime, for example:
-
-```console
-HANDSFREEVC_DEV_HOME=/path/to/hfvc_dev \
-LD_LIBRARY_PATH=/path/to/hfvc_dev/whisper.cpp/linux-x86_64 \
-cargo test --all-targets
-```
+Tests use synthetic PCM and do not download speech models. Exact source
+snapshots of the selected `olpa/whisper-rs` fork and its `whisper.cpp` backend
+live under `vendor/whisper-rs`; their provenance is recorded there. Cargo and
+CMake compile whisper.cpp into the executable, so no HandsfreeVC checkout,
+project-specific environment variable, or runtime shared-library path is
+needed. A first native build can take about a minute and requires a C/C++
+compiler, CMake, and libclang for bindgen.
 
 ## Experimental chunk-plan command
 
@@ -54,8 +51,8 @@ hashing uses a bounded buffer, while validation and Silero inference consume
 
 The audition command now accepts a Whisper ggml model. It uses explicit
 processing windows no longer than 30 seconds, overlap on both sides of the
-target core, a bounded tail of accepted text as prompt context, and Whisper timestamps
-to select advancing seams.
+target core, a bounded tail of accepted text as prompt context, and Whisper
+timestamps to select advancing seams.
 
 ```console
 rde chunk audition \
@@ -78,4 +75,6 @@ must also provide an exact model-file SHA-256.
 
 Silero VAD code and published models are MIT-licensed. `ort` is MIT/Apache-2.0;
 prebuilt ONNX Runtime artifacts have their own MIT license. This repository
-does not redistribute model files. Review licenses again before packaging.
+does not redistribute model files. The vendored whisper-rs and whisper.cpp
+license files remain with their source snapshots. Review licenses again before
+packaging.

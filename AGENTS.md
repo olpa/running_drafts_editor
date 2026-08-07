@@ -58,6 +58,10 @@ large design.
   usable Whisper timestamp, and otherwise advances by a bounded minimum.
 - Every window hypothesis is retained in the immutable run; midpoint ownership
   provides only minimal overlap deduplication pending full reconciliation.
+- Whisper Rust and C++ sources are pinned and vendored under
+  `vendor/whisper-rs`; `RDE-VENDOR.md` records their exact provenance. The
+  backend builds statically without project-specific build variables or a
+  runtime shared-library path. Whisper model binaries remain external.
 
 ## MVP boundary
 

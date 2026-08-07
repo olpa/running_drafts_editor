@@ -29,12 +29,15 @@ The board has selected:
   probabilities are not authoritative recognition boundaries.
 - The official Silero Rust example remains implementation guidance:
   <https://github.com/snakers4/silero-vad/tree/master/examples/rust-example>
-- The `backtrack` branch of this Rust binding:
-  <https://github.com/olpa/whisper-rs/tree/backtrack>
+- The `backtrack` implementation from `olpa/whisper-rs`, vendored at exact
+  commit `3ef7217afcf75841380524870625a835bcfdf803`, with `olpa/whisper.cpp`
+  commit `5ae298ef696d454f458a10160afcd877fff19170`.
 - Whisper-compatible input: mono, 16 kHz, normalized `f32` PCM samples.
 
-Every external repository, native library, and model file must be pinned to an
-exact version or commit in production. A branch name is not a reproducible pin.
+The source snapshots live under `vendor/whisper-rs` and build whisper.cpp
+statically through Cargo and CMake. Their provenance and local build adaptation
+are recorded in `vendor/whisper-rs/RDE-VENDOR.md`. Model files remain external
+and must be identified by an exact SHA-256.
 
 ## 3. Short glossary
 
@@ -313,15 +316,21 @@ The Silero Rust example currently demonstrates ONNX Runtime through the `ort`
 crate and WAV input through `hound`. The Whisper binding wraps `whisper.cpp`.
 These examples are guidance, not stable dependency specifications.
 
-Before release, record and pin:
+The repository records and pins:
 
 - Rust toolchain and target triples;
 - `ort` and ONNX Runtime versions;
 - Silero ONNX model SHA-256;
-- `olpa/whisper-rs` exact commit on `backtrack`;
-- its `whisper.cpp` submodule commit;
+- vendored `olpa/whisper-rs` commit
+  `3ef7217afcf75841380524870625a835bcfdf803`;
+- vendored `olpa/whisper.cpp` commit
+  `5ae298ef696d454f458a10160afcd877fff19170`;
 - Whisper model name, format, and SHA-256;
 - decoder/resampler implementation and version.
+
+The vendored binding compiles its native backend statically. It therefore does
+not depend on a project-specific build environment variable or a runtime
+shared-library search path. Model binaries are not vendored.
 
 Check licenses for code, native binaries, codecs, and model files separately.
 
