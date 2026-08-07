@@ -257,8 +257,8 @@ fn chunk_boundary_label(run: &RecognitionRun, index: usize) -> String {
     let reason = match chunk.boundary.reason {
         ChunkBoundaryReason::LongPause => "long pause",
         ChunkBoundaryReason::StrongPause => "strong pause",
-        ChunkBoundaryReason::ScoredPause => "scored pause",
-        ChunkBoundaryReason::MaximumTokens => "maximum tokens",
+        ChunkBoundaryReason::ScoredPause => "best pause",
+        ChunkBoundaryReason::MaximumTokens => return "token limit".to_owned(),
         ChunkBoundaryReason::SourceEnd => "source end",
     };
     chunk.boundary.pause_samples.map_or_else(
@@ -271,6 +271,7 @@ fn chunk_boundary_label(run: &RecognitionRun, index: usize) -> String {
         },
     )
 }
+
 fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output)?;
     writeln!(output, "Commands: Nplay (or Np), list, help, quit")

@@ -49,18 +49,25 @@ struct AuditionArgs {
     right_context_samples: u64,
     #[arg(long, default_value_t = 5)]
     top_candidates: usize,
+    /// Minimum normal text tokens before a strong or usable pause may split a chunk.
     #[arg(long, default_value_t = 8)]
     chunk_minimum_tokens: usize,
+    /// Preferred number of normal text tokens in a chunk.
     #[arg(long, default_value_t = 32)]
     chunk_target_tokens: usize,
+    /// Token limit that forces a split at a whole-segment boundary.
     #[arg(long, default_value_t = 64)]
     chunk_maximum_tokens: usize,
+    /// Smallest pause considered when choosing a boundary near the target.
     #[arg(long, default_value_t = 300)]
     chunk_usable_pause_ms: u64,
+    /// Pause that splits a chunk once it has the minimum token count.
     #[arg(long, default_value_t = 800)]
     chunk_strong_pause_ms: u64,
+    /// Pause that always splits a chunk, even before the minimum token count.
     #[arg(long, default_value_t = 2_000)]
     chunk_long_pause_ms: u64,
+    /// Score penalty per token of distance from the target size.
     #[arg(long, default_value_t = 20)]
     chunk_distance_penalty_ms: u64,
     /// ffplay-compatible playback executable.
