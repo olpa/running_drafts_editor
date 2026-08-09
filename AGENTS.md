@@ -27,7 +27,9 @@ large design.
 ## Durable constraints
 
 - Visible paragraph text is authoritative.
-- Paragraphs are editing units; recognition chunks are processing units.
+- Paragraphs are editing units made from one or more complete replay chunks;
+  every paragraph boundary is also a replay-chunk boundary. Splitting a
+  paragraph inside a chunk requires splitting that chunk first.
 - Chunks are at most about 30 seconds and may overlap.
 - Recognition runs are immutable; retries and boundary changes create revisions.
 - Selection uses visible character ranges, not token boundaries.
@@ -59,6 +61,10 @@ large design.
   chunks. Defaults are 8/32/64 normal text tokens and 300/800/2,000 ms usable,
   strong, and unconditional long pauses; stored boundary reasons remain
   inspectable.
+- Initial paragraphs join consecutive replay chunks and end at long-pause or
+  source-end boundaries. The CLI renders a marker after every chunk and
+  addresses it as `M.N`, with `M` as the paragraph number and `N` as the chunk
+  number inside that paragraph; `M.Ninfo` shows its chunk information.
 - Whisper Rust and C++ sources are pinned and vendored under
   `vendor/whisper-rs`; `RDE-VENDOR.md` records their exact provenance. The
   backend builds statically without project-specific build variables or a

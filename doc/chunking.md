@@ -47,8 +47,11 @@ accepted segments, prompts, boundaries, and failures produced by one execution.
 
 **Chunk** is the user-facing replay unit listed by `chunk audition`. In the
 current implementation it groups one or more whole accepted segments according
-to pause length and token count. It is distinct from a processing window and
-from a future editable paragraph.
+to pause length and token count. It is distinct from a processing window.
+
+**Paragraph** is a readable block made from one or more complete replay chunks.
+Every paragraph boundary is also a replay-chunk boundary. A chunk cannot belong
+to more than one paragraph.
 
 **Fragment** has no precise meaning in the current data model. Use it only
 informally for an unspecified piece of audio or text; use window, core, segment,
@@ -173,6 +176,33 @@ Each chunk stores its source segment IDs, text, audio range, normal text-token
 count, boundary reason, and pause length when available. Boundary reasons are
 `long_pause`, `strong_pause`, `scored_pause`, `maximum_tokens`, and
 `source_end`.
+
+## Paragraphs and visible chunk boundaries
+
+The initial document joins consecutive replay chunks into paragraphs. A
+`long_pause` boundary ends a paragraph. The `source_end` boundary ends the final
+paragraph. Other chunk boundaries stay inside the paragraph.
+
+The CLI shows the accepted text as a continuous flow. It renders a distinct
+marker after every replay chunk, including the chunk at the end of each
+paragraph and the chunk at the end of the document. A marker has the address
+`M.N`, where `M` is the paragraph number and `N` is the left-to-right chunk
+number inside that paragraph. For example, `2.3info` shows information about
+the third chunk in the second paragraph. Boundary selection and boundary
+changes are future work.
+
+Paragraph operations must preserve complete chunks. Joining two paragraphs
+removes only the paragraph break; it does not join their chunks. A paragraph
+can be split only at an existing chunk boundary. To split it inside a chunk,
+the user must first split that chunk.
+
+### Rust types
+
+Rust code should represent the document, paragraphs, and visible chunk-boundary
+markers with types separate from the immutable recognition-run and replay-chunk
+types. This keeps paragraph structure and CLI addressing explicit without
+making them part of recognition evidence. The internal fields and persistent
+format are not decided by this document.
 
 ## Earlier experiment
 
