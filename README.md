@@ -25,23 +25,56 @@ compiler, CMake, and libclang for bindgen.
 
 ## Experimental decoded-audition command
 
-The audition command now accepts a Whisper ggml model. It uses explicit
-processing windows no longer than 30 seconds, overlap on both sides of the
-target core, direct text-token context from the previous accepted segment, and
-Whisper timestamps to select advancing boundaries.
+First, build the executable:
 
 ```console
-rde chunk audition \
-  --input recording-f32.wav \
+cargo build
+```
+
+The command requires two external files:
+
+- `--input` must point to a PCM WAV recording. The tool accepts 8-, 16-, 24-,
+  and 32-bit integer PCM or 32-bit float samples, averages multiple channels,
+  and resamples the audio to mono 16 kHz internally. Compressed WAV files and
+  non-WAV formats are not supported.
+- `--model` must point to a Whisper ggml model. Models are not included in this
+  repository.
+
+Run the `audition` command. Options such as `--input` cannot be passed directly
+to `rde`:
+
+```console
+./target/debug/rde audition \
+  --input recording.wav \
   --model ggml-tiny.bin \
   --language de
 ```
 
+For all recognition and chunking options, run:
+
+```console
+./target/debug/rde audition --help
+```
+
+Recognition may take some time. When it finishes, the tool shows the recognized
+text with markers such as `⟦1.2⟧` and opens a `chunk>` prompt. Type `help` at
+that prompt to see the available session commands:
+
+```text
+Session commands:
+  Nplay, Np  play chunk N; for example, 3p
+  M.Ninfo    show details for marker M.N; for example, 2.3info
+  list, l    show the recognized text and chunk markers
+  help, h    show this help
+  quit, q    exit
+```
+
 The listing contains replay chunks built from whole accepted Whisper segments.
 Pause length and normal text-token count choose their boundaries. `3play` or
-`3p` replays the exact listed range. All overlapping window hypotheses remain
-immutable evidence; midpoint ownership is only the initial deterministic
-deduplication rule.
+`3p` replays the exact range of the third chunk. `2.3info` shows the time range,
+duration, token count, boundary reason, and text for marker `2.3`. All
+overlapping window hypotheses remain immutable evidence; midpoint ownership is
+only the initial deterministic deduplication rule.
 
 ## Reproducibility and licenses
 

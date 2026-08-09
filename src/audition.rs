@@ -8,11 +8,13 @@ use std::{
 };
 
 use crate::chunking::SampleRange;
+use crate::document::Document;
 use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditionCommand {
     Play(usize),
+    Info { paragraph: usize, chunk: usize },
     List,
     Help,
     Quit,
@@ -27,6 +29,10 @@ pub enum CommandParseError {
     MissingChunkNumber,
     #[error("invalid chunk number '{0}'; expected a positive integer")]
     InvalidChunkNumber(String),
+    #[error("info requires a marker address, for example '2.3info'")]
+    MissingMarkerAddress,
+    #[error("invalid marker address '{0}'; expected M.N with positive numbers")]
+    InvalidMarkerAddress(String),
     #[error("command accepts no additional arguments")]
     ExtraArguments,
 }
@@ -36,10 +42,21 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
     let Some(command) = words.next() else {
         return Ok(AuditionCommand::Empty);
     };
-    if matches!(command, "play" | "p") {
-        return Err(CommandParseError::MissingChunkNumber);
+    if matches!(command, "play" | "p" | "info") {
+        return if command == "info" {
+            Err(CommandParseError::MissingMarkerAddress)
+        } else {
+            Err(CommandParseError::MissingChunkNumber)
+        };
     }
     if command.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        if let Some(address) = command.strip_suffix("info") {
+            if words.next().is_some() {
+                return Err(CommandParseError::ExtraArguments);
+            }
+            let (paragraph, chunk) = parse_marker_address(address)?;
+            return Ok(AuditionCommand::Info { paragraph, chunk });
+        }
         let value = command
             .strip_suffix("play")
             .or_else(|| command.strip_suffix('p'))
@@ -60,6 +77,19 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         "quit" | "q" => no_arguments(words, AuditionCommand::Quit),
         other => Err(CommandParseError::Unknown(other.into())),
     }
+}
+
+fn parse_marker_address(address: &str) -> Result<(usize, usize), CommandParseError> {
+    let Some((paragraph, chunk)) = address.split_once('.') else {
+        return Err(CommandParseError::InvalidMarkerAddress(address.into()));
+    };
+    if chunk.contains('.') {
+        return Err(CommandParseError::InvalidMarkerAddress(address.into()));
+    }
+    let parse_part = |part: &str| part.parse::<usize>().ok().filter(|number| *number > 0);
+    parse_part(paragraph)
+        .zip(parse_part(chunk))
+        .ok_or_else(|| CommandParseError::InvalidMarkerAddress(address.into()))
 }
 
 fn no_arguments<'a>(
@@ -184,7 +214,8 @@ pub fn run_recognition_session(
     errors: &mut impl Write,
     player: &mut impl AudioPlayer,
 ) -> io::Result<()> {
-    render_recognition_chunks(run, source, output)?;
+    let document = Document::from_chunks(&run.chunks);
+    render_recognition_document(run, &document, source, output)?;
     if run.chunks.is_empty() {
         return Ok(());
     }
@@ -212,7 +243,27 @@ pub fn run_recognition_session(
                     writeln!(errors, "playback failed for chunk {number}: {error}")?;
                 }
             }
-            Ok(AuditionCommand::List) => render_recognition_chunks(run, source, output)?,
+            Ok(AuditionCommand::Info { paragraph, chunk }) => {
+                let Some(marker) = document.chunk_marker(paragraph, chunk) else {
+                    writeln!(errors, "unknown chunk marker {paragraph}.{chunk}")?;
+                    continue;
+                };
+                let Some(recognition_chunk) = run
+                    .chunks
+                    .iter()
+                    .find(|candidate| candidate.id == marker.chunk_id())
+                else {
+                    writeln!(
+                        errors,
+                        "chunk data is unavailable for marker {paragraph}.{chunk}"
+                    )?;
+                    continue;
+                };
+                render_chunk_info(run, recognition_chunk, paragraph, chunk, output)?;
+            }
+            Ok(AuditionCommand::List) => {
+                render_recognition_document(run, &document, source, output)?
+            }
             Ok(AuditionCommand::Help) => render_help(output)?,
             Ok(AuditionCommand::Quit) => return Ok(()),
             Ok(AuditionCommand::Empty) => {}
@@ -226,6 +277,16 @@ pub fn render_recognition_chunks(
     source: &Path,
     output: &mut impl Write,
 ) -> io::Result<()> {
+    let document = Document::from_chunks(&run.chunks);
+    render_recognition_document(run, &document, source, output)
+}
+
+fn render_recognition_document(
+    run: &RecognitionRun,
+    document: &Document,
+    source: &Path,
+    output: &mut impl Write,
+) -> io::Result<()> {
     writeln!(
         output,
         "Built {} chunks from {}",
@@ -236,24 +297,51 @@ pub fn render_recognition_chunks(
         return Ok(());
     }
     writeln!(output)?;
-    for (index, chunk) in run.chunks.iter().enumerate() {
-        writeln!(
-            output,
-            "{:>3}  {} – {}  {:>9}  {:>3} tokens  {}",
-            index + 1,
-            Timestamp::new(chunk.audio_range.start_sample, run.source.sample_rate_hz),
-            Timestamp::new(chunk.audio_range.end_sample, run.source.sample_rate_hz),
-            Duration::new(chunk.audio_range.len(), run.source.sample_rate_hz),
-            chunk.token_count,
-            chunk_boundary_label(run, index),
-        )?;
-        writeln!(output, "     {}", chunk.text)?;
+    for (paragraph_index, paragraph) in document.paragraphs().iter().enumerate() {
+        let mut start = 0;
+        for (chunk_index, marker) in paragraph.chunk_boundaries().iter().enumerate() {
+            write!(
+                output,
+                "{} ⟦{}.{}⟧",
+                &paragraph.text()[start..marker.end_offset()],
+                paragraph_index + 1,
+                chunk_index + 1
+            )?;
+            start = marker.end_offset();
+        }
+        writeln!(output)?;
+        if paragraph_index + 1 < document.paragraphs().len() {
+            writeln!(output)?;
+        }
     }
     Ok(())
 }
 
-fn chunk_boundary_label(run: &RecognitionRun, index: usize) -> String {
-    let chunk = &run.chunks[index];
+fn render_chunk_info(
+    run: &RecognitionRun,
+    chunk: &crate::recognition::RecognitionChunk,
+    paragraph: usize,
+    chunk_number: usize,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    writeln!(
+        output,
+        "{}.{}  {} – {}  {:>9}  {:>3} tokens  {}",
+        paragraph,
+        chunk_number,
+        Timestamp::new(chunk.audio_range.start_sample, run.source.sample_rate_hz),
+        Timestamp::new(chunk.audio_range.end_sample, run.source.sample_rate_hz),
+        Duration::new(chunk.audio_range.len(), run.source.sample_rate_hz),
+        chunk.token_count,
+        chunk_boundary_label(chunk, run.source.sample_rate_hz),
+    )?;
+    writeln!(output, "     {}", chunk.text)
+}
+
+fn chunk_boundary_label(
+    chunk: &crate::recognition::RecognitionChunk,
+    sample_rate_hz: u32,
+) -> String {
     let reason = match chunk.boundary.reason {
         ChunkBoundaryReason::LongPause => "long pause",
         ChunkBoundaryReason::StrongPause => "strong pause",
@@ -263,18 +351,24 @@ fn chunk_boundary_label(run: &RecognitionRun, index: usize) -> String {
     };
     chunk.boundary.pause_samples.map_or_else(
         || reason.to_owned(),
-        |samples| {
-            format!(
-                "{reason} ({})",
-                Duration::new(samples, run.source.sample_rate_hz)
-            )
-        },
+        |samples| format!("{reason} ({})", Duration::new(samples, sample_rate_hz)),
     )
 }
 
 fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output)?;
-    writeln!(output, "Commands: Nplay (or Np), list, help, quit")
+    writeln!(output, "Session commands:")?;
+    writeln!(output, "  Nplay, Np  play chunk N; for example, 3p")?;
+    writeln!(
+        output,
+        "  M.Ninfo    show details for marker M.N; for example, 2.3info"
+    )?;
+    writeln!(
+        output,
+        "  list, l    show the recognized text and chunk markers"
+    )?;
+    writeln!(output, "  help, h    show this help")?;
+    writeln!(output, "  quit, q    exit")
 }
 
 struct Timestamp {
@@ -339,6 +433,13 @@ mod tests {
     fn parser_accepts_commands_aliases_and_whitespace() {
         assert_eq!(parse_command(" 12p \n").unwrap(), AuditionCommand::Play(12));
         assert_eq!(parse_command("12play").unwrap(), AuditionCommand::Play(12));
+        assert_eq!(
+            parse_command(" 2.3info \n").unwrap(),
+            AuditionCommand::Info {
+                paragraph: 2,
+                chunk: 3
+            }
+        );
         assert_eq!(parse_command("list").unwrap(), AuditionCommand::List);
         assert_eq!(parse_command("h").unwrap(), AuditionCommand::Help);
         assert_eq!(parse_command(" q ").unwrap(), AuditionCommand::Quit);
@@ -363,6 +464,36 @@ mod tests {
             parse_command("1play now").unwrap_err(),
             CommandParseError::ExtraArguments
         );
+        assert_eq!(
+            parse_command("info").unwrap_err(),
+            CommandParseError::MissingMarkerAddress
+        );
+        assert_eq!(
+            parse_command("2info").unwrap_err(),
+            CommandParseError::InvalidMarkerAddress("2".into())
+        );
+        assert_eq!(
+            parse_command("0.1info").unwrap_err(),
+            CommandParseError::InvalidMarkerAddress("0.1".into())
+        );
+        assert_eq!(
+            parse_command("1.2.3info").unwrap_err(),
+            CommandParseError::InvalidMarkerAddress("1.2.3".into())
+        );
+    }
+
+    #[test]
+    fn help_explains_each_session_command_with_examples() {
+        let mut output = Vec::new();
+
+        render_help(&mut output).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("Nplay, Np  play chunk N; for example, 3p"));
+        assert!(output.contains("M.Ninfo    show details for marker M.N"));
+        assert!(output.contains("list, l"));
+        assert!(output.contains("help, h"));
+        assert!(output.contains("quit, q"));
     }
 
     #[test]

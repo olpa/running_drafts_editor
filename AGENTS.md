@@ -27,7 +27,9 @@ large design.
 ## Durable constraints
 
 - Visible paragraph text is authoritative.
-- Paragraphs are editing units; recognition chunks are processing units.
+- Paragraphs are editing units made from one or more complete replay chunks;
+  every paragraph boundary is also a replay-chunk boundary. Splitting a
+  paragraph inside a chunk requires splitting that chunk first.
 - Chunks are at most about 30 seconds and may overlap.
 - Recognition runs are immutable; retries and boundary changes create revisions.
 - Selection uses visible character ranges, not token boundaries.
@@ -38,10 +40,13 @@ large design.
 - Async or refreshed recognition must not overwrite newer user edits.
 - Canonical audio and recognition positions use mono 16 kHz sample offsets;
   recognition identities exclude local paths and nondeterministic diagnostics.
+- WAV input accepts common 8/16/24/32-bit integer PCM and 32-bit float formats;
+  multiple channels are averaged and the result is resampled to canonical mono
+  16 kHz audio before recognition.
 - Chunk boundaries are derived during Whisper recognition from timestamped
   decoded segments; there is no separate pre-recognition planner.
 - A missing or unreadable CLI model is a preflight error.
-- `rde chunk audition --input <audio.wav> --model <whisper.bin>` is a
+- `rde audition --input <audio.wav> --model <whisper.bin>` is a
   developer-only dumb-terminal harness: it runs Whisper, lists accepted decoded
   segments with text and timestamp-derived sample ranges, and plays them through
   a replaceable, ffplay-compatible subprocess selected with `--player`. Its
@@ -59,6 +64,10 @@ large design.
   chunks. Defaults are 8/32/64 normal text tokens and 300/800/2,000 ms usable,
   strong, and unconditional long pauses; stored boundary reasons remain
   inspectable.
+- Initial paragraphs join consecutive replay chunks and end at long-pause or
+  source-end boundaries. The CLI renders a marker after every chunk and
+  addresses it as `M.N`, with `M` as the paragraph number and `N` as the chunk
+  number inside that paragraph; `M.Ninfo` shows its chunk information.
 - Whisper Rust and C++ sources are pinned and vendored under
   `vendor/whisper-rs`; `RDE-VENDOR.md` records their exact provenance. The
   backend builds statically without project-specific build variables or a
