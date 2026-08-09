@@ -196,6 +196,11 @@ removes only the paragraph break; it does not join their chunks. A paragraph
 can be split only at an existing chunk boundary. To split it inside a chunk,
 the user must first split that chunk.
 
+This CLI feasibility rule is narrower than the earlier product and technical
+proposals, which allow paragraph splits at arbitrary text positions and a
+many-to-many relationship between paragraphs and chunks. For the current CLI,
+the chunk must be split first. The broader model is not implemented.
+
 ### Rust types
 
 Rust code should represent the document, paragraphs, and visible chunk-boundary

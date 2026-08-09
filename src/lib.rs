@@ -2,4 +2,5 @@
 
 pub mod audition;
 pub mod chunking;
+pub mod document;
 pub mod recognition;

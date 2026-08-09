@@ -22,10 +22,11 @@ output. Retrying creates another run.
 Produce one visible sequence from overlapping results without deleting source
 runs. Flag ambiguous reconciliation as an issue.
 
-## Build visible paragraphs independently of chunks
+## [x] Show replay-chunk boundaries in recognized text
 
-Render recognized text as Markdown-like paragraphs. Paragraphs may use one or
-many chunks. Show each chunk boundary with a distinct special symbol.
+Group replay chunks into initial paragraphs and show a distinct marker after
+every chunk. Address markers as `M.N`, where `M` is the paragraph number and
+`N` is the chunk number inside it. Show existing chunk details with `M.Ninfo`.
 
 ## Implement a compact CLI command grammar
 
