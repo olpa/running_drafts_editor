@@ -43,7 +43,7 @@ large design.
 - Chunk boundaries are derived during Whisper recognition from timestamped
   decoded segments; there is no separate pre-recognition planner.
 - A missing or unreadable CLI model is a preflight error.
-- `rde chunk audition --input <audio.wav> --model <whisper.bin>` is a
+- `rde audition --input <audio.wav> --model <whisper.bin>` is a
   developer-only dumb-terminal harness: it runs Whisper, lists accepted decoded
   segments with text and timestamp-derived sample ranges, and plays them through
   a replaceable, ffplay-compatible subprocess selected with `--player`. Its

@@ -8,7 +8,12 @@ use running_drafts_editor::recognition::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "rde", version, about = "Running Drafts Editor (experimental)")]
+#[command(
+    name = "rde",
+    version,
+    about = "Running Drafts Editor (experimental)",
+    after_help = "Get started:\n  rde audition --input recording-f32.wav --model ggml-tiny.bin\n\nRun 'rde audition --help' for recognition and chunking options."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -16,20 +21,14 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Experimental recognition-chunk operations.
-    Chunk {
-        #[command(subcommand)]
-        command: ChunkCommand,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum ChunkCommand {
     /// Decode, list, and interactively replay recognition chunks.
     Audition(AuditionArgs),
 }
 
 #[derive(Debug, Args)]
+#[command(
+    after_help = "Example:\n  rde audition --input recording-f32.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'chunk>' prompt to see session commands."
+)]
 struct AuditionArgs {
     /// Canonical mono 16 kHz float WAV audio.
     #[arg(long)]
@@ -88,9 +87,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Cli { command } = Cli::parse();
     match command {
-        Command::Chunk {
-            command: ChunkCommand::Audition(args),
-        } => run_audition(args),
+        Command::Audition(args) => run_audition(args),
     }
 }
 
@@ -144,12 +141,12 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn audition_has_inspectable_whisper_window_defaults() {
         let cli = Cli::try_parse_from([
             "rde",
-            "chunk",
             "audition",
             "--input",
             "audio.wav",
@@ -157,9 +154,7 @@ mod tests {
             "whisper.bin",
         ])
         .unwrap();
-        let Command::Chunk {
-            command: ChunkCommand::Audition(args),
-        } = cli.command;
+        let Command::Audition(args) = cli.command;
 
         assert_eq!(args.input, PathBuf::from("audio.wav"));
         assert_eq!(args.player, PathBuf::from("ffplay"));
@@ -177,5 +172,13 @@ mod tests {
         assert_eq!(args.chunk_strong_pause_ms, 800);
         assert_eq!(args.chunk_long_pause_ms, 2_000);
         assert_eq!(args.chunk_distance_penalty_ms, 20);
+    }
+
+    #[test]
+    fn top_level_help_points_to_the_runnable_command() {
+        let help = Cli::command().render_long_help().to_string();
+
+        assert!(help.contains("rde audition --input recording-f32.wav --model ggml-tiny.bin"));
+        assert!(help.contains("rde audition --help"));
     }
 }

@@ -357,7 +357,18 @@ fn chunk_boundary_label(
 
 fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output)?;
-    writeln!(output, "Commands: Nplay (or Np), M.Ninfo, list, help, quit")
+    writeln!(output, "Session commands:")?;
+    writeln!(output, "  Nplay, Np  play chunk N; for example, 3p")?;
+    writeln!(
+        output,
+        "  M.Ninfo    show details for marker M.N; for example, 2.3info"
+    )?;
+    writeln!(
+        output,
+        "  list, l    show the recognized text and chunk markers"
+    )?;
+    writeln!(output, "  help, h    show this help")?;
+    writeln!(output, "  quit, q    exit")
 }
 
 struct Timestamp {
@@ -469,6 +480,20 @@ mod tests {
             parse_command("1.2.3info").unwrap_err(),
             CommandParseError::InvalidMarkerAddress("1.2.3".into())
         );
+    }
+
+    #[test]
+    fn help_explains_each_session_command_with_examples() {
+        let mut output = Vec::new();
+
+        render_help(&mut output).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("Nplay, Np  play chunk N; for example, 3p"));
+        assert!(output.contains("M.Ninfo    show details for marker M.N"));
+        assert!(output.contains("list, l"));
+        assert!(output.contains("help, h"));
+        assert!(output.contains("quit, q"));
     }
 
     #[test]

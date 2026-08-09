@@ -45,7 +45,7 @@ audio.
 **Recognition run** is the immutable record of all windows, hypotheses,
 accepted segments, prompts, boundaries, and failures produced by one execution.
 
-**Chunk** is the user-facing replay unit listed by `chunk audition`. In the
+**Chunk** is the user-facing replay unit listed by `rde audition`. In the
 current implementation it groups one or more whole accepted segments according
 to pause length and token count. It is distinct from a processing window.
 
