@@ -30,7 +30,7 @@ enum Command {
     after_help = "Example:\n  rde audition --input recording-f32.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'chunk>' prompt to see session commands."
 )]
 struct AuditionArgs {
-    /// Canonical mono 16 kHz float WAV audio.
+    /// PCM WAV audio; channels and sample rate are converted automatically.
     #[arg(long)]
     input: PathBuf,
     /// Whisper ggml model.

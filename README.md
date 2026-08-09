@@ -33,7 +33,9 @@ cargo build
 
 The command requires two external files:
 
-- `--input` must point to a mono 16 kHz floating-point WAV recording.
+- `--input` must point to a PCM WAV recording. The tool accepts 8-, 16-, 24-,
+  and 32-bit integer PCM or 32-bit float samples, averages multiple channels,
+  and resamples the audio to mono 16 kHz internally.
 - `--model` must point to a Whisper ggml model. Models are not included in this
   repository.
 

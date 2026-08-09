@@ -40,6 +40,9 @@ large design.
 - Async or refreshed recognition must not overwrite newer user edits.
 - Canonical audio and recognition positions use mono 16 kHz sample offsets;
   recognition identities exclude local paths and nondeterministic diagnostics.
+- WAV input accepts common 8/16/24/32-bit integer PCM and 32-bit float formats;
+  multiple channels are averaged and the result is resampled to canonical mono
+  16 kHz audio before recognition.
 - Chunk boundaries are derived during Whisper recognition from timestamped
   decoded segments; there is no separate pre-recognition planner.
 - A missing or unreadable CLI model is a preflight error.
