@@ -35,7 +35,8 @@ The command requires two external files:
 
 - `--input` must point to a PCM WAV recording. The tool accepts 8-, 16-, 24-,
   and 32-bit integer PCM or 32-bit float samples, averages multiple channels,
-  and resamples the audio to mono 16 kHz internally.
+  and resamples the audio to mono 16 kHz internally. Compressed WAV files and
+  non-WAV formats are not supported.
 - `--model` must point to a Whisper ggml model. Models are not included in this
   repository.
 
@@ -44,7 +45,7 @@ to `rde`:
 
 ```console
 ./target/debug/rde audition \
-  --input recording-f32.wav \
+  --input recording.wav \
   --model ggml-tiny.bin \
   --language de
 ```

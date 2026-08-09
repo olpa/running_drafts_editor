@@ -2,8 +2,12 @@
 
 ## Terms
 
-**Source audio** is the complete recording being recognized. It is decoded as
-mono 16 kHz audio.
+**Source WAV** is the complete input file. Its original bytes are hashed before
+decoding so the source remains identifiable.
+
+**Canonical audio** is the decoded mono 16 kHz floating-point audio used by
+recognition. All stored sample positions refer to this form, not to sample
+positions in the source WAV.
 
 **Sample** is one audio value. Sample offsets are the exact internal time unit;
 at 16 kHz, 16,000 samples equal one second.
@@ -56,6 +60,23 @@ to more than one paragraph.
 **Fragment** has no precise meaning in the current data model. Use it only
 informally for an unspecified piece of audio or text; use window, core, segment,
 or chunk when one of those meanings is intended.
+
+## WAV decoding and conversion
+
+The CLI accepts uncompressed WAV files with 8-, 16-, 24-, or 32-bit integer PCM
+samples, or 32-bit floating-point PCM samples. The input may use any positive
+sample rate and one or more channels. Compressed audio formats are not decoded.
+
+Integer samples are normalized to the floating-point range from -1 to 1.
+Floating-point samples must already be finite and inside that range. For
+multi-channel input, the tool averages the channels in each audio frame. It
+then converts the mono audio to 16 kHz with linear interpolation. Recognition,
+chunk boundaries, and stored audio ranges use the converted samples.
+
+The source identity keeps the SHA-256 hash of the original WAV bytes. Canonical
+source facts record one channel, a 16 kHz sample rate, and the converted sample
+count. Playback converts canonical sample positions to seconds and plays those
+times from the original WAV.
 
 ## Recognition-driven chunking
 
@@ -201,13 +222,49 @@ proposals, which allow paragraph splits at arbitrary text positions and a
 many-to-many relationship between paragraphs and chunks. For the current CLI,
 the chunk must be split first. The broader model is not implemented.
 
-### Rust types
+## Rust domain types
 
-Rust code should represent the document, paragraphs, and visible chunk-boundary
-markers with types separate from the immutable recognition-run and replay-chunk
-types. This keeps paragraph structure and CLI addressing explicit without
-making them part of recognition evidence. The internal fields and persistent
-format are not decided by this document.
+The Rust types form three layers.
+
+### Audio input
+
+`WavInput` is the result of reading and converting the source WAV. It carries
+the canonical audio used by Whisper and the identity of the original file.
+`SourceFacts` records the canonical sample rate, channel count, sample count,
+and source identity used by a recognition run. Recognition positions always
+refer to these canonical facts.
+
+### Recognition evidence
+
+`RecognitionRun` is an immutable recognition result. It contains processing
+windows, all decoded segment hypotheses, the accepted segment sequence, and
+the replay chunks built from that sequence. `RecognitionChunk` is a complete
+replay unit with text, an audio range, source segment references, and the reason
+for its ending boundary.
+
+Running recognition again or changing chunk boundaries creates new evidence.
+It does not change an existing `RecognitionRun`.
+
+### Visible document
+
+`Document` contains ordered `Paragraph` values. A paragraph contains visible
+text made from one or more complete replay chunks. It also contains one
+`ChunkBoundaryMarker` for each chunk, placed after that chunk's text. The last
+marker is therefore also the paragraph-end marker.
+
+Each marker refers to its `RecognitionChunk` by stable recognition identity.
+The visible address `M.N` is derived from the current paragraph and marker
+order; it is not the stable identity. `M.Ninfo` follows the marker reference to
+show the immutable chunk details.
+
+The initial document is derived from one recognition run. A `long_pause` or
+`source_end` chunk ends a paragraph. Every chunk belongs to exactly one initial
+paragraph, and every paragraph boundary is also a chunk boundary. Later
+paragraph operations may regroup complete chunks but cannot silently change
+recognition evidence.
+
+The internal fields and persistent format of these types may change. The layer
+boundaries and relationships above are the durable part of the model.
 
 ## Earlier experiment
 

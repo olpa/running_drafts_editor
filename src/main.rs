@@ -12,7 +12,7 @@ use running_drafts_editor::recognition::{
     name = "rde",
     version,
     about = "Running Drafts Editor (experimental)",
-    after_help = "Get started:\n  rde audition --input recording-f32.wav --model ggml-tiny.bin\n\nRun 'rde audition --help' for recognition and chunking options."
+    after_help = "Get started:\n  rde audition --input recording.wav --model ggml-tiny.bin\n\nRun 'rde audition --help' for recognition and chunking options."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -27,7 +27,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Example:\n  rde audition --input recording-f32.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'chunk>' prompt to see session commands."
+    after_help = "Example:\n  rde audition --input recording.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'chunk>' prompt to see session commands."
 )]
 struct AuditionArgs {
     /// PCM WAV audio; channels and sample rate are converted automatically.
@@ -178,7 +178,7 @@ mod tests {
     fn top_level_help_points_to_the_runnable_command() {
         let help = Cli::command().render_long_help().to_string();
 
-        assert!(help.contains("rde audition --input recording-f32.wav --model ggml-tiny.bin"));
+        assert!(help.contains("rde audition --input recording.wav --model ggml-tiny.bin"));
         assert!(help.contains("rde audition --help"));
     }
 }
