@@ -59,8 +59,12 @@ large design.
 - `rde audition --input <audio.wav> --model <whisper.bin>` is a
   developer-only dumb-terminal harness: it runs Whisper, lists accepted decoded
   segments with text and timestamp-derived sample ranges, and plays them through
-  a replaceable, ffplay-compatible subprocess selected with `--player`. Its
-  session grammar addresses a chunk with a numeric prefix, such as `3play` or `3p`.
+  a replaceable, ffplay-compatible subprocess selected with `--player`.
+- The dumb-terminal shell uses an `ed`-inspired address-first grammar at the
+  `rde>` prompt. `M.N` addresses a visible token, `M@N` a chunk marker, and
+  `M.N,M.U` an inclusive displayed token range. Commands may attach to an
+  address or follow it after whitespace. `p` prints the document, `Mp` prints a
+  paragraph, and `M@Nplay` and `M@Ninfo` act on a chunk marker.
 - Whisper recognition uses explicit windows of at most 480,000 samples. The
   experimental default targets a 384,000-sample core with 48,000 samples of
   context per side. It reuses normal text-token IDs from the last accepted

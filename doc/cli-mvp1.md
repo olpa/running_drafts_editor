@@ -29,7 +29,7 @@ every chunk. Address markers as `M@N`, where `M` is the paragraph number and
 `N` is the chunk number inside it. Show existing chunk details with `M@Ninfo`.
 Reserve `M.N` for visible-token addresses.
 
-## Implement a compact CLI command grammar
+## [x] Implement a compact CLI command grammar
 
 Use a small line-oriented, address-first command set with help and predictable
 errors. The grammar takes inspiration from `ed`: an optional paragraph, token,

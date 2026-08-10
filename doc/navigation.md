@@ -35,17 +35,25 @@ and token order and are not stable identities.
 | Form | Meaning |
 | --- | --- |
 | `M` | paragraph `M` |
-| `M.N` | visible token `T` in paragraph `M` |
-| `M.N,M.U` | tokens `T` through `U`, inclusive when displayed |
+| `M.N` | visible token `N` in paragraph `M` |
+| `M.N,M.U` | tokens `N` through `U`, inclusive when displayed |
 | `M@N` | chunk-boundary marker `N` in paragraph `M` |
 | `.` | current token, marker, or selection when permitted |
 
 Numbers are positive and one-based. The common `M.N` form addresses tokens;
-the distinct `M@N` form is reserved for less frequent chunk-marker operations. The general command form is:
+the distinct `M@N` form is reserved for less frequent chunk-marker operations.
+The general command form is:
 
 ```text
 [address or range] command [arguments]
 ```
+
+The address and command may be attached (`2@3info`) or separated by whitespace
+(`2@3 info`). The implemented #5 commands are `print`/`p`, `play`, `info`/`i`,
+`help`/`h`, and `quit`/`q`; `list`/`l` remain print aliases. `play` and `info`
+require a chunk-marker address. `print` accepts no address for the whole
+document or a paragraph address. Other examples below reserve syntax for later
+tickets.
 
 Examples describe the intended language; each ticket implements only commands
 within its scope:
