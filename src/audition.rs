@@ -9,7 +9,9 @@ use std::{
 
 use crate::chunking::SampleRange;
 use crate::document::Document;
-use crate::navigation::{parse_line, Address, CommandLine, NavigationState, SyntaxError};
+use crate::navigation::{
+    parse_line, Address, Caret, CommandLine, NavigationState, Selection, SyntaxError,
+};
 use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,9 +324,13 @@ pub fn run_recognition_session(
                 };
                 render_chunk_info(run, recognition_chunk, paragraph, chunk, output)?;
             }
-            Ok(AuditionCommand::Print(None)) => {
-                render_recognition_document(run, &document, source, output)?
-            }
+            Ok(AuditionCommand::Print(None)) => render_recognition_document_with_navigation(
+                run,
+                &document,
+                source,
+                Some(&navigation),
+                output,
+            )?,
             Ok(AuditionCommand::Print(Some(paragraph))) => {
                 let Some(value) = document.paragraph(paragraph) else {
                     writeln!(
@@ -334,7 +340,7 @@ pub fn run_recognition_session(
                     )?;
                     continue;
                 };
-                render_paragraph(value, paragraph, output)?;
+                render_paragraph(value, paragraph, Some(&navigation), output)?;
             }
             Ok(AuditionCommand::Move(address)) => match navigation.move_to(&document, &address) {
                 Ok(()) => writeln!(output, "caret {address}")?,
@@ -374,6 +380,16 @@ fn render_recognition_document(
     source: &Path,
     output: &mut impl Write,
 ) -> io::Result<()> {
+    render_recognition_document_with_navigation(run, document, source, None, output)
+}
+
+fn render_recognition_document_with_navigation(
+    run: &RecognitionRun,
+    document: &Document,
+    source: &Path,
+    navigation: Option<&NavigationState>,
+    output: &mut impl Write,
+) -> io::Result<()> {
     writeln!(
         output,
         "Built {} chunks from {}",
@@ -385,7 +401,7 @@ fn render_recognition_document(
     }
     writeln!(output)?;
     for (paragraph_index, paragraph) in document.paragraphs().iter().enumerate() {
-        render_paragraph(paragraph, paragraph_index + 1, output)?;
+        render_paragraph(paragraph, paragraph_index + 1, navigation, output)?;
         if paragraph_index + 1 < document.paragraphs().len() {
             writeln!(output)?;
         }
@@ -396,8 +412,16 @@ fn render_recognition_document(
 fn render_paragraph(
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
+    navigation: Option<&NavigationState>,
     output: &mut impl Write,
 ) -> io::Result<()> {
+    let paragraph_selected = navigation.is_some_and(|state| {
+        matches!(state.selection(), Some(Selection::Paragraph { paragraph_id, paragraph_revision })
+            if paragraph_id == paragraph.id() && *paragraph_revision == paragraph.revision())
+    });
+    if paragraph_selected {
+        write!(output, "⟪")?;
+    }
     let mut marker_index = 0;
     for token_index in 0..=paragraph.tokens().len() {
         while paragraph
@@ -405,14 +429,91 @@ fn render_paragraph(
             .get(marker_index)
             .is_some_and(|marker| marker.after_tokens() == token_index)
         {
-            write!(output, " ⟦{}@{}⟧", paragraph_number, marker_index + 1)?;
+            let marker = &paragraph.chunk_boundaries()[marker_index];
+            let marker_selected = navigation.is_some_and(|state| {
+                matches!(state.selection(), Some(Selection::Marker(position))
+                    if position.paragraph_id == paragraph.id()
+                        && position.paragraph_revision == paragraph.revision()
+                        && position.chunk_id == marker.chunk_id())
+            });
+            let marker_caret = navigation.is_some_and(|state| {
+                state.selection().is_none()
+                    && matches!(state.caret(), Some(Caret::Marker(position))
+                        if position.paragraph_id == paragraph.id()
+                            && position.paragraph_revision == paragraph.revision()
+                            && position.chunk_id == marker.chunk_id())
+            });
+            write!(output, " ")?;
+            if marker_selected {
+                write!(output, "⟪")?;
+            } else if marker_caret {
+                write!(output, "‹")?;
+            }
+            write!(output, "⟦{}@{}⟧", paragraph_number, marker_index + 1)?;
+            if marker_selected {
+                write!(output, "⟫")?;
+            } else if marker_caret {
+                write!(output, "›")?;
+            }
             marker_index += 1;
         }
         if let Some(token) = paragraph.tokens().get(token_index) {
+            let selection_start = token_selection_edge(
+                navigation.and_then(NavigationState::selection),
+                paragraph,
+                token,
+                true,
+            );
+            let selection_end = token_selection_edge(
+                navigation.and_then(NavigationState::selection),
+                paragraph,
+                token,
+                false,
+            );
+            let token_caret = navigation.is_some_and(|state| {
+                state.selection().is_none()
+                    && matches!(state.caret(), Some(Caret::Token(position))
+                        if position.paragraph_id == paragraph.id()
+                            && position.paragraph_revision == paragraph.revision()
+                            && position.token_id == *token.id())
+            });
+            if selection_start {
+                write!(output, "⟪")?;
+            } else if token_caret {
+                write!(output, "‹")?;
+            }
             write!(output, "{}", token.text())?;
+            if selection_end {
+                write!(output, "⟫")?;
+            } else if token_caret {
+                write!(output, "›")?;
+            }
         }
     }
+    if paragraph_selected {
+        write!(output, "⟫")?;
+    }
     writeln!(output)
+}
+
+fn token_selection_edge(
+    selection: Option<&Selection>,
+    paragraph: &crate::document::Paragraph,
+    token: &crate::document::VisibleToken,
+    start_edge: bool,
+) -> bool {
+    let Some(Selection::Tokens {
+        start,
+        end_inclusive,
+        ..
+    }) = selection
+    else {
+        return false;
+    };
+    let position = if start_edge { start } else { end_inclusive };
+    position.paragraph_id == paragraph.id()
+        && position.paragraph_revision == paragraph.revision()
+        && position.token_id == *token.id()
 }
 
 fn render_tokens(
