@@ -45,7 +45,7 @@ tokens; mismatched or missing token evidence and later user edits may introduce
 indivisible pseudo-tokens. Chunk-boundary symbols are individually selectable.
 See `navigation.md`.
 
-## Show document position and selection clearly
+## [x] Show document position and selection clearly
 
 Render paragraph boundaries, chunk-boundary symbols, cursor, and selected text
 as visually distinct terminal output.

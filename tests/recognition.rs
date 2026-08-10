@@ -576,7 +576,7 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
         PostChunkConfig::default(),
     );
     let mut input = Cursor::new(
-        b"2p\n2.1\n2p\n1.1,2.1select\np\n2@1\n2p\n2@1select\n2p\n2tokens\n3p\n1@1info\n2@2info\n3@1info\nquit\n",
+        b"2p\n2.1\n2p\n1.1,2.1select\np\n2@1\n2p\n2@1select\n2p\n2select\n2p\n2tokens\n3p\n1@1info\n2@2info\n3@1info\nquit\n",
     );
     let mut output = Vec::new();
     let mut errors = Vec::new();
@@ -594,7 +594,7 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
 
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("one ⟦1@1⟧\n\nfour-afour-b ⟦2@1⟧tail ⟦2@2⟧"));
-    assert_eq!(output.matches("four-afour-b ⟦2@1⟧tail ⟦2@2⟧").count(), 2);
+    assert_eq!(output.matches("four-afour-b ⟦2@1⟧tail ⟦2@2⟧").count(), 3);
     assert!(output.contains("caret 2.1"));
     assert!(output.contains("‹four-a›four-b ⟦2@1⟧tail ⟦2@2⟧"));
     assert!(output.contains("selected 1.1,2.1"));
@@ -604,6 +604,8 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     assert!(output.contains("four-afour-b ‹⟦2@1⟧›tail ⟦2@2⟧"));
     assert!(output.contains("selected 2@1"));
     assert!(output.contains("four-afour-b ⟪⟦2@1⟧⟫tail ⟦2@2⟧"));
+    assert!(output.contains("selected 2"));
+    assert!(output.contains("⟪four-afour-b ⟦2@1⟧tail ⟦2@2⟧⟫"));
     assert!(output.contains("2.1  rec"));
     assert!(output.contains("2@1  marker  chunk boundary"));
     assert!(output.contains("1@1  00:00:00.000 – 00:00:01.000"));
