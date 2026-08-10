@@ -36,13 +36,14 @@ errors. The grammar takes inspiration from `ed`: an optional paragraph, token,
 marker, or range address precedes a command. It is not a modal editor and does
 not reproduce `ed` exactly. See `navigation.md`.
 
-## Add cursor and token-range selection
+## [x] Add cursor and token-range selection
 
 Maintain a cursor over visible text tokens and support caret, single-token,
-token-range, and paragraph selection. A selection always contains complete
-tokens. Initial tokens refer to accepted normal Whisper tokens; user edits may
-introduce indivisible pseudo-tokens. Chunk-boundary symbols are individually
-selectable. See `navigation.md`.
+token-range, and paragraph selection. Token ranges may cross paragraphs and
+always contain complete tokens. Initial tokens refer to accepted normal Whisper
+tokens; mismatched or missing token evidence and later user edits may introduce
+indivisible pseudo-tokens. Chunk-boundary symbols are individually selectable.
+See `navigation.md`.
 
 ## Show document position and selection clearly
 

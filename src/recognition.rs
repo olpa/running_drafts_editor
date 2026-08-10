@@ -469,9 +469,7 @@ fn build_post_chunks(
             text: selected
                 .iter()
                 .map(|segment| segment.text.as_str())
-                .collect::<String>()
-                .trim()
-                .to_owned(),
+                .collect(),
             token_count: selected.iter().map(normal_token_count).sum(),
             boundary: ChunkBoundary {
                 reason: choice.reason,

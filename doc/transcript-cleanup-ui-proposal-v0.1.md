@@ -50,9 +50,10 @@ document structure.
   optional alternatives, confidence, and audio range.
 - **Visible token:** an indivisible selection and editing unit whose text
   contributes to the current paragraph. It either refers to an accepted normal
-  recognition token or is a pseudo-token created for user-authored text.
-- **Pseudo-token:** an indivisible visible token created by an edit. It preserves
-  exact user-authored text without pretending to be recognizer output.
+  recognition token or is a pseudo-token.
+- **Pseudo-token:** an indivisible visible token created by an edit or as a safe
+  fallback for missing or mismatched token evidence. It preserves exact visible
+  text without pretending to be recognizer output.
 - **Mapping:** a derived association between one or more complete visible
   tokens and recognition or audio sources.
 - **Provenance:** enough information to explain where text or alignment came
@@ -79,13 +80,14 @@ Document
 
 Paragraph
   id                         stable across ordinary text edits
-  text                       authoritative visible string
+  tokens[]                   authoritative, ordered, indivisible visible units
   revision                   increments on visible/structural edits
   originRefs[]?              lightweight provenance references
   extensions?
 ```
 
-Paragraph order and each paragraph's text define the exported document.
+Paragraph order and the exact concatenation of each paragraph's token text
+define the exported document.
 Recognition text must never silently override them after a user edit. User-edit
 history may be maintained by an undo/event layer, but the first persistent
 format need only preserve enough recent operations or snapshots to provide the
@@ -243,10 +245,9 @@ On a token edit:
    replacement audio or a later aligner establishes a mapping; and
 6. recompute affected issues without changing visible text.
 
-Selections may cross mappings and replay-chunk boundaries but always contain
-complete tokens. A future multi-paragraph replacement can be represented as
-paragraph operations plus token-range edits; v1 support for multi-paragraph
-selection actions remains an implementation decision.
+Selections may cross mappings, replay-chunk boundaries, and paragraph
+boundaries but always contain complete tokens. Stored ranges use stable
+inclusive endpoint identities and the applicable paragraph revisions.
 
 Choosing a recognizer alternative inserts ordinary visible text as one or more
 pseudo-tokens. It retains a provenance reference to that alternative only when
@@ -460,8 +461,6 @@ universal schema.
 - How are issue signals represented, ranked, dismissed, and invalidated across
   paragraph revisions?
 - Should correction audio be persistent, encrypted, embedded, or ephemeral?
-- Is multi-paragraph selection required in v1, and how should its mappings be
-  transformed?
 - Which parts of desktop integration belong in a textual format, LSP, or
   Tree-sitter without making any of them required for readability?
 

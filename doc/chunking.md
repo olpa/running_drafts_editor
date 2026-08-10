@@ -194,7 +194,9 @@ The higher score wins. A long-pause boundary must not be removed later merely
 to make a short chunk larger.
 
 Each chunk stores its source segment IDs, text, audio range, normal text-token
-count, boundary reason, and pause length when available. Boundary reasons are
+count, boundary reason, and pause length when available. Chunk text preserves
+the exact accepted segment text without trimming so its normal tokens can remain
+indivisible visible units. Boundary reasons are
 `long_pause`, `strong_pause`, `scored_pause`, `maximum_tokens`, and
 `source_end`.
 
@@ -247,10 +249,12 @@ It does not change an existing `RecognitionRun`.
 
 ### Visible document
 
-`Document` contains ordered `Paragraph` values. A paragraph contains visible
-text made from one or more complete replay chunks. It also contains one
-`ChunkBoundaryMarker` for each chunk, placed after that chunk's text. The last
-marker is therefore also the paragraph-end marker.
+`Document` contains ordered `Paragraph` values. A paragraph contains ordered,
+indivisible visible tokens made from one or more complete replay chunks. Normal
+accepted recognition tokens are used when their exact concatenation reproduces
+the chunk text. Otherwise the whole chunk text becomes one pseudo-token with
+unavailable alignment. A `ChunkBoundaryMarker` stores the complete-token
+position after its chunk; the last marker is also the paragraph-end marker.
 
 Each marker refers to its `RecognitionChunk` by stable recognition identity.
 The visible marker address `M@N` is derived from the current paragraph and marker

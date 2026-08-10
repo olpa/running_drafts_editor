@@ -38,11 +38,17 @@ large design.
   that preserve user-authored text. Timestamp and other special tokens remain
   recognition evidence and are not selectable text.
 - Token addresses are derived from the current paragraph revision. Stored
-  selections use stable token identities and the paragraph revision rather than
-  treating displayed token numbers as stable IDs.
+  carets and selections use stable token or chunk identities and paragraph
+  revisions rather than treating displayed numbers as stable IDs. Token ranges
+  may cross paragraphs and store their displayed inclusive endpoint identities.
 - Character offsets, character spans, and partial-token positions are not part
   of the document, selection, editing, mapping, replay, or persistence model.
   Token text is opaque to these operations.
+- Initial visible tokens are the accepted non-special recognition tokens in
+  chunk order. Their exact concatenation is authoritative and is not trimmed.
+  If normal tokens are missing or do not reproduce a chunk's text, that complete
+  chunk text becomes one indivisible pseudo-token with unavailable alignment;
+  the CLI reports the fallback and retains the recognition evidence.
 - The CLI renders selectable chunk-boundary symbols distinctly from paragraphs.
 - Chunk symbols and recognition metadata are absent from clean text export.
 - Edits may make alignment stale or unavailable; never claim false precision.
@@ -65,7 +71,9 @@ large design.
   `M.N,M.U` an inclusive displayed token range. Commands may attach to an
   address or follow it after whitespace. `p` prints the document, `Mp` prints a
   paragraph, and `M@Nplay` plays the complete chunk immediately to the left of
-  marker `M@N`; `M@Ninfo` inspects that chunk.
+  marker `M@N`; `M@Ninfo` inspects that chunk. A bare token or marker address
+  moves the caret, `Aselect` selects a token, token range, paragraph, or marker,
+  and `Mtokens` lists the individually addressable tokens in a paragraph.
 - Whisper recognition uses explicit windows of at most 480,000 samples. The
   experimental default targets a 384,000-sample core with 48,000 samples of
   context per side. It reuses normal text-token IDs from the last accepted
