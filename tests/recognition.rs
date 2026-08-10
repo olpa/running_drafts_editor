@@ -465,7 +465,7 @@ fn decoded_audition_shows_text_and_replays_exact_timestamp_range() {
         &mut decoder,
     )
     .unwrap();
-    let mut input = Cursor::new(b"1.1info\n1p\nquit\n");
+    let mut input = Cursor::new(b"1@1info\n1p\nquit\n");
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
@@ -484,8 +484,8 @@ fn decoded_audition_shows_text_and_replays_exact_timestamp_range() {
     assert!(output.contains("Built 1 chunks from audio.wav"));
     assert!(output.contains("source end"));
     assert!(output.contains("decoded words"));
-    assert!(output.contains("⟦1.1⟧"));
-    assert!(output.contains("1.1  00:00:00.010 – 00:00:00.030"));
+    assert!(output.contains("⟦1@1⟧"));
+    assert!(output.contains("1@1  00:00:00.010 – 00:00:00.030"));
     assert_eq!(
         player.calls,
         vec![(
@@ -515,7 +515,7 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
         121_600,
         PostChunkConfig::default(),
     );
-    let mut input = Cursor::new(b"1.1info\n2.2info\n3.1info\nquit\n");
+    let mut input = Cursor::new(b"1@1info\n2@2info\n3@1info\nquit\n");
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
@@ -531,14 +531,14 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     .unwrap();
 
     let output = String::from_utf8(output).unwrap();
-    assert!(output.contains("one ⟦1.1⟧\n\nfour-afour-b ⟦2.1⟧tail ⟦2.2⟧"));
-    assert!(output.contains("1.1  00:00:00.000 – 00:00:01.000"));
+    assert!(output.contains("one ⟦1@1⟧\n\nfour-afour-b ⟦2@1⟧tail ⟦2@2⟧"));
+    assert!(output.contains("1@1  00:00:00.000 – 00:00:01.000"));
     assert!(output.contains("long pause (2.000 s)"));
-    assert!(output.contains("2.2  00:00:06.600 – 00:00:07.600"));
+    assert!(output.contains("2@2  00:00:06.600 – 00:00:07.600"));
     assert!(output.contains("source end"));
     assert_eq!(
         String::from_utf8(errors).unwrap(),
-        "unknown chunk marker 3.1\n"
+        "unknown chunk marker 3@1\n"
     );
     assert!(player.calls.is_empty());
 }

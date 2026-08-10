@@ -25,18 +25,24 @@ runs. Flag ambiguous reconciliation as an issue.
 ## [x] Show replay-chunk boundaries in recognized text
 
 Group replay chunks into initial paragraphs and show a distinct marker after
-every chunk. Address markers as `M.N`, where `M` is the paragraph number and
-`N` is the chunk number inside it. Show existing chunk details with `M.Ninfo`.
+every chunk. Address markers as `M@N`, where `M` is the paragraph number and
+`N` is the chunk number inside it. Show existing chunk details with `M@Ninfo`.
+Reserve `M.N` for visible-token addresses.
 
 ## Implement a compact CLI command grammar
 
-Use a small line-oriented command set with help and predictable errors. Vim-like
-movement composition may inspire commands but is not a requirement.
+Use a small line-oriented, address-first command set with help and predictable
+errors. The grammar takes inspiration from `ed`: an optional paragraph, token,
+marker, or range address precedes a command. It is not a modal editor and does
+not reproduce `ed` exactly. See `navigation.md`.
 
-## Add cursor and character-range selection
+## Add cursor and token-range selection
 
-Maintain a cursor and support caret, word, arbitrary range, and paragraph
-selection. Chunk-boundary symbols are selectable; token boundaries are not.
+Maintain a cursor over visible text tokens and support caret, single-token,
+token-range, and paragraph selection. A selection always contains complete
+tokens. Initial tokens refer to accepted normal Whisper tokens; user edits may
+introduce indivisible pseudo-tokens. Chunk-boundary symbols are individually
+selectable. See `navigation.md`.
 
 ## Show document position and selection clearly
 
@@ -60,8 +66,8 @@ slower playback. Keep waveform and timeline controls out of scope.
 
 ## Edit authoritative visible text
 
-Support insertion, replacement, and deletion over character ranges. Preserve
-unaffected mappings and degrade affected alignment honestly.
+Support insertion, replacement, and deletion over complete-token ranges.
+Preserve mappings for retained tokens and degrade affected alignment honestly.
 
 ## Split and merge visible paragraphs
 

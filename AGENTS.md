@@ -32,7 +32,17 @@ large design.
   paragraph inside a chunk requires splitting that chunk first.
 - Chunks are at most about 30 seconds and may overlap.
 - Recognition runs are immutable; retries and boundary changes create revisions.
-- Selection uses visible character ranges, not token boundaries.
+- Selection and text editing use ranges of complete visible tokens; a token
+  cannot be selected or edited in part. Initial tokens refer to accepted normal
+  Whisper tokens. Edits may replace or add them with indivisible pseudo-tokens
+  that preserve user-authored text. Timestamp and other special tokens remain
+  recognition evidence and are not selectable text.
+- Token addresses are derived from the current paragraph revision. Stored
+  selections use stable token identities and the paragraph revision rather than
+  treating displayed token numbers as stable IDs.
+- Character offsets, character spans, and partial-token positions are not part
+  of the document, selection, editing, mapping, replay, or persistence model.
+  Token text is opaque to these operations.
 - The CLI renders selectable chunk-boundary symbols distinctly from paragraphs.
 - Chunk symbols and recognition metadata are absent from clean text export.
 - Edits may make alignment stale or unavailable; never claim false precision.
@@ -66,8 +76,8 @@ large design.
   inspectable.
 - Initial paragraphs join consecutive replay chunks and end at long-pause or
   source-end boundaries. The CLI renders a marker after every chunk and
-  addresses it as `M.N`, with `M` as the paragraph number and `N` as the chunk
-  number inside that paragraph; `M.Ninfo` shows its chunk information.
+  addresses it as `M@N`, with `M` as the paragraph number and `N` as the chunk
+  number inside that paragraph; `M@Ninfo` shows its chunk information. Visible tokens use `M.N`.
 - Whisper Rust and C++ sources are pinned and vendored under
   `vendor/whisper-rs`; `RDE-VENDOR.md` records their exact provenance. The
   backend builds statically without project-specific build variables or a

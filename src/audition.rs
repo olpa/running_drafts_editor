@@ -29,9 +29,9 @@ pub enum CommandParseError {
     MissingChunkNumber,
     #[error("invalid chunk number '{0}'; expected a positive integer")]
     InvalidChunkNumber(String),
-    #[error("info requires a marker address, for example '2.3info'")]
+    #[error("info requires a marker address, for example '2@3info'")]
     MissingMarkerAddress,
-    #[error("invalid marker address '{0}'; expected M.N with positive numbers")]
+    #[error("invalid marker address '{0}'; expected M@N with positive numbers")]
     InvalidMarkerAddress(String),
     #[error("command accepts no additional arguments")]
     ExtraArguments,
@@ -80,10 +80,10 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
 }
 
 fn parse_marker_address(address: &str) -> Result<(usize, usize), CommandParseError> {
-    let Some((paragraph, chunk)) = address.split_once('.') else {
+    let Some((paragraph, chunk)) = address.split_once('@') else {
         return Err(CommandParseError::InvalidMarkerAddress(address.into()));
     };
-    if chunk.contains('.') {
+    if chunk.contains('@') {
         return Err(CommandParseError::InvalidMarkerAddress(address.into()));
     }
     let parse_part = |part: &str| part.parse::<usize>().ok().filter(|number| *number > 0);
@@ -245,7 +245,7 @@ pub fn run_recognition_session(
             }
             Ok(AuditionCommand::Info { paragraph, chunk }) => {
                 let Some(marker) = document.chunk_marker(paragraph, chunk) else {
-                    writeln!(errors, "unknown chunk marker {paragraph}.{chunk}")?;
+                    writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
                     continue;
                 };
                 let Some(recognition_chunk) = run
@@ -255,7 +255,7 @@ pub fn run_recognition_session(
                 else {
                     writeln!(
                         errors,
-                        "chunk data is unavailable for marker {paragraph}.{chunk}"
+                        "chunk data is unavailable for marker {paragraph}@{chunk}"
                     )?;
                     continue;
                 };
@@ -302,7 +302,7 @@ fn render_recognition_document(
         for (chunk_index, marker) in paragraph.chunk_boundaries().iter().enumerate() {
             write!(
                 output,
-                "{} ⟦{}.{}⟧",
+                "{} ⟦{}@{}⟧",
                 &paragraph.text()[start..marker.end_offset()],
                 paragraph_index + 1,
                 chunk_index + 1
@@ -326,7 +326,7 @@ fn render_chunk_info(
 ) -> io::Result<()> {
     writeln!(
         output,
-        "{}.{}  {} – {}  {:>9}  {:>3} tokens  {}",
+        "{}@{}  {} – {}  {:>9}  {:>3} tokens  {}",
         paragraph,
         chunk_number,
         Timestamp::new(chunk.audio_range.start_sample, run.source.sample_rate_hz),
@@ -361,7 +361,7 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output, "  Nplay, Np  play chunk N; for example, 3p")?;
     writeln!(
         output,
-        "  M.Ninfo    show details for marker M.N; for example, 2.3info"
+        "  M@Ninfo    show details for marker M@N; for example, 2@3info"
     )?;
     writeln!(
         output,
@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(parse_command(" 12p \n").unwrap(), AuditionCommand::Play(12));
         assert_eq!(parse_command("12play").unwrap(), AuditionCommand::Play(12));
         assert_eq!(
-            parse_command(" 2.3info \n").unwrap(),
+            parse_command(" 2@3info \n").unwrap(),
             AuditionCommand::Info {
                 paragraph: 2,
                 chunk: 3
@@ -473,12 +473,12 @@ mod tests {
             CommandParseError::InvalidMarkerAddress("2".into())
         );
         assert_eq!(
-            parse_command("0.1info").unwrap_err(),
-            CommandParseError::InvalidMarkerAddress("0.1".into())
+            parse_command("0@1info").unwrap_err(),
+            CommandParseError::InvalidMarkerAddress("0@1".into())
         );
         assert_eq!(
-            parse_command("1.2.3info").unwrap_err(),
-            CommandParseError::InvalidMarkerAddress("1.2.3".into())
+            parse_command("1@2@3info").unwrap_err(),
+            CommandParseError::InvalidMarkerAddress("1@2@3".into())
         );
     }
 
@@ -490,7 +490,7 @@ mod tests {
 
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("Nplay, Np  play chunk N; for example, 3p"));
-        assert!(output.contains("M.Ninfo    show details for marker M.N"));
+        assert!(output.contains("M@Ninfo    show details for marker M@N"));
         assert!(output.contains("list, l"));
         assert!(output.contains("help, h"));
         assert!(output.contains("quit, q"));

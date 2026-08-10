@@ -121,14 +121,16 @@ avoid signals that imply every low-confidence word must be perfected.
 ### One-handed mobile use matters
 
 Important actions must use large targets, few taps, and no dependence on precise
-dragging. Standard platform selection handles may remain available for arbitrary
-ranges, but common replay and issue navigation should not require them.
+dragging. Selection handles may remain available, but they snap to complete
+visible-token boundaries. Common replay and issue navigation should not require
+them.
 
 ### Recognition internals remain hidden
 
-Tokens, confidence calculations, recognition runs, model revisions, decoder
-context, overlap, and time bases belong in the backing model and developer
-tooling. User language is text, paragraph, issue, replay, and correction.
+Token provenance and identities, confidence calculations, recognition runs,
+model revisions, decoder context, overlap, and time bases belong in the backing
+model and developer tooling. Normal product views may present complete visible
+tokens as words or phrases without exposing those internals.
 
 ### Progressive disclosure preserves focus
 
@@ -175,9 +177,9 @@ and slower playback. Replay is a text action, not a separate audio workspace.
 
 ### Edit
 
-The user edits visible characters through normal text operations: type
-replacement text, insert, delete, speak a replacement, or choose an AI-provided
-alternative. These are input methods for the same correction job.
+The user edits complete visible tokens: type replacement text, insert or
+delete tokens, speak a replacement, or choose an AI-provided alternative.
+These are input methods for the same correction job; none edits part of a token.
 
 “Retranscribe” is not a top-level user action. Recognition may run again after
 an edit or structural change, but the system does not require the user to know
@@ -201,13 +203,14 @@ The primary screen is a scrollable text document with paragraph spacing,
 optional issue indicators, and a compact playback state. Controls must be
 reachable and forgiving on a one-handed smartphone.
 
-Selection applies to a caret, word, phrase, arbitrary character range, or whole
-paragraph. Actions operate on visible characters, never exposed token
-boundaries. A tap on unselected text is intended to support quick replay, but
-the exact arbitration among placing a caret, selecting a word, and replaying is
-an open interaction question. Long press, a contextual action sheet, and
-platform editing conventions should cover secondary actions without crowding
-each paragraph.
+Selection applies to a caret, one visible token, a range of complete visible
+tokens, or a whole paragraph. An action never selects or edits only part of a
+token. Normal product views may present tokens as words or phrases without
+exposing recognition identities. A tap on unselected text is intended to
+support quick replay, but the exact arbitration among placing a caret, selecting
+a token, and replaying is an open interaction question. Long press, a contextual
+action sheet, and platform editing conventions should cover secondary actions
+without crowding each paragraph.
 
 ## 10. Replay flow
 
@@ -256,8 +259,9 @@ Recognize it, optionally using nearby context
 Preview or apply the replacement text
 ```
 
-The replacement changes the selected visible range. The product may use nearby
-text or original audio as recognition context without exposing decoder details.
+The replacement changes the selected complete-token range. The product may use
+nearby text or original audio as recognition context without exposing decoder
+details.
 The interaction must be tested against typing for speed, error rate, and user
 effort. Trigger design, whether confirmation is necessary, and whether to retain
 correction audio remain open.
@@ -269,7 +273,7 @@ processing unit limited to approximately 30 seconds. They may initially align,
 but they are not permanently identical: a paragraph may be backed by one or
 several chunks, multiple recognition revisions, or partially user-written text.
 
-Splitting creates two visible paragraphs at the chosen character position.
+Splitting creates two visible paragraphs at a chosen token boundary.
 Merging creates one visible paragraph while preserving its constituent backing
 and edits. Either action may schedule a new recognition plan; it must not
 rewrite historical recognition output. If merged audio exceeds the recognizer's

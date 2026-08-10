@@ -18,10 +18,11 @@ algorithm.
 
 The model has three layers:
 
-1. **Visible document:** authoritative paragraphs and editable characters.
+1. **Visible document:** authoritative paragraphs and indivisible visible
+   tokens.
 2. **Recognition backing:** immutable results and audio alignment used as
    evidence and support.
-3. **Derived mappings:** fallible links from visible character spans to backing
+3. **Derived mappings:** fallible links from complete visible tokens to backing
    data.
 
 This separation prevents recognition internals from becoming the user's
@@ -31,12 +32,13 @@ document structure.
 
 - **Document:** the editable transcript artifact plus optional recognition
   backing and mappings.
-- **Visible text:** the characters the user reads, edits, copies, and exports.
+- **Visible text:** the readable text produced by concatenating complete visible
+  tokens. Text inside a token is not separately addressable.
 - **Paragraph:** an ordered, user-facing block of visible text.
-- **Selection:** a caret or half-open visible character range; it may span any
-  characters and is not constrained by token boundaries.
-- **Issue:** a derived indication that a visible range may need attention; it is
-  not necessarily an error.
+- **Selection:** a caret, a range of complete visible tokens, a paragraph, or a
+  chunk-boundary marker. A token cannot be selected in part.
+- **Issue:** a derived indication that a visible-token range may need attention;
+  it is not necessarily an error.
 - **Audio source:** the existing recording and its stable identifier, duration,
   and optional channel metadata.
 - **Recognition plan:** a revisioned description of audio ranges to process.
@@ -44,17 +46,22 @@ document structure.
   than the recognizer's approximately 30-second limit.
 - **Recognition run:** one recognizer execution for a chunk, including status,
   model/config identity when available, and output.
-- **Token:** a recognizer-produced unit with text and optional alternatives,
-  confidence, and audio range. Tokens are never user editing units.
-- **Mapping:** a derived association between a visible character span and one
-  or more recognition or audio sources.
+- **Recognition token:** an immutable recognizer-produced unit with text and
+  optional alternatives, confidence, and audio range.
+- **Visible token:** an indivisible selection and editing unit whose text
+  contributes to the current paragraph. It either refers to an accepted normal
+  recognition token or is a pseudo-token created for user-authored text.
+- **Pseudo-token:** an indivisible visible token created by an edit. It preserves
+  exact user-authored text without pretending to be recognizer output.
+- **Mapping:** a derived association between one or more complete visible
+  tokens and recognition or audio sources.
 - **Provenance:** enough information to explain where text or alignment came
   from and to recover from failed processing, without a full archival system.
 
-All document character ranges use UTF-8-independent logical character offsets
-in a declared indexing convention (for example Unicode scalar values or UTF-16
-code units). The serialization must declare one convention; the exact choice is
-open.
+Character offsets, character spans, and partial-token positions do not exist
+in the document model or serialized format. Selection, editing, mappings,
+issues, and replay resolution address complete visible-token identities or
+ranges. Token text is opaque to these operations.
 
 ## 3. Visible document model
 
@@ -135,17 +142,17 @@ them; compaction is a storage operation, never an in-place rewrite of evidence.
 Confidence and alternatives are optional recognizer observations, not truth and
 not part of the visible text authority.
 
-## 5. Character-to-token and character-to-audio mappings
+## 5. Visible-token and audio mappings
 
-Mappings connect half-open ranges `[start, end)` within a particular paragraph
-revision to backing sources.
+Mappings connect complete visible tokens in a particular paragraph revision
+to backing sources.
 
 ```text
-SpanMapping
+TokenMapping
   paragraphId
   paragraphRevision
-  charRange                   [start, end)
-  tokenRefs[]?                zero, one, or many token references
+  visibleTokenIds[]           one or more complete, ordered tokens
+  recognitionTokenRefs[]?     zero, one, or many evidence references
   audioRanges[]?              source/channel/start/end records
   provenanceRefs[]?           run, edit, or replacement references
   alignmentState
@@ -153,25 +160,27 @@ SpanMapping
 
 The alignment vocabulary is deliberately small:
 
-- **exact:** deterministically retained from an unchanged recognized span;
+- **exact:** deterministically retained for unchanged recognized tokens;
 - **aligned:** produced or re-established by a model/aligner;
 - **inherited:** conservatively carried from surrounding or replaced content;
-- **stale:** its source span changed and precision is no longer trustworthy;
+- **stale:** its source tokens changed and precision is no longer trustworthy;
 - **unavailable:** no defensible mapping exists.
 
 `exact` describes relationship preservation, not recognition correctness.
 Estimated audio bounds use `inherited`; their origin may record the estimation
 method. This avoids a separate quality label whose meaning would overlap.
 
-Mappings may overlap, leave gaps, reference several tokens/runs, or cover text
-written by the user. Adjacent mappings need not share a state. Alternatives
-apply only while their source token mapping is sufficiently current; after a
+Mappings may overlap, leave tokens unmapped, reference several tokens or runs,
+or cover pseudo-tokens written by the user. Adjacent mappings need not share a
+state. Alternatives apply only while their source token mapping is sufficiently
+current; after a
 conflicting edit they are hidden or marked stale rather than forced onto the new
 text.
 
-For a visible selection, the resolver:
+For a visible-token selection, the resolver:
 
-1. intersects mappings for the current paragraph revision;
+1. intersects mappings by complete token identity for the current paragraph
+   revision;
 2. collects supported audio ranges and token/provenance references;
 3. coalesces compatible adjacent ranges from the same source/channel;
 4. assigns the least precise participating state to the result; and
@@ -217,40 +226,42 @@ paragraph longer than the limit remains backed by multiple chunks.
 
 ## 8. Editing model
 
-Edits target visible character ranges and produce a new paragraph revision.
+Edits target complete visible tokens and produce a new paragraph revision.
 Supported operations include insertion, deletion, replacement, alternative
 selection, and structural split/merge. Typing and voice replacement both use
-the same replacement primitive once replacement text is available.
+the same replacement primitive once replacement text is available. Replacement
+text creates one or more indivisible pseudo-tokens; it never mutates a
+recognition token.
 
-On a character edit:
+On a token edit:
 
 1. apply the edit to authoritative paragraph text;
 2. record an undoable operation or before-state;
-3. preserve exact/aligned mappings wholly before or after the edit, shifted as
-   needed;
-4. remove or mark stale mappings intersecting replaced/deleted characters;
-5. give inserted text `unavailable` alignment unless it has replacement audio
-   or a later aligner establishes a mapping; and
+3. preserve exact/aligned mappings for retained token identities;
+4. remove or mark stale mappings for replaced or deleted tokens;
+5. give inserted pseudo-tokens `unavailable` alignment unless they have
+   replacement audio or a later aligner establishes a mapping; and
 6. recompute affected issues without changing visible text.
 
-Selections may cross tokens and mappings. A future multi-paragraph replacement
-can be represented as paragraph operations plus range edits; v1 support for
-multi-paragraph selection actions remains an implementation decision.
+Selections may cross mappings and replay-chunk boundaries but always contain
+complete tokens. A future multi-paragraph replacement can be represented as
+paragraph operations plus token-range edits; v1 support for multi-paragraph
+selection actions remains an implementation decision.
 
-Choosing a recognizer alternative inserts ordinary visible text. It retains a
-provenance reference to that alternative only when useful; the result does not
-remain a special token object.
+Choosing a recognizer alternative inserts ordinary visible text as one or more
+pseudo-tokens. It retains a provenance reference to that alternative only when
+useful; it does not mutate or masquerade as the original recognition token.
 
 ## 9. Voice replacement flow
 
-1. Capture the selected paragraph ID, revision, and character range.
+1. Capture the selected paragraph ID, revision, and complete token identities.
 2. Record a short correction as a distinct audio asset or ephemeral buffer.
 3. Run replacement recognition, optionally with nearby visible text or original
    audio as context.
 4. If the source selection has not changed, preview or apply recognized text
    according to the eventual UX decision.
-5. Replace the selected visible range through the normal edit operation.
-6. Map replacement characters to correction audio and its recognition run when
+5. Replace the selected visible tokens through the normal edit operation.
+6. Map replacement pseudo-tokens to correction audio and its recognition run when
    retained; otherwise record available run provenance and degrade audio mapping
    according to retention policy.
 7. If recognition fails, leave visible text unchanged and allow retry, typing,
@@ -271,7 +282,8 @@ token playback.
 
 ### Quick replay
 
-- Input: a word or existing visible range from one intentional gesture.
+- Input: one visible token or an existing complete-token range from one
+  intentional gesture.
 - Resolution: use exact/aligned mappings when possible, then defensible
   inherited ranges.
 - Context: expand the target by a short window whose fixed, pause-aware,
@@ -295,13 +307,13 @@ fallback order is an open product/technical decision.
 
 ### Split
 
-Splitting paragraph `P` at character offset `k`:
+Splitting paragraph `P` at the boundary before visible token `T`:
 
-1. creates two new ordered paragraphs from `P[0:k]` and `P[k:]`;
+1. creates two new ordered paragraphs from the complete tokens before `T` and
+   the complete tokens from `T` onward;
 2. tombstones or supersedes `P` while retaining it for undo/provenance;
-3. partitions mappings by character intersection, adjusting offsets;
-4. marks mappings crossing the split as inherited unless they can be divided
-   without loss;
+3. partitions mappings by token identity;
+4. divides mappings that cover tokens on both sides without splitting a token;
 5. creates an undoable structural operation; and
 6. may schedule a new recognition plan aligned to the new boundary.
 
@@ -312,8 +324,8 @@ Merging adjacent paragraphs `A` and `B`:
 1. creates one new paragraph with an explicit separator policy (normally a
    space, unless punctuation/whitespace already supplies one);
 2. supersedes `A` and `B` while retaining their provenance for undo;
-3. shifts and combines their mappings, giving inserted separator characters
-   unavailable alignment;
+3. combines their mappings, creating an indivisible pseudo-token with
+   unavailable alignment when a separator is needed;
 4. preserves the ordered backing sources even when discontinuous;
 5. creates an undoable structural operation; and
 6. may schedule a new plan, still divided into legal chunks if combined audio
@@ -385,8 +397,9 @@ universal schema.
    rewritten by editing or re-recognition.
 3. Paragraphs are user-facing editing units; chunks are internal processing
    units. Neither permanently owns or equals the other.
-4. Character selections may cross token, mapping, chunk, and (where supported)
-   paragraph boundaries.
+4. Selections and text edits contain complete visible tokens. They may cross
+   mappings, replay chunks, and, where supported, paragraph boundaries, but
+   never split a token.
 5. Replay is derived from available alignment and reports degraded precision;
    it does not require alignment to exist.
 6. Any edit may invalidate precise alignment but must not invalidate visible
@@ -426,14 +439,12 @@ universal schema.
 
 ## 17. Open technical questions
 
-- What character-indexing convention and range transformation library should
-  the implementation use?
 - What is the smallest useful persistent format: readable primary text with a
   sidecar, a structured container, or another design?
 - Which recognition provenance and correction audio must survive save, export,
   and undo compaction?
-- What exact algorithm maps arbitrary edited character ranges back to audio,
-  especially after the user edits beyond recognition?
+- What exact algorithm maps edited pseudo-tokens back to audio, especially
+  after the user replaces their recognition-backed tokens?
 - What replay fallback order is safest for incomplete alignment?
 - How should quick-replay context be computed: fixed, pause-aware,
   sentence-aware, or hybrid?
