@@ -43,11 +43,30 @@ fn segment(start: u64, end: u64, text: &str) -> WindowSegment {
 }
 
 fn segment_with_tokens(start: u64, end: u64, text: &str, token_ids: &[i32]) -> WindowSegment {
-    let tokens = token_ids
-        .iter()
-        .map(|token_id| (*token_id, false))
-        .collect::<Vec<_>>();
-    segment_with_token_kinds(start, end, text, &tokens)
+    WindowSegment {
+        audio_range: SampleRange {
+            start_sample: start,
+            end_sample: end,
+        },
+        text: text.into(),
+        no_speech_probability: 0.1,
+        tokens: token_ids
+            .iter()
+            .enumerate()
+            .map(|(index, token_id)| RecognitionToken {
+                token_id: *token_id,
+                text: if index == 0 {
+                    text.into()
+                } else {
+                    String::new()
+                },
+                probability: 0.9,
+                is_special: false,
+                audio_range: None,
+                alternatives: Vec::new(),
+            })
+            .collect(),
+    }
 }
 
 fn segment_with_token_kinds(
@@ -449,7 +468,12 @@ impl AudioPlayer for FakePlayer {
 #[test]
 fn decoded_audition_shows_text_and_replays_exact_timestamp_range() {
     let mut decoder = FakeDecoder {
-        results: VecDeque::from([Ok(vec![segment(160, 480, " decoded words")])]),
+        results: VecDeque::from([Ok(vec![segment_with_tokens(
+            160,
+            480,
+            " decoded words",
+            &[1],
+        )])]),
         ..FakeDecoder::default()
     };
     let run = recognize(
@@ -497,7 +521,43 @@ fn decoded_audition_shows_text_and_replays_exact_timestamp_range() {
             },
         )]
     );
-    assert!(errors.is_empty());
+    assert!(errors.is_empty(), "{}", String::from_utf8_lossy(&errors));
+}
+
+#[test]
+fn audition_reports_token_fallback_and_keeps_chunk_text_selectable() {
+    let run = recognize_post_chunks(
+        vec![segment_with_token_kinds(
+            0,
+            16_000,
+            "visible text",
+            &[(1, false)],
+        )],
+        16_000,
+        PostChunkConfig::default(),
+    );
+    let mut input = Cursor::new(b"1tokens\n1.1select\nquit\n");
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let mut player = FakePlayer::default();
+
+    run_recognition_session(
+        &run,
+        Path::new("audio.wav"),
+        &mut input,
+        &mut output,
+        &mut errors,
+        &mut player,
+    )
+    .unwrap();
+
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("1.1  pseudo  \"visible text\""));
+    assert!(output.contains("selected 1.1"));
+    assert_eq!(
+        String::from_utf8(errors).unwrap(),
+        "token alignment unavailable for marker 1@1: normal recognition tokens do not reproduce the chunk text; using chunk text as one pseudo-token\n"
+    );
 }
 
 #[test]
@@ -515,7 +575,8 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
         121_600,
         PostChunkConfig::default(),
     );
-    let mut input = Cursor::new(b"2p\n3p\n1@1info\n2@2info\n3@1info\nquit\n");
+    let mut input =
+        Cursor::new(b"2p\n2.1\n1.1,2.1select\n2tokens\n3p\n1@1info\n2@2info\n3@1info\nquit\n");
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
@@ -533,6 +594,10 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("one ⟦1@1⟧\n\nfour-afour-b ⟦2@1⟧tail ⟦2@2⟧"));
     assert_eq!(output.matches("four-afour-b ⟦2@1⟧tail ⟦2@2⟧").count(), 2);
+    assert!(output.contains("caret 2.1"));
+    assert!(output.contains("selected 1.1,2.1"));
+    assert!(output.contains("2.1  rec"));
+    assert!(output.contains("2@1  marker  chunk boundary"));
     assert!(output.contains("1@1  00:00:00.000 – 00:00:01.000"));
     assert!(output.contains("long pause (2.000 s)"));
     assert!(output.contains("2@2  00:00:06.600 – 00:00:07.600"));

@@ -9,7 +9,7 @@ use std::{
 
 use crate::chunking::SampleRange;
 use crate::document::Document;
-use crate::navigation::{parse_line, Address, CommandLine, SyntaxError};
+use crate::navigation::{parse_line, Address, CommandLine, NavigationState, SyntaxError};
 use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +17,9 @@ pub enum AuditionCommand {
     Play { paragraph: usize, chunk: usize },
     Info { paragraph: usize, chunk: usize },
     Print(Option<usize>),
+    Move(Address),
+    Select(Address),
+    Tokens(usize),
     Help,
     Quit,
     Empty,
@@ -28,8 +31,6 @@ pub enum CommandParseError {
     Syntax(#[from] SyntaxError),
     #[error("unknown command '{0}'; type 'help' for available commands")]
     Unknown(String),
-    #[error("address '{0}' requires a command")]
-    MissingCommand(Address),
     #[error("{command} requires {expected}")]
     AddressRequired {
         command: String,
@@ -50,9 +51,7 @@ pub enum CommandParseError {
 pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> {
     let (address, name, arguments) = match parse_line(input)? {
         CommandLine::Empty => return Ok(AuditionCommand::Empty),
-        CommandLine::Address(address) => {
-            return Err(CommandParseError::MissingCommand(address));
-        }
+        CommandLine::Address(address) => return Ok(AuditionCommand::Move(address)),
         CommandLine::Command {
             address,
             name,
@@ -78,6 +77,26 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
             paragraph,
             chunk,
         }),
+        "select" | "s" => {
+            address
+                .map(AuditionCommand::Select)
+                .ok_or(CommandParseError::AddressRequired {
+                    command: name,
+                    expected: "an address M, M.N, M.N,M.U, M@N, or .",
+                })
+        }
+        "tokens" => match address {
+            Some(Address::Paragraph(paragraph)) => Ok(AuditionCommand::Tokens(paragraph)),
+            Some(address) => Err(CommandParseError::InvalidAddress {
+                command: name,
+                address,
+                expected: "a paragraph address M",
+            }),
+            None => Err(CommandParseError::AddressRequired {
+                command: name,
+                expected: "a paragraph address M",
+            }),
+        },
         "info" | "i" => marker_command(address, name, |paragraph, chunk| AuditionCommand::Info {
             paragraph,
             chunk,
@@ -230,12 +249,26 @@ pub fn run_recognition_session(
     errors: &mut impl Write,
     player: &mut impl AudioPlayer,
 ) -> io::Result<()> {
-    let document = Document::from_chunks(&run.chunks);
+    let document = Document::from_run(run);
     render_recognition_document(run, &document, source, output)?;
+    for fallback in document.token_fallbacks() {
+        let address = document
+            .marker_address_for_chunk(fallback.chunk_id())
+            .map_or_else(
+                || fallback.chunk_id().to_owned(),
+                |(paragraph, marker)| format!("{paragraph}@{marker}"),
+            );
+        writeln!(
+            errors,
+            "token alignment unavailable for marker {address}: {}; using chunk text as one pseudo-token",
+            fallback.reason()
+        )?;
+    }
     if run.chunks.is_empty() {
         return Ok(());
     }
     render_help(output)?;
+    let mut navigation = NavigationState::new(&document);
     loop {
         write!(output, "rde> ")?;
         output.flush()?;
@@ -293,7 +326,7 @@ pub fn run_recognition_session(
                 render_recognition_document(run, &document, source, output)?
             }
             Ok(AuditionCommand::Print(Some(paragraph))) => {
-                let Some(value) = document.paragraphs().get(paragraph - 1) else {
+                let Some(value) = document.paragraph(paragraph) else {
                     writeln!(
                         errors,
                         "unknown paragraph {paragraph}; expected 1..={}",
@@ -302,6 +335,21 @@ pub fn run_recognition_session(
                     continue;
                 };
                 render_paragraph(value, paragraph, output)?;
+            }
+            Ok(AuditionCommand::Move(address)) => match navigation.move_to(&document, &address) {
+                Ok(()) => writeln!(output, "caret {address}")?,
+                Err(error) => writeln!(errors, "{error}")?,
+            },
+            Ok(AuditionCommand::Select(address)) => match navigation.select(&document, &address) {
+                Ok(()) => writeln!(output, "selected {address}")?,
+                Err(error) => writeln!(errors, "{error}")?,
+            },
+            Ok(AuditionCommand::Tokens(paragraph)) => {
+                let Some(value) = document.paragraph(paragraph) else {
+                    writeln!(errors, "unknown paragraph {paragraph}")?;
+                    continue;
+                };
+                render_tokens(value, paragraph, output)?;
             }
             Ok(AuditionCommand::Help) => render_help(output)?,
             Ok(AuditionCommand::Quit) => return Ok(()),
@@ -316,7 +364,7 @@ pub fn render_recognition_chunks(
     source: &Path,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    let document = Document::from_chunks(&run.chunks);
+    let document = Document::from_run(run);
     render_recognition_document(run, &document, source, output)
 }
 
@@ -350,18 +398,55 @@ fn render_paragraph(
     paragraph_number: usize,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    let mut start = 0;
-    for (chunk_index, marker) in paragraph.chunk_boundaries().iter().enumerate() {
-        write!(
-            output,
-            "{} ⟦{}@{}⟧",
-            &paragraph.text()[start..marker.end_offset()],
-            paragraph_number,
-            chunk_index + 1
-        )?;
-        start = marker.end_offset();
+    let mut marker_index = 0;
+    for token_index in 0..=paragraph.tokens().len() {
+        while paragraph
+            .chunk_boundaries()
+            .get(marker_index)
+            .is_some_and(|marker| marker.after_tokens() == token_index)
+        {
+            write!(output, " ⟦{}@{}⟧", paragraph_number, marker_index + 1)?;
+            marker_index += 1;
+        }
+        if let Some(token) = paragraph.tokens().get(token_index) {
+            write!(output, "{}", token.text())?;
+        }
     }
     writeln!(output)
+}
+
+fn render_tokens(
+    paragraph: &crate::document::Paragraph,
+    paragraph_number: usize,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    let mut marker_index = 0;
+    for token_index in 0..=paragraph.tokens().len() {
+        while paragraph
+            .chunk_boundaries()
+            .get(marker_index)
+            .is_some_and(|marker| marker.after_tokens() == token_index)
+        {
+            writeln!(
+                output,
+                "{}@{}  marker  chunk boundary",
+                paragraph_number,
+                marker_index + 1
+            )?;
+            marker_index += 1;
+        }
+        if let Some(token) = paragraph.tokens().get(token_index) {
+            writeln!(
+                output,
+                "{}.{}  {:<6}  {:?}",
+                paragraph_number,
+                token_index + 1,
+                token.kind_label(),
+                token.text()
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn render_chunk_info(
@@ -407,6 +492,18 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output, "Session commands:")?;
     writeln!(output, "  print, p       show the whole document")?;
     writeln!(output, "  Mprint, Mp     show paragraph M; for example, 2p")?;
+    writeln!(
+        output,
+        "  M.N, M@N        move the caret to a token or marker"
+    )?;
+    writeln!(
+        output,
+        "  Aselect, As     select token, token range, paragraph, or marker A"
+    )?;
+    writeln!(
+        output,
+        "  Mtokens         list paragraph M tokens and markers"
+    )?;
     writeln!(
         output,
         "  M@Nplay        play the chunk ending at M@N; for example, 2@3play"
@@ -523,8 +620,8 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_command("7").unwrap_err(),
-            CommandParseError::MissingCommand(Address::Paragraph(7))
+            parse_command("7").unwrap(),
+            AuditionCommand::Move(Address::Paragraph(7))
         );
         assert_eq!(
             parse_command("1@1play now").unwrap_err(),
@@ -550,8 +647,21 @@ mod tests {
             CommandParseError::Syntax(SyntaxError::ZeroAddress("0@1".into()))
         );
         assert_eq!(
-            parse_command("2.4select").unwrap_err(),
-            CommandParseError::Unknown("select".into())
+            parse_command("2.4,3.2select").unwrap(),
+            AuditionCommand::Select(Address::TokenRange {
+                start: crate::navigation::TokenAddress {
+                    paragraph: 2,
+                    token: 4
+                },
+                end: crate::navigation::TokenAddress {
+                    paragraph: 3,
+                    token: 2
+                },
+            })
+        );
+        assert_eq!(
+            parse_command("2tokens").unwrap(),
+            AuditionCommand::Tokens(2)
         );
         assert_eq!(
             parse_command("2help").unwrap_err(),
@@ -568,6 +678,9 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("print, p"));
         assert!(output.contains("Mprint, Mp"));
+        assert!(output.contains("M.N, M@N        move the caret"));
+        assert!(output.contains("Aselect, As"));
+        assert!(output.contains("Mtokens"));
         assert!(output.contains("M@Nplay        play the chunk ending at M@N"));
         assert!(output.contains("M@Ninfo, M@Ni"));
         assert!(output.contains("list, l"));

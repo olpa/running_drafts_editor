@@ -14,9 +14,9 @@ chunk-boundary markers.
 
 An initial visible token refers to an accepted normal text token in immutable
 Whisper evidence. Timestamp and other special tokens remain evidence but are
-not selectable text. An edit may add or replace text with pseudo-tokens. A
-pseudo-token preserves user-authored text and does not claim recognition
-provenance.
+not selectable text. Normal token text is concatenated exactly without trimming.
+An edit may add or replace text with pseudo-tokens. A pseudo-token preserves
+visible text and does not claim recognition provenance.
 
 Recognition tokens and pseudo-tokens are indivisible selection and editing
 units. The user cannot select, delete, or replace only part of a token. An edit
@@ -26,9 +26,16 @@ Paragraph text is the exact concatenation of its visible-token text. Token text
 may contain leading or trailing whitespace. Chunk markers contribute no text
 and are absent from clean export.
 
-Recognition-token identities refer to immutable evidence. Pseudo-tokens have
-stable identities of their own. Displayed addresses follow current paragraph
-and token order and are not stable identities.
+Recognition-token identities use the recognition run ID, accepted segment ID,
+and original token position. Pseudo-tokens have stable identities of their own.
+Displayed addresses follow current paragraph and token order and are not stable
+identities.
+
+If accepted normal tokens are missing or their exact concatenation differs from
+a replay chunk's authoritative text, the complete chunk text becomes one
+indivisible pseudo-token. Its alignment is unavailable. The CLI reports this
+fallback and retains the mismatched recognition evidence; it never invents
+partial-token positions to repair the difference.
 
 ## Addresses and commands
 
@@ -49,11 +56,11 @@ The general command form is:
 ```
 
 The address and command may be attached (`2@3info`) or separated by whitespace
-(`2@3 info`). The implemented #5 commands are `print`/`p`, `play`, `info`/`i`,
-`help`/`h`, and `quit`/`q`; `list`/`l` remain print aliases. `play` and `info`
-require a chunk-marker address. `print` accepts no address for the whole
-document or a paragraph address. Other examples below reserve syntax for later
-tickets.
+(`2@3 info`). Commands include `print`/`p`, `play`, `info`/`i`, `select`/`s`,
+`tokens`, `help`/`h`, and `quit`/`q`; `list`/`l` remain print aliases. `play` and
+`info` require a chunk-marker address. `print` accepts no address for the whole
+document or a paragraph address. `tokens` requires a paragraph address. A bare
+token or marker address moves the caret.
 
 Examples describe the intended language; each ticket implements only commands
 within its scope:
@@ -93,11 +100,11 @@ range.
 
 The cursor is a caret on a visible token or chunk marker. A selection is one
 visible token, a non-empty range of complete visible tokens, one paragraph, or
-one chunk marker. Multi-paragraph token ranges are not initially required.
+one chunk marker. Token ranges may cross paragraph boundaries.
 
-Displayed ranges use inclusive endpoints for convenient commands. Internally,
-a token range should be half-open. A stored selection records stable endpoint
-identities and the paragraph revision, not only displayed token numbers.
+Displayed and stored token ranges use inclusive endpoint identities. Each
+endpoint records its stable token identity, paragraph identity, and paragraph
+revision rather than only its displayed token number.
 
 After an edit, a selection may remain only when the same token identities map
 safely into the new paragraph revision. Otherwise the CLI must use a documented
