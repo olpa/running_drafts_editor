@@ -75,7 +75,7 @@ p                     print the document
 2@3select             select chunk marker 2@3
 2@3info               show information for marker 2@3
 2@3play               play the chunk ending at marker 2@3
-play                  play the current token or selection
+play                  planned: play the current token or selection
 2tokens               inspect paragraph 2 tokens
 h                     show help
 q                     quit
