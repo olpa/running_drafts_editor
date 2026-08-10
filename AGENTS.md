@@ -64,7 +64,8 @@ large design.
   `rde>` prompt. `M.N` addresses a visible token, `M@N` a chunk marker, and
   `M.N,M.U` an inclusive displayed token range. Commands may attach to an
   address or follow it after whitespace. `p` prints the document, `Mp` prints a
-  paragraph, and `M@Nplay` and `M@Ninfo` act on a chunk marker.
+  paragraph, and `M@Nplay` plays the complete chunk immediately to the left of
+  marker `M@N`; `M@Ninfo` inspects that chunk.
 - Whisper recognition uses explicit windows of at most 480,000 samples. The
   experimental default targets a 384,000-sample core with 48,000 samples of
   context per side. It reuses normal text-token IDs from the last accepted

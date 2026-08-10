@@ -409,7 +409,7 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output, "  Mprint, Mp     show paragraph M; for example, 2p")?;
     writeln!(
         output,
-        "  M@Nplay        play marker M@N; for example, 2@3play"
+        "  M@Nplay        play the chunk ending at M@N; for example, 2@3play"
     )?;
     writeln!(
         output,
@@ -568,7 +568,7 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("print, p"));
         assert!(output.contains("Mprint, Mp"));
-        assert!(output.contains("M@Nplay"));
+        assert!(output.contains("M@Nplay        play the chunk ending at M@N"));
         assert!(output.contains("M@Ninfo, M@Ni"));
         assert!(output.contains("list, l"));
         assert!(output.contains("help, h"));

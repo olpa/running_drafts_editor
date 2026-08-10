@@ -74,6 +74,21 @@ h                     show help
 q                     quit
 ```
 
+### Marker playback
+
+A chunk marker is the right boundary of a replay chunk. `M@Nplay` plays the
+complete replay chunk immediately to the left of marker `M@N`: from marker
+`M@(N-1)` to `M@N`. For `M@1`, the left boundary is the start of paragraph `M`.
+Every paragraph starts at a replay-chunk boundary, so playback never needs to
+split a chunk or cross a paragraph boundary.
+
+The implementation follows the marker's stable chunk reference and plays that
+chunk's stored audio range. It does not derive audio positions by subtracting
+marker numbers, and it adds no playback context. Context around a cursor or
+selection belongs to the later replay ticket. If the marker or its backing
+chunk is unavailable, the command reports an error instead of guessing a
+range.
+
 ## Cursor and selection state
 
 The cursor is a caret on a visible token or chunk marker. A selection is one
