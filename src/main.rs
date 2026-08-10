@@ -27,7 +27,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Example:\n  rde audition --input recording.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'chunk>' prompt to see session commands."
+    after_help = "Example:\n  rde audition --input recording.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'rde>' prompt to see session commands."
 )]
 struct AuditionArgs {
     /// PCM WAV audio; channels and sample rate are converted automatically.

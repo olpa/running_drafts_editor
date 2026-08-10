@@ -207,8 +207,8 @@ paragraph. Other chunk boundaries stay inside the paragraph.
 The CLI shows the accepted text as a continuous flow. It renders a distinct
 marker after every replay chunk, including the chunk at the end of each
 paragraph and the chunk at the end of the document. A marker has the address
-`M.N`, where `M` is the paragraph number and `N` is the left-to-right chunk
-number inside that paragraph. For example, `2.3info` shows information about
+`M@N`, where `M` is the paragraph number and `N` is the left-to-right chunk
+number inside that paragraph. For example, `2@3info` shows information about
 the third chunk in the second paragraph. Boundary selection and boundary
 changes are future work.
 
@@ -253,8 +253,8 @@ text made from one or more complete replay chunks. It also contains one
 marker is therefore also the paragraph-end marker.
 
 Each marker refers to its `RecognitionChunk` by stable recognition identity.
-The visible address `M.N` is derived from the current paragraph and marker
-order; it is not the stable identity. `M.Ninfo` follows the marker reference to
+The visible marker address `M@N` is derived from the current paragraph and marker
+order; it is not the stable identity. `M@Ninfo` follows the marker reference to
 show the immutable chunk details.
 
 The initial document is derived from one recognition run. A `long_pause` or
