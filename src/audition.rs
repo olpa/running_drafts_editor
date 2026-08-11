@@ -279,13 +279,13 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
             reject_arguments(&name, &arguments)?;
             no_address(address, name, AuditionCommand::Stop)
         }
-        "select" | "s" => {
+        "select" | "sel" | "s" => {
             reject_arguments(&name, &arguments)?;
             address
                 .map(AuditionCommand::Select)
                 .ok_or(CommandParseError::AddressRequired {
                     command: name,
-                    expected: "an address M, M.N, M.N,M.U, M@N, or .",
+                    expected: "an address M, M.N, M.N,M.U, M@N, M@N,M@U, or .",
                 })
         }
         "tokens" => {
@@ -782,6 +782,18 @@ pub(crate) fn render_paragraph(
                         && position.paragraph_revision == paragraph.revision()
                         && position.chunk_id == marker.chunk_id())
             });
+            let marker_range_start = navigation.is_some_and(|state| {
+                matches!(state.selection(), Some(Selection::MarkerRange { start, .. })
+                    if start.paragraph_id == paragraph.id()
+                        && start.paragraph_revision == paragraph.revision()
+                        && start.chunk_id == marker.chunk_id())
+            });
+            let marker_range_end = navigation.is_some_and(|state| {
+                matches!(state.selection(), Some(Selection::MarkerRange { end_exclusive, .. })
+                    if end_exclusive.paragraph_id == paragraph.id()
+                        && end_exclusive.paragraph_revision == paragraph.revision()
+                        && end_exclusive.chunk_id == marker.chunk_id())
+            });
             let marker_caret = navigation.is_some_and(|state| {
                 state.selection().is_none()
                     && matches!(state.caret(), Some(Caret::Marker(position))
@@ -789,7 +801,13 @@ pub(crate) fn render_paragraph(
                             && position.paragraph_revision == paragraph.revision()
                             && position.chunk_id == marker.chunk_id())
             });
+            if marker_range_end {
+                write!(output, "⟫")?;
+            }
             write!(output, " ")?;
+            if marker_range_start {
+                write!(output, "⟪")?;
+            }
             if marker_selected {
                 write!(output, "⟪")?;
             } else if marker_caret {
@@ -945,7 +963,7 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         output,
-        "  Aselect, As     select token, token range, paragraph, or marker A"
+        "  Aselect, Asel, As select token/marker range, paragraph, or marker A"
     )?;
     writeln!(
         output,
@@ -954,6 +972,10 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
         "  [A]play        play current/addressed token range, paragraph, or chunk"
+    )?;
+    writeln!(
+        output,
+        "  M@N,M@Uplay   play marker interval; left included, right excluded"
     )?;
     writeln!(
         output,
@@ -1083,6 +1105,15 @@ mod tests {
         );
         assert_eq!(parse_command("stop").unwrap(), AuditionCommand::Stop);
         assert_eq!(
+            parse_command("1@1,1@2sel").unwrap(),
+            AuditionCommand::Select(Address::MarkerRange {
+                start_paragraph: 1,
+                start_marker: 1,
+                end_paragraph: 1,
+                end_marker_exclusive: 2,
+            })
+        );
+        assert_eq!(
             parse_command("2@3 i").unwrap(),
             AuditionCommand::Info {
                 paragraph: 2,
@@ -1186,9 +1217,10 @@ mod tests {
         assert!(output.contains("print, p"));
         assert!(output.contains("Mprint, Mp"));
         assert!(output.contains("M.N, M@N        move the caret"));
-        assert!(output.contains("Aselect, As"));
+        assert!(output.contains("Aselect, Asel, As"));
         assert!(output.contains("Mtokens"));
         assert!(output.contains("[A]play        play current/addressed"));
+        assert!(output.contains("M@N,M@Uplay   play marker interval"));
         assert!(output.contains("[A]slowplay"));
         assert!(output.contains("replay"));
         assert!(output.contains("stop"));

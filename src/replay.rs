@@ -118,6 +118,44 @@ fn marker_range(
     document: &Document,
     target: Target<'_>,
 ) -> Result<Option<(String, SampleRange)>, ReplayResolutionError> {
+    match target {
+        Target::Address(Address::MarkerRange {
+            start_paragraph,
+            start_marker,
+            end_paragraph,
+            end_marker_exclusive,
+        }) => {
+            let start = document
+                .chunk_marker(*start_paragraph, *start_marker)
+                .ok_or(ReplayResolutionError::UnknownMarker {
+                    paragraph: *start_paragraph,
+                    marker: *start_marker,
+                })?;
+            let end = document
+                .chunk_marker(*end_paragraph, *end_marker_exclusive)
+                .ok_or(ReplayResolutionError::UnknownMarker {
+                    paragraph: *end_paragraph,
+                    marker: *end_marker_exclusive,
+                })?;
+            return resolve_marker_interval(document, start.chunk_id(), end.chunk_id()).map(Some);
+        }
+        Target::Selection(Selection::MarkerRange {
+            start,
+            end_exclusive,
+            paragraph_revisions,
+        }) => {
+            if paragraph_revisions.iter().any(|stored| {
+                !document.paragraphs().iter().any(|paragraph| {
+                    paragraph.id() == stored.paragraph_id && paragraph.revision() == stored.revision
+                })
+            }) {
+                return Err(ReplayResolutionError::StalePosition);
+            }
+            return resolve_marker_interval(document, &start.chunk_id, &end_exclusive.chunk_id)
+                .map(Some);
+        }
+        _ => {}
+    }
     let marker = match target {
         Target::Address(Address::Marker { paragraph, marker }) => document
             .chunk_marker(*paragraph, *marker)
@@ -147,6 +185,51 @@ fn marker_range(
     Ok(Some((source.id().to_owned(), range)))
 }
 
+fn resolve_marker_interval(
+    document: &Document,
+    start_chunk_id: &str,
+    end_chunk_id: &str,
+) -> Result<(String, SampleRange), ReplayResolutionError> {
+    let markers = document
+        .paragraphs()
+        .iter()
+        .flat_map(|paragraph| paragraph.chunk_boundaries())
+        .collect::<Vec<_>>();
+    let start = markers
+        .iter()
+        .position(|marker| marker.chunk_id() == start_chunk_id)
+        .ok_or(ReplayResolutionError::StalePosition)?;
+    let end = markers
+        .iter()
+        .position(|marker| marker.chunk_id() == end_chunk_id)
+        .ok_or(ReplayResolutionError::StalePosition)?;
+    if start >= end {
+        return Err(ReplayResolutionError::StalePosition);
+    }
+    let mut source_id = None::<String>;
+    let mut range = None::<SampleRange>;
+    for marker in &markers[start + 1..=end] {
+        let Some((source, chunk_range)) = document.audio_mapping(marker.chunk_id()) else {
+            return Err(ReplayResolutionError::Unavailable);
+        };
+        if source_id.as_deref().is_some_and(|id| id != source.id()) {
+            return Err(ReplayResolutionError::MultipleSources);
+        }
+        source_id.get_or_insert_with(|| source.id().to_owned());
+        range = Some(match range {
+            None => chunk_range,
+            Some(current) => SampleRange {
+                start_sample: current.start_sample,
+                end_sample: chunk_range.end_sample,
+            },
+        });
+    }
+    Ok((
+        source_id.ok_or(ReplayResolutionError::Unavailable)?,
+        range.ok_or(ReplayResolutionError::Unavailable)?,
+    ))
+}
+
 fn target_tokens(
     document: &Document,
     target: Target<'_>,
@@ -159,6 +242,7 @@ fn target_tokens(
         Target::Address(Address::Paragraph(number)) => paragraph_tokens(document, *number),
         Target::Address(Address::Current) => unreachable!(),
         Target::Address(Address::Marker { .. }) => unreachable!(),
+        Target::Address(Address::MarkerRange { .. }) => unreachable!(),
         Target::Caret(Caret::Token(position)) => stable_tokens(document, position, position),
         Target::Caret(Caret::Marker(_)) => unreachable!(),
         Target::Selection(Selection::Tokens {
@@ -178,6 +262,7 @@ fn target_tokens(
             paragraph_tokens(document, paragraph + 1)
         }
         Target::Selection(Selection::Marker(_)) => unreachable!(),
+        Target::Selection(Selection::MarkerRange { .. }) => unreachable!(),
     }
 }
 
@@ -296,10 +381,16 @@ mod tests {
                     {"id": {"kind": "recognition", "run_id": "run", "segment_id": "s1", "token_index": 0}, "text": "one", "origin": {"kind": "recognition"}},
                     {"id": {"kind": "recognition", "run_id": "run", "segment_id": "s1", "token_index": 1}, "text": " two", "origin": {"kind": "recognition"}}
                 ],
-                "chunk_boundaries": [{"chunk_id": "c1", "after_tokens": 2}]
+            "chunk_boundaries": [
+                {"chunk_id": "c1", "after_tokens": 1},
+                {"chunk_id": "c2", "after_tokens": 2}
+            ]
             }],
             "audio_sources": [{"id": "audio", "path": "audio.wav", "canonical_sample_count": 3_200}],
-            "chunk_audio_mappings": [{"chunk_id": "c1", "source_id": "audio", "range": {"start_sample": 900, "end_sample": 3_100}}],
+            "chunk_audio_mappings": [
+                {"chunk_id": "c1", "source_id": "audio", "range": {"start_sample": 900, "end_sample": 1_900}},
+                {"chunk_id": "c2", "source_id": "audio", "range": {"start_sample": 1_900, "end_sample": 3_100}}
+            ],
             "token_audio_mappings": mappings
         })).unwrap()
     }
@@ -362,9 +453,31 @@ mod tests {
             resolved.range,
             SampleRange {
                 start_sample: 900,
+                end_sample: 1_900
+            }
+        );
+    }
+
+    #[test]
+    fn marker_range_plays_between_left_inclusive_and_right_exclusive_boundaries() {
+        let document = document(true);
+        let navigation = NavigationState::new(&document);
+        let address = Address::MarkerRange {
+            start_paragraph: 1,
+            start_marker: 1,
+            end_paragraph: 1,
+            end_marker_exclusive: 2,
+        };
+        let resolved = resolve(&document, &navigation, Some(&address), 12_000).unwrap();
+        assert_eq!(
+            resolved.range,
+            SampleRange {
+                start_sample: 1_900,
                 end_sample: 3_100
             }
         );
+        assert_eq!(resolved.alignment, AlignmentState::Exact);
+        assert!(!resolved.partial);
     }
 
     #[test]

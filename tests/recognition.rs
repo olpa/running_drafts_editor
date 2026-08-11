@@ -578,7 +578,7 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
         PostChunkConfig::default(),
     );
     let mut input = Cursor::new(
-        b"2p\n2.1\n2p\n1.1,2.1select\np\n2@1\n2p\n2@1select\n2p\n2select\n2p\n2tokens\n3p\n1@1info\n2@2info\n3@1info\nquit\n",
+        b"2p\n2.1\n2p\n1.1,2.1select\np\n2@1\n2p\n2@1select\n2p\n2select\n2p\n2@1,2@2select\n2p\nplay\n2@1,2@2play\n2tokens\n3p\n1@1info\n2@2info\n3@1info\nquit\n",
     );
     let mut output = Vec::new();
     let mut errors = Vec::new();
@@ -609,6 +609,8 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     assert!(output.contains("four-afour-b ⟪⟦2@1⟧⟫tail ⟦2@2⟧"));
     assert!(output.contains("selected 2"));
     assert!(output.contains("⟪four-afour-b ⟦2@1⟧tail ⟦2@2⟧⟫"));
+    assert!(output.contains("selected 2@1,2@2"));
+    assert!(output.contains("four-afour-b ⟪⟦2@1⟧tail⟫ ⟦2@2⟧"));
     assert!(output.contains("2.1  rec"));
     assert!(output.contains("2@1  marker  chunk boundary"));
     assert!(output.contains("1@1  00:00:00.000 – 00:00:01.000"));
@@ -619,5 +621,25 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
         String::from_utf8(errors).unwrap(),
         "unknown paragraph 3; expected 1..=2\nunknown chunk marker 3@1\n"
     );
-    assert!(player.calls.is_empty());
+    assert_eq!(
+        player.calls,
+        vec![
+            (
+                PathBuf::from("audio.wav"),
+                16_000,
+                SampleRange {
+                    start_sample: 105_600,
+                    end_sample: 121_600
+                }
+            ),
+            (
+                PathBuf::from("audio.wav"),
+                16_000,
+                SampleRange {
+                    start_sample: 105_600,
+                    end_sample: 121_600
+                }
+            ),
+        ]
+    );
 }

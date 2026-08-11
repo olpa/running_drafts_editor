@@ -87,6 +87,11 @@ large design.
   range, and `stop` ends active playback. Current-revision token audio mappings
   carry exact, aligned, inherited, stale, or unavailable alignment; partial
   coverage is reported separately and mappings across audio sources are refused.
+- `M@N,M@U` is a half-open marker-bounded interval: the left boundary is
+  included and the right boundary excluded. It selects the visible interval
+  between stable markers and replays the complete chunks after the left marker
+  through the chunk at the right marker. Marker ranges may cross paragraphs but
+  replay refuses missing mappings or multiple audio sources.
 - Whisper recognition uses explicit windows of at most 480,000 samples. The
   experimental default targets a 384,000-sample core with 48,000 samples of
   context per side. It reuses normal text-token IDs from the last accepted

@@ -45,6 +45,7 @@ partial-token positions to repair the difference.
 | `M.N` | visible token `N` in paragraph `M` |
 | `M.N,M.U` | tokens `N` through `U`, inclusive when displayed |
 | `M@N` | chunk-boundary marker `N` in paragraph `M` |
+| `M@N,M@U` | marker-bounded interval, left boundary included and right boundary excluded |
 | `.` | current token, marker, or selection when permitted |
 
 Numbers are positive and one-based. The common `M.N` form addresses tokens;
@@ -74,6 +75,7 @@ p                     print the document
 2.4,2.9select         select complete tokens 2.4 through 2.9
 2select               select paragraph 2
 2@3select             select chunk marker 2@3
+2@1,2@3sel            select from marker 2@1 up to but not including 2@3
 2@3info               show information for marker 2@3
 2@3play               play the chunk ending at marker 2@3
 play                  play the current token or selection with context
@@ -115,11 +117,20 @@ than one audio source. `slowplay` uses the same resolution at 0.75 speed.
 `replay` and `slowreplay` reuse the last successfully started source range;
 `stop` ends the active player subprocess.
 
+A marker range is a half-open boundary interval. The left marker is included as
+the visible start boundary and the right marker is excluded. Playback starts
+with the complete chunk immediately after the left marker and ends with the
+complete chunk at the right marker. For example, `1@1,1@2play` plays the chunk
+between those two markers. The range may cross paragraphs. Every included chunk
+must have a mapping to the same audio source; replay otherwise reports that the
+range is unavailable or spans multiple sources.
+
 ## Cursor and selection state
 
 The cursor is a caret on a visible token or chunk marker. A selection is one
-visible token, a non-empty range of complete visible tokens, one paragraph, or
-one chunk marker. Token ranges may cross paragraph boundaries.
+visible token, a non-empty range of complete visible tokens, one paragraph, one
+chunk marker, or a half-open interval between two chunk markers. Token and
+marker ranges may cross paragraph boundaries.
 
 Displayed and stored token ranges use inclusive endpoint identities. Each
 endpoint records its stable token identity, paragraph identity, and paragraph
