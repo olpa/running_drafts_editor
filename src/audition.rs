@@ -12,6 +12,7 @@ use crate::document::Document;
 use crate::navigation::{
     parse_line, Address, Caret, CommandLine, NavigationState, Selection, SyntaxError,
 };
+use crate::persistence::save_document;
 use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +23,7 @@ pub enum AuditionCommand {
     Move(Address),
     Select(Address),
     Tokens(usize),
+    Save(Option<PathBuf>),
     Help,
     Quit,
     Empty,
@@ -61,6 +63,13 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         } => (address, name, arguments),
     };
 
+    if name == "save" {
+        return no_address(
+            address,
+            name,
+            AuditionCommand::Save((!arguments.is_empty()).then(|| PathBuf::from(arguments))),
+        );
+    }
     if !arguments.is_empty() {
         return Err(CommandParseError::ExtraArguments(name));
     }
@@ -251,7 +260,7 @@ pub fn run_recognition_session(
     errors: &mut impl Write,
     player: &mut impl AudioPlayer,
 ) -> io::Result<()> {
-    let document = Document::from_run(run);
+    let document = Document::from_run_with_source(run, Some(source));
     render_recognition_document(run, &document, source, output)?;
     for fallback in document.token_fallbacks() {
         let address = document
@@ -357,7 +366,21 @@ pub fn run_recognition_session(
                 };
                 render_tokens(value, paragraph, output)?;
             }
+            Ok(AuditionCommand::Save(path)) => {
+                let Some(path) = path else {
+                    writeln!(
+                        errors,
+                        "save requires a document path in an audition session"
+                    )?;
+                    continue;
+                };
+                match save_document(&path, &document) {
+                    Ok(()) => writeln!(output, "saved {}", path.display())?,
+                    Err(error) => writeln!(errors, "{error}")?,
+                }
+            }
             Ok(AuditionCommand::Help) => render_help(output)?,
+
             Ok(AuditionCommand::Quit) => return Ok(()),
             Ok(AuditionCommand::Empty) => {}
             Err(error) => writeln!(errors, "{error}")?,
@@ -409,7 +432,7 @@ fn render_recognition_document_with_navigation(
     Ok(())
 }
 
-fn render_paragraph(
+pub(crate) fn render_paragraph(
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     navigation: Option<&NavigationState>,
@@ -516,7 +539,7 @@ fn token_selection_edge(
         && position.token_id == *token.id()
 }
 
-fn render_tokens(
+pub(crate) fn render_tokens(
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     output: &mut impl Write,
@@ -699,7 +722,13 @@ mod tests {
         );
         assert_eq!(parse_command("list").unwrap(), AuditionCommand::Print(None));
         assert_eq!(parse_command("h").unwrap(), AuditionCommand::Help);
+        assert_eq!(
+            parse_command("save document.rde.json").unwrap(),
+            AuditionCommand::Save(Some(PathBuf::from("document.rde.json")))
+        );
+        assert_eq!(parse_command("save").unwrap(), AuditionCommand::Save(None));
         assert_eq!(parse_command(" q ").unwrap(), AuditionCommand::Quit);
+
         assert_eq!(parse_command("  ").unwrap(), AuditionCommand::Empty);
     }
 

@@ -3,6 +3,8 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::{Args, Parser, Subcommand};
 use running_drafts_editor::audition::{run_recognition_session, Ffplay};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
+use running_drafts_editor::editor::run_editor_session;
+use running_drafts_editor::persistence::load_document;
 use running_drafts_editor::recognition::{
     recognize, PostChunkConfig, RecognitionConfig, WhisperDecoder,
 };
@@ -12,7 +14,7 @@ use running_drafts_editor::recognition::{
     name = "rde",
     version,
     about = "Running Drafts Editor (experimental)",
-    after_help = "Get started:\n  rde audition --input recording.wav --model ggml-tiny.bin\n\nRun 'rde audition --help' for recognition and chunking options."
+    after_help = "Get started:\n  rde audition --input recording.wav --model ggml-tiny.bin\n  rde edit draft.rde.json\n\nRun a command with '--help' for its options."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -23,6 +25,17 @@ struct Cli {
 enum Command {
     /// Decode, list, and interactively replay recognition chunks.
     Audition(AuditionArgs),
+    /// Open a saved visible document without running recognition.
+    Edit(EditArgs),
+}
+
+#[derive(Debug, Args)]
+struct EditArgs {
+    /// Versioned JSON document to open and save.
+    document: PathBuf,
+    /// ffplay-compatible playback executable.
+    #[arg(long, default_value = "ffplay")]
+    player: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -88,7 +101,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Cli { command } = Cli::parse();
     match command {
         Command::Audition(args) => run_audition(args),
+        Command::Edit(args) => run_edit(args),
     }
+}
+
+fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let document = load_document(&args.document)?;
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let stderr = std::io::stderr();
+    let mut input = stdin.lock();
+    let mut output = stdout.lock();
+    let mut errors = stderr.lock();
+    let mut player = Ffplay::new(args.player);
+    run_editor_session(
+        &document,
+        &args.document,
+        &mut input,
+        &mut output,
+        &mut errors,
+        &mut player,
+    )?;
+    Ok(())
 }
 
 fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -154,7 +188,9 @@ mod tests {
             "whisper.bin",
         ])
         .unwrap();
-        let Command::Audition(args) = cli.command;
+        let Command::Audition(args) = cli.command else {
+            panic!("expected audition")
+        };
 
         assert_eq!(args.input, PathBuf::from("audio.wav"));
         assert_eq!(args.player, PathBuf::from("ffplay"));
@@ -175,10 +211,21 @@ mod tests {
     }
 
     #[test]
+    fn edit_opens_a_document_without_recognition_arguments() {
+        let cli = Cli::try_parse_from(["rde", "edit", "draft.rde.json"]).unwrap();
+        let Command::Edit(args) = cli.command else {
+            panic!("expected edit");
+        };
+        assert_eq!(args.document, PathBuf::from("draft.rde.json"));
+        assert_eq!(args.player, PathBuf::from("ffplay"));
+    }
+
+    #[test]
     fn top_level_help_points_to_the_runnable_command() {
         let help = Cli::command().render_long_help().to_string();
 
         assert!(help.contains("rde audition --input recording.wav --model ggml-tiny.bin"));
-        assert!(help.contains("rde audition --help"));
+        assert!(help.contains("rde edit draft.rde.json"));
+        assert!(help.contains("Run a command with '--help'"));
     }
 }

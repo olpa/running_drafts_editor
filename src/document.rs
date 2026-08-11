@@ -1,18 +1,55 @@
 //! Token-oriented visible document derived from immutable recognition evidence.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
+
+use serde::{Deserialize, Serialize};
+
+use crate::chunking::SampleRange;
 
 use crate::recognition::{ChunkBoundaryReason, DecodedSegment, RecognitionChunk, RecognitionRun};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+pub const DOCUMENT_SCHEMA: &str = "rde-document/v1-experimental";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Document {
+    schema: String,
+    id: String,
     paragraphs: Vec<Paragraph>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    audio_sources: Vec<AudioSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    chunk_audio_mappings: Vec<ChunkAudioMapping>,
+    #[serde(skip)]
     token_fallbacks: Vec<TokenFallback>,
 }
 
 impl Document {
     pub fn from_run(run: &RecognitionRun) -> Self {
-        Self::from_evidence(&run.id, &run.segments, &run.chunks)
+        Self::from_run_with_source(run, None::<&Path>)
+    }
+
+    pub fn from_run_with_source(run: &RecognitionRun, path: Option<impl AsRef<Path>>) -> Self {
+        let mut document = Self::from_evidence(&run.id, &run.segments, &run.chunks);
+        let source_id = format!("audio:{}", run.source.sha256);
+        document.audio_sources.push(AudioSource {
+            id: source_id.clone(),
+            path: path.map(|value| value.as_ref().to_path_buf()),
+            sha256: Some(run.source.sha256.clone()),
+            canonical_sample_count: Some(run.source.decoded_sample_count),
+        });
+        document.chunk_audio_mappings = run
+            .chunks
+            .iter()
+            .map(|chunk| ChunkAudioMapping {
+                chunk_id: chunk.id.clone(),
+                source_id: source_id.clone(),
+                range: chunk.audio_range,
+            })
+            .collect();
+        document
     }
 
     pub(crate) fn from_evidence(
@@ -53,9 +90,21 @@ impl Document {
         }
 
         Self {
+            schema: DOCUMENT_SCHEMA.into(),
+            id: format!("document:{run_id}"),
             paragraphs,
+            audio_sources: Vec::new(),
+            chunk_audio_mappings: Vec::new(),
             token_fallbacks,
         }
+    }
+
+    pub fn schema(&self) -> &str {
+        &self.schema
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     pub fn paragraphs(&self) -> &[Paragraph] {
@@ -80,6 +129,26 @@ impl Document {
         &self.token_fallbacks
     }
 
+    pub fn audio_sources(&self) -> &[AudioSource] {
+        &self.audio_sources
+    }
+
+    pub fn chunk_audio_mappings(&self) -> &[ChunkAudioMapping] {
+        &self.chunk_audio_mappings
+    }
+
+    pub fn audio_mapping(&self, chunk_id: &str) -> Option<(&AudioSource, SampleRange)> {
+        let mapping = self
+            .chunk_audio_mappings
+            .iter()
+            .find(|value| value.chunk_id == chunk_id)?;
+        let source = self
+            .audio_sources
+            .iter()
+            .find(|value| value.id == mapping.source_id)?;
+        Some((source, mapping.range))
+    }
+
     pub fn marker_address_for_chunk(&self, chunk_id: &str) -> Option<(usize, usize)> {
         self.paragraphs
             .iter()
@@ -94,7 +163,7 @@ impl Document {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Paragraph {
     id: String,
     revision: u64,
@@ -198,7 +267,8 @@ fn recognition_tokens(
     Ok(result)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VisibleTokenId {
     Recognition {
         run_id: String,
@@ -210,13 +280,14 @@ pub enum VisibleTokenId {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VisibleTokenOrigin {
     Recognition,
     Pseudo { reason: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VisibleToken {
     id: VisibleTokenId,
     text: String,
@@ -244,7 +315,7 @@ impl VisibleToken {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkBoundaryMarker {
     chunk_id: String,
     after_tokens: usize,
@@ -257,6 +328,48 @@ impl ChunkBoundaryMarker {
 
     pub fn after_tokens(&self) -> usize {
         self.after_tokens
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioSource {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    canonical_sample_count: Option<u64>,
+}
+
+impl AudioSource {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkAudioMapping {
+    chunk_id: String,
+    source_id: String,
+    range: SampleRange,
+}
+
+impl ChunkAudioMapping {
+    pub fn chunk_id(&self) -> &str {
+        &self.chunk_id
+    }
+
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    pub fn range(&self) -> SampleRange {
+        self.range
     }
 }
 
