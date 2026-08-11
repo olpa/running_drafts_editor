@@ -501,6 +501,7 @@ fn decoded_audition_shows_text_and_replays_exact_timestamp_range() {
         &mut output,
         &mut errors,
         &mut player,
+        12_000,
     )
     .unwrap();
 
@@ -548,6 +549,7 @@ fn audition_reports_token_fallback_and_keeps_chunk_text_selectable() {
         &mut output,
         &mut errors,
         &mut player,
+        12_000,
     )
     .unwrap();
 
@@ -589,6 +591,7 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
         &mut output,
         &mut errors,
         &mut player,
+        12_000,
     )
     .unwrap();
 

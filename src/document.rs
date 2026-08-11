@@ -22,6 +22,8 @@ pub struct Document {
     audio_sources: Vec<AudioSource>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     chunk_audio_mappings: Vec<ChunkAudioMapping>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    token_audio_mappings: Vec<TokenAudioMapping>,
     #[serde(skip)]
     token_fallbacks: Vec<TokenFallback>,
 }
@@ -47,6 +49,37 @@ impl Document {
                 chunk_id: chunk.id.clone(),
                 source_id: source_id.clone(),
                 range: chunk.audio_range,
+            })
+            .collect();
+        document.token_audio_mappings = document
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| {
+                paragraph.tokens.iter().filter_map(|visible| {
+                    let VisibleTokenId::Recognition {
+                        segment_id,
+                        token_index,
+                        ..
+                    } = &visible.id
+                    else {
+                        return None;
+                    };
+                    let range = run
+                        .segments
+                        .iter()
+                        .find(|segment| &segment.id == segment_id)?
+                        .tokens
+                        .get(*token_index)?
+                        .audio_range?;
+                    Some(TokenAudioMapping {
+                        paragraph_id: paragraph.id.clone(),
+                        paragraph_revision: paragraph.revision,
+                        token_id: visible.id.clone(),
+                        source_id: source_id.clone(),
+                        range,
+                        alignment: AlignmentState::Exact,
+                    })
+                })
             })
             .collect();
         document
@@ -95,6 +128,7 @@ impl Document {
             paragraphs,
             audio_sources: Vec::new(),
             chunk_audio_mappings: Vec::new(),
+            token_audio_mappings: Vec::new(),
             token_fallbacks,
         }
     }
@@ -135,6 +169,15 @@ impl Document {
 
     pub fn chunk_audio_mappings(&self) -> &[ChunkAudioMapping] {
         &self.chunk_audio_mappings
+    }
+
+    pub fn token_audio_mappings(&self) -> &[TokenAudioMapping] {
+        &self.token_audio_mappings
+    }
+    pub fn audio_source(&self, source_id: &str) -> Option<&AudioSource> {
+        self.audio_sources
+            .iter()
+            .find(|source| source.id == source_id)
     }
 
     pub fn audio_mapping(&self, chunk_id: &str) -> Option<(&AudioSource, SampleRange)> {
@@ -350,6 +393,10 @@ impl AudioSource {
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
+
+    pub fn canonical_sample_count(&self) -> Option<u64> {
+        self.canonical_sample_count
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,6 +404,59 @@ pub struct ChunkAudioMapping {
     chunk_id: String,
     source_id: String,
     range: SampleRange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlignmentState {
+    Exact,
+    Aligned,
+    Inherited,
+    Stale,
+    Unavailable,
+}
+
+impl std::fmt::Display for AlignmentState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Exact => "exact",
+            Self::Aligned => "aligned",
+            Self::Inherited => "inherited",
+            Self::Stale => "stale",
+            Self::Unavailable => "unavailable",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenAudioMapping {
+    paragraph_id: String,
+    paragraph_revision: u64,
+    token_id: VisibleTokenId,
+    source_id: String,
+    range: SampleRange,
+    alignment: AlignmentState,
+}
+
+impl TokenAudioMapping {
+    pub fn paragraph_id(&self) -> &str {
+        &self.paragraph_id
+    }
+    pub fn paragraph_revision(&self) -> u64 {
+        self.paragraph_revision
+    }
+    pub fn token_id(&self) -> &VisibleTokenId {
+        &self.token_id
+    }
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+    pub fn range(&self) -> SampleRange {
+        self.range
+    }
+    pub fn alignment(&self) -> AlignmentState {
+        self.alignment
+    }
 }
 
 impl ChunkAudioMapping {

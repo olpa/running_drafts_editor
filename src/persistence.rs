@@ -210,6 +210,51 @@ fn validate(document: &Document) -> Result<(), DocumentIoError> {
             )));
         }
     }
+    let mut mapped_tokens = HashSet::new();
+    for mapping in document.token_audio_mappings() {
+        let Some(paragraph) = document
+            .paragraphs()
+            .iter()
+            .find(|paragraph| paragraph.id() == mapping.paragraph_id())
+        else {
+            return Err(DocumentIoError::Invalid(format!(
+                "token audio mapping refers to unknown paragraph '{}'",
+                mapping.paragraph_id()
+            )));
+        };
+        if paragraph.revision() != mapping.paragraph_revision() {
+            return Err(DocumentIoError::Invalid(format!(
+                "token audio mapping for paragraph '{}' has a stale revision",
+                mapping.paragraph_id()
+            )));
+        }
+        let key = token_id_key(mapping.token_id());
+        if !paragraph
+            .tokens()
+            .iter()
+            .any(|token| token_id_key(token.id()) == key)
+        {
+            return Err(DocumentIoError::Invalid(
+                "token audio mapping refers to an unknown visible token".into(),
+            ));
+        }
+        if !source_ids.contains(mapping.source_id()) {
+            return Err(DocumentIoError::Invalid(format!(
+                "token audio mapping refers to unknown source '{}'",
+                mapping.source_id()
+            )));
+        }
+        if mapping.range().start_sample >= mapping.range().end_sample {
+            return Err(DocumentIoError::Invalid(
+                "token audio mapping has an empty or reversed range".into(),
+            ));
+        }
+        if !mapped_tokens.insert(key) {
+            return Err(DocumentIoError::Invalid(
+                "visible token has more than one audio mapping".into(),
+            ));
+        }
+    }
     Ok(())
 }
 

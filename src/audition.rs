@@ -4,7 +4,7 @@ use std::{
     fmt,
     io::{self, BufRead, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
 };
 
 use crate::chunking::SampleRange;
@@ -15,11 +15,22 @@ use crate::navigation::{
 };
 use crate::persistence::{load_document, save_document};
 use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
+use crate::replay::{resolve as resolve_replay, ResolvedReplay};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditionCommand {
-    Play { paragraph: usize, chunk: usize },
-    Info { paragraph: usize, chunk: usize },
+    Play {
+        address: Option<Address>,
+        speed: PlaybackSpeed,
+    },
+    Replay {
+        speed: PlaybackSpeed,
+    },
+    Stop,
+    Info {
+        paragraph: usize,
+        chunk: usize,
+    },
     Print(Option<usize>),
     Move(Address),
     Select(Address),
@@ -29,6 +40,150 @@ pub enum AuditionCommand {
     Help,
     Quit,
     Empty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackSpeed {
+    Normal,
+    Slow,
+}
+
+impl PlaybackSpeed {
+    fn atempo(self) -> &'static str {
+        match self {
+            Self::Normal => "1.0",
+            Self::Slow => "0.75",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LastPlayback {
+    source_id: String,
+    range: SampleRange,
+    require_file: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ReplayStart {
+    pub context_samples: u64,
+    pub speed: PlaybackSpeed,
+    pub require_file: bool,
+}
+
+pub(crate) fn start_document_replay(
+    document: &Document,
+    navigation: &NavigationState,
+    address: Option<&Address>,
+    start: ReplayStart,
+    player: &mut impl AudioPlayer,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<Option<LastPlayback>> {
+    let resolved = match resolve_replay(document, navigation, address, start.context_samples) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            writeln!(errors, "replay unavailable: {error}")?;
+            return Ok(None);
+        }
+    };
+    start_resolved(
+        document,
+        &resolved,
+        start.speed,
+        start.require_file,
+        player,
+        output,
+        errors,
+    )
+}
+
+fn start_resolved(
+    document: &Document,
+    resolved: &ResolvedReplay,
+    speed: PlaybackSpeed,
+    require_file: bool,
+    player: &mut impl AudioPlayer,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<Option<LastPlayback>> {
+    let Some(source) = document.audio_source(&resolved.source_id) else {
+        writeln!(
+            errors,
+            "replay unavailable: audio source '{}' is missing",
+            resolved.source_id
+        )?;
+        return Ok(None);
+    };
+    let Some(path) = source.path() else {
+        writeln!(errors, "audio source '{}' has no local path", source.id())?;
+        return Ok(None);
+    };
+    if require_file && !path.is_file() {
+        writeln!(
+            errors,
+            "audio source '{}' is unavailable at {}",
+            source.id(),
+            path.display()
+        )?;
+        return Ok(None);
+    }
+    if resolved.partial {
+        writeln!(errors, "replay uses partial token alignment")?;
+    }
+    if resolved.alignment != crate::document::AlignmentState::Exact {
+        writeln!(errors, "replay alignment is {}", resolved.alignment)?;
+    }
+    match player.start(path, 16_000, resolved.range, speed) {
+        Ok(()) => {
+            writeln!(
+                output,
+                "playing [{}, {}) at {} speed",
+                resolved.range.start_sample,
+                resolved.range.end_sample,
+                speed.atempo()
+            )?;
+            Ok(Some(LastPlayback {
+                source_id: resolved.source_id.clone(),
+                range: resolved.range,
+                require_file,
+            }))
+        }
+        Err(error) => {
+            writeln!(errors, "playback failed: {error}")?;
+            Ok(None)
+        }
+    }
+}
+
+pub(crate) fn repeat_document_replay(
+    document: &Document,
+    last: Option<&LastPlayback>,
+    speed: PlaybackSpeed,
+    player: &mut impl AudioPlayer,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<()> {
+    let Some(last) = last else {
+        writeln!(errors, "there is no previous replay")?;
+        return Ok(());
+    };
+    let resolved = ResolvedReplay {
+        source_id: last.source_id.clone(),
+        range: last.range,
+        alignment: crate::document::AlignmentState::Exact,
+        partial: false,
+    };
+    let _ = start_resolved(
+        document,
+        &resolved,
+        speed,
+        last.require_file,
+        player,
+        output,
+        errors,
+    )?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -95,12 +250,34 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                 }),
             }
         }
-        "play" => {
+        "play" | "slowplay" => {
             reject_arguments(&name, &arguments)?;
-            marker_command(address, name, |paragraph, chunk| AuditionCommand::Play {
-                paragraph,
-                chunk,
+            Ok(AuditionCommand::Play {
+                address,
+                speed: if name == "slowplay" {
+                    PlaybackSpeed::Slow
+                } else {
+                    PlaybackSpeed::Normal
+                },
             })
+        }
+        "replay" | "slowreplay" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(
+                address,
+                name.clone(),
+                AuditionCommand::Replay {
+                    speed: if name == "slowreplay" {
+                        PlaybackSpeed::Slow
+                    } else {
+                        PlaybackSpeed::Normal
+                    },
+                },
+            )
+        }
+        "stop" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, AuditionCommand::Stop)
         }
         "select" | "s" => {
             reject_arguments(&name, &arguments)?;
@@ -191,6 +368,20 @@ pub trait AudioPlayer {
         sample_rate_hz: u32,
         range: SampleRange,
     ) -> Result<(), PlaybackError>;
+
+    fn start(
+        &mut self,
+        source: &Path,
+        sample_rate_hz: u32,
+        range: SampleRange,
+        _speed: PlaybackSpeed,
+    ) -> Result<(), PlaybackError> {
+        self.play(source, sample_rate_hz, range)
+    }
+
+    fn stop(&mut self) -> Result<bool, PlaybackError> {
+        Ok(false)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -214,9 +405,10 @@ pub enum PlaybackError {
     Other(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Ffplay {
     program: PathBuf,
+    child: Option<Child>,
 }
 
 impl Default for Ffplay {
@@ -229,6 +421,7 @@ impl Ffplay {
     pub fn new(program: impl Into<PathBuf>) -> Self {
         Self {
             program: program.into(),
+            child: None,
         }
     }
 }
@@ -276,6 +469,73 @@ impl AudioPlayer for Ffplay {
             })
         }
     }
+
+    fn start(
+        &mut self,
+        source: &Path,
+        sample_rate_hz: u32,
+        range: SampleRange,
+        speed: PlaybackSpeed,
+    ) -> Result<(), PlaybackError> {
+        self.stop()?;
+        if sample_rate_hz == 0 {
+            return Err(PlaybackError::ZeroSampleRate);
+        }
+        if range.start_sample >= range.end_sample {
+            return Err(PlaybackError::InvalidRange(range));
+        }
+        let start = samples_as_seconds(range.start_sample, sample_rate_hz);
+        let duration = samples_as_seconds(range.len(), sample_rate_hz);
+        let child = Command::new(&self.program)
+            .args([
+                "-nodisp",
+                "-autoexit",
+                "-loglevel",
+                "error",
+                "-ss",
+                &start,
+                "-t",
+                &duration,
+                "-af",
+            ])
+            .arg(format!("atempo={}", speed.atempo()))
+            .arg("-i")
+            .arg(source)
+            .stdin(Stdio::null())
+            .spawn()
+            .map_err(|source| PlaybackError::Start {
+                program: self.program.clone(),
+                source,
+            })?;
+        self.child = Some(child);
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<bool, PlaybackError> {
+        let Some(mut child) = self.child.take() else {
+            return Ok(false);
+        };
+        if child
+            .try_wait()
+            .map_err(|error| PlaybackError::Other(error.to_string()))?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        child
+            .kill()
+            .map_err(|error| PlaybackError::Other(error.to_string()))?;
+        child
+            .wait()
+            .map_err(|error| PlaybackError::Other(error.to_string()))?;
+        Ok(true)
+    }
+}
+
+impl Drop for Ffplay {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
 }
 
 fn samples_as_seconds(samples: u64, sample_rate_hz: u32) -> String {
@@ -294,6 +554,7 @@ pub fn run_recognition_session(
     output: &mut impl Write,
     errors: &mut impl Write,
     player: &mut impl AudioPlayer,
+    replay_context_samples: u64,
 ) -> io::Result<()> {
     let mut document = Document::from_run_with_source(run, Some(source));
     let mut document_path = None::<PathBuf>;
@@ -317,6 +578,7 @@ pub fn run_recognition_session(
     }
     render_help(output)?;
     let mut navigation = NavigationState::new(&document);
+    let mut last_playback = None;
     loop {
         write!(output, "rde> ")?;
         output.flush()?;
@@ -325,42 +587,36 @@ pub fn run_recognition_session(
             return Ok(());
         }
         match parse_command(&line) {
-            Ok(AuditionCommand::Play { paragraph, chunk }) => {
-                let Some(marker) = document.chunk_marker(paragraph, chunk) else {
-                    writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
-                    continue;
-                };
-                let Some((audio_source, range)) = document.audio_mapping(marker.chunk_id()) else {
-                    writeln!(
-                        errors,
-                        "audio mapping is unavailable for marker {paragraph}@{chunk}"
-                    )?;
-                    continue;
-                };
-                let Some(path) = audio_source.path() else {
-                    writeln!(
-                        errors,
-                        "audio source '{}' has no local path",
-                        audio_source.id()
-                    )?;
-                    continue;
-                };
-                if loaded_document && !path.is_file() {
-                    writeln!(
-                        errors,
-                        "audio source '{}' is unavailable at {}",
-                        audio_source.id(),
-                        path.display()
-                    )?;
-                    continue;
-                }
-                if let Err(error) = player.play(path, 16_000, range) {
-                    writeln!(
-                        errors,
-                        "playback failed for marker {paragraph}@{chunk}: {error}"
-                    )?;
+            Ok(AuditionCommand::Play { address, speed }) => {
+                if let Some(value) = start_document_replay(
+                    &document,
+                    &navigation,
+                    address.as_ref(),
+                    ReplayStart {
+                        context_samples: replay_context_samples,
+                        speed,
+                        require_file: loaded_document,
+                    },
+                    player,
+                    output,
+                    errors,
+                )? {
+                    last_playback = Some(value);
                 }
             }
+            Ok(AuditionCommand::Replay { speed }) => repeat_document_replay(
+                &document,
+                last_playback.as_ref(),
+                speed,
+                player,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Stop) => match player.stop() {
+                Ok(true) => writeln!(output, "playback stopped")?,
+                Ok(false) => writeln!(errors, "nothing is playing")?,
+                Err(error) => writeln!(errors, "could not stop playback: {error}")?,
+            },
             Ok(AuditionCommand::Info { paragraph, chunk }) => {
                 let Some(marker) = document.chunk_marker(paragraph, chunk) else {
                     writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
@@ -697,8 +953,21 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         output,
-        "  M@Nplay        play the chunk ending at M@N; for example, 2@3play"
+        "  [A]play        play current/addressed token range, paragraph, or chunk"
     )?;
+    writeln!(
+        output,
+        "  [A]slowplay    play the same target at 0.75 speed"
+    )?;
+    writeln!(
+        output,
+        "  replay         play the last resolved range again"
+    )?;
+    writeln!(
+        output,
+        "  slowreplay     play the last range again at 0.75 speed"
+    )?;
+    writeln!(output, "  stop           stop active playback")?;
     writeln!(
         output,
         "  M@Ninfo, M@Ni show details for marker M@N; for example, 2@3info"
@@ -785,10 +1054,34 @@ mod tests {
         assert_eq!(
             parse_command(" 2@3play ").unwrap(),
             AuditionCommand::Play {
-                paragraph: 2,
-                chunk: 3
+                address: Some(Address::Marker {
+                    paragraph: 2,
+                    marker: 3
+                }),
+                speed: PlaybackSpeed::Normal,
             }
         );
+        assert_eq!(
+            parse_command("play").unwrap(),
+            AuditionCommand::Play {
+                address: None,
+                speed: PlaybackSpeed::Normal
+            }
+        );
+        assert_eq!(
+            parse_command("2slowplay").unwrap(),
+            AuditionCommand::Play {
+                address: Some(Address::Paragraph(2)),
+                speed: PlaybackSpeed::Slow
+            }
+        );
+        assert_eq!(
+            parse_command("replay").unwrap(),
+            AuditionCommand::Replay {
+                speed: PlaybackSpeed::Normal
+            }
+        );
+        assert_eq!(parse_command("stop").unwrap(), AuditionCommand::Stop);
         assert_eq!(
             parse_command("2@3 i").unwrap(),
             AuditionCommand::Info {
@@ -819,18 +1112,10 @@ mod tests {
     #[test]
     fn parser_reports_command_specific_address_errors() {
         assert_eq!(
-            parse_command("play").unwrap_err(),
-            CommandParseError::AddressRequired {
-                command: "play".into(),
-                expected: "a chunk-marker address M@N",
-            }
-        );
-        assert_eq!(
-            parse_command("1play").unwrap_err(),
-            CommandParseError::InvalidAddress {
-                command: "play".into(),
-                address: Address::Paragraph(1),
-                expected: "a chunk-marker address M@N",
+            parse_command("1play").unwrap(),
+            AuditionCommand::Play {
+                address: Some(Address::Paragraph(1)),
+                speed: PlaybackSpeed::Normal
             }
         );
         assert_eq!(
@@ -903,7 +1188,10 @@ mod tests {
         assert!(output.contains("M.N, M@N        move the caret"));
         assert!(output.contains("Aselect, As"));
         assert!(output.contains("Mtokens"));
-        assert!(output.contains("M@Nplay        play the chunk ending at M@N"));
+        assert!(output.contains("[A]play        play current/addressed"));
+        assert!(output.contains("[A]slowplay"));
+        assert!(output.contains("replay"));
+        assert!(output.contains("stop"));
         assert!(output.contains("M@Ninfo, M@Ni"));
         assert!(output.contains("list, l"));
         assert!(output.contains("save [PATH]    save the visible document"));

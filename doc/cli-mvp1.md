@@ -58,12 +58,12 @@ canonical audio mappings in a versioned JSON baseline. Create it with audition
 `load PATH`/`edit PATH`. Missing audio or recognition metadata must not prevent
 reading and navigation.
 
-## Replay at the cursor or selection
+## [x] Replay at the cursor or selection
 
 Play the mapped audio with a short configurable context window. Report when
 alignment is inherited, stale, partial, or unavailable.
 
-## Add extended replay commands
+## [x] Add extended replay commands
 
 Support replaying a selection or paragraph, replaying again, stopping, and
 slower playback. Keep waveform and timeline controls out of scope.

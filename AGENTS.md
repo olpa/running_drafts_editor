@@ -81,6 +81,12 @@ large design.
   marker `M@N`; `M@Ninfo` inspects that chunk. A bare token or marker address
   moves the caret, `Aselect` selects a token, token range, paragraph, or marker,
   and `Mtokens` lists the individually addressable tokens in a paragraph.
+- `[A]play` replays the current or addressed token range, paragraph, or marker;
+  text replay adds configurable fixed context while marker replay stays exact.
+  `[A]slowplay` uses 0.75 speed, `replay`/`slowreplay` repeat the last resolved
+  range, and `stop` ends active playback. Current-revision token audio mappings
+  carry exact, aligned, inherited, stale, or unavailable alignment; partial
+  coverage is reported separately and mappings across audio sources are refused.
 - Whisper recognition uses explicit windows of at most 480,000 samples. The
   experimental default targets a 384,000-sample core with 48,000 samples of
   context per side. It reuses normal text-token IDs from the last accepted

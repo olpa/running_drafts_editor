@@ -57,8 +57,9 @@ The general command form is:
 
 The address and command may be attached (`2@3info`) or separated by whitespace
 (`2@3 info`). Commands include `print`/`p`, `play`, `info`/`i`, `select`/`s`,
-`tokens`, `help`/`h`, and `quit`/`q`; `list`/`l` remain print aliases. `play` and
-`info` require a chunk-marker address. `print` accepts no address for the whole
+`tokens`, `help`/`h`, and `quit`/`q`; `list`/`l` remain print aliases. `play`
+accepts any address or uses the current token or selection; `info` requires a
+chunk-marker address. `print` accepts no address for the whole
 document or a paragraph address. `tokens` requires a paragraph address. A bare
 token or marker address moves the caret.
 
@@ -75,7 +76,12 @@ p                     print the document
 2@3select             select chunk marker 2@3
 2@3info               show information for marker 2@3
 2@3play               play the chunk ending at marker 2@3
-play                  planned: play the current token or selection
+play                  play the current token or selection with context
+2.4,2.9play           play an addressed token range with context
+2slowplay             play paragraph 2 at 0.75 speed
+replay                play the last resolved range again
+slowreplay            repeat it at 0.75 speed
+stop                  stop active playback
 2tokens               inspect paragraph 2 tokens
 h                     show help
 q                     quit
@@ -91,10 +97,23 @@ split a chunk or cross a paragraph boundary.
 
 The implementation follows the marker's stable chunk reference and plays that
 chunk's stored audio range. It does not derive audio positions by subtracting
-marker numbers, and it adds no playback context. Context around a cursor or
-selection belongs to the later replay ticket. If the marker or its backing
-chunk is unavailable, the command reports an error instead of guessing a
-range.
+marker numbers, and it adds no playback context. If the marker or its backing
+chunk is unavailable, the command reports an error instead of guessing a range.
+
+### Text replay
+
+`play` resolves an addressed token, token range, or paragraph, or the current
+token or selection, through mappings for the current paragraph revision. It
+adds the fixed context set by `--replay-context-ms` (750 ms by default) and
+clamps the result to the known canonical source length. Marker playback remains
+the exact chunk range and adds no context.
+
+The resolver reports partial coverage when some selected tokens have no usable
+mapping. It also reports inherited or stale alignment instead of presenting it
+as exact. It refuses a target with no defensible range or with ranges from more
+than one audio source. `slowplay` uses the same resolution at 0.75 speed.
+`replay` and `slowreplay` reuse the last successfully started source range;
+`stop` ends the active player subprocess.
 
 ## Cursor and selection state
 
