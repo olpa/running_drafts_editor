@@ -3,8 +3,9 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::{Args, Parser, Subcommand};
 use running_drafts_editor::audition::{run_recognition_session, Ffplay};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
+use running_drafts_editor::document::Document;
 use running_drafts_editor::editor::run_editor_session;
-use running_drafts_editor::persistence::load_document;
+use running_drafts_editor::persistence::{load_document, save_document};
 use running_drafts_editor::recognition::{
     recognize, PostChunkConfig, RecognitionConfig, WhisperDecoder,
 };
@@ -82,6 +83,9 @@ struct AuditionArgs {
     /// Score penalty per token of distance from the target size.
     #[arg(long, default_value_t = 20)]
     chunk_distance_penalty_ms: u64,
+    /// Save the recognized visible document before entering the session.
+    #[arg(long)]
+    output: Option<PathBuf>,
     /// ffplay-compatible playback executable.
     #[arg(long, default_value = "ffplay")]
     player: PathBuf,
@@ -153,6 +157,11 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut decoder = WhisperDecoder::load(&args.model, &config)?;
     let run = recognize(source, &wav.samples, config, &mut decoder)?;
+    if let Some(path) = &args.output {
+        let document = Document::from_run_with_source(&run, Some(&args.input));
+        save_document(path, &document)?;
+        println!("saved {}", path.display());
+    }
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -194,6 +203,7 @@ mod tests {
 
         assert_eq!(args.input, PathBuf::from("audio.wav"));
         assert_eq!(args.player, PathBuf::from("ffplay"));
+        assert_eq!(args.output, None);
         assert_eq!(args.model, PathBuf::from("whisper.bin"));
         assert_eq!(args.language, "auto");
         assert_eq!(args.threads, 4);
@@ -208,6 +218,25 @@ mod tests {
         assert_eq!(args.chunk_strong_pause_ms, 800);
         assert_eq!(args.chunk_long_pause_ms, 2_000);
         assert_eq!(args.chunk_distance_penalty_ms, 20);
+    }
+
+    #[test]
+    fn audition_accepts_a_document_output_path() {
+        let cli = Cli::try_parse_from([
+            "rde",
+            "audition",
+            "--input",
+            "audio.wav",
+            "--model",
+            "whisper.bin",
+            "--output",
+            "draft.rde.json",
+        ])
+        .unwrap();
+        let Command::Audition(args) = cli.command else {
+            panic!("expected audition");
+        };
+        assert_eq!(args.output, Some(PathBuf::from("draft.rde.json")));
     }
 
     #[test]

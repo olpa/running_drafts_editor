@@ -2,14 +2,14 @@
 
 use std::{
     io::{self, BufRead, Write},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use crate::{
     audition::{parse_command, render_paragraph, render_tokens, AudioPlayer, AuditionCommand},
     document::Document,
     navigation::NavigationState,
-    persistence::save_document,
+    persistence::{load_document, save_document},
 };
 
 pub fn run_editor_session(
@@ -20,7 +20,10 @@ pub fn run_editor_session(
     errors: &mut impl Write,
     player: &mut impl AudioPlayer,
 ) -> io::Result<()> {
-    render_document(document, output)?;
+    let mut document = document.clone();
+    let mut document_path = document_path.to_path_buf();
+    render_document(&document, output)?;
+
     for source in document.audio_sources() {
         match source.path() {
             None => writeln!(
@@ -38,7 +41,7 @@ pub fn run_editor_session(
         }
     }
     writeln!(output, "Type 'help' for session commands.")?;
-    let mut navigation = NavigationState::new(document);
+    let mut navigation = NavigationState::new(&document);
     loop {
         write!(output, "rde> ")?;
         output.flush()?;
@@ -48,17 +51,17 @@ pub fn run_editor_session(
         }
         match parse_command(&line) {
             Ok(AuditionCommand::Print(None)) => {
-                render_document_with_navigation(document, Some(&navigation), output)?
+                render_document_with_navigation(&document, Some(&navigation), output)?
             }
             Ok(AuditionCommand::Print(Some(number))) => match document.paragraph(number) {
                 Some(paragraph) => render_paragraph(paragraph, number, Some(&navigation), output)?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
-            Ok(AuditionCommand::Move(address)) => match navigation.move_to(document, &address) {
+            Ok(AuditionCommand::Move(address)) => match navigation.move_to(&document, &address) {
                 Ok(()) => writeln!(output, "caret {address}")?,
                 Err(error) => writeln!(errors, "{error}")?,
             },
-            Ok(AuditionCommand::Select(address)) => match navigation.select(document, &address) {
+            Ok(AuditionCommand::Select(address)) => match navigation.select(&document, &address) {
                 Ok(()) => writeln!(output, "selected {address}")?,
                 Err(error) => writeln!(errors, "{error}")?,
             },
@@ -109,12 +112,26 @@ pub fn run_editor_session(
                 }
             }
             Ok(AuditionCommand::Save(path)) => {
-                let path = path.unwrap_or_else(|| PathBuf::from(document_path));
-                match save_document(&path, document) {
-                    Ok(()) => writeln!(output, "saved {}", path.display())?,
+                let path = path.unwrap_or_else(|| document_path.clone());
+                match save_document(&path, &document) {
+                    Ok(()) => {
+                        document_path = path.clone();
+                        writeln!(output, "saved {}", path.display())?;
+                    }
+
                     Err(error) => writeln!(errors, "{error}")?,
                 }
             }
+            Ok(AuditionCommand::Load(path)) => match load_document(&path) {
+                Ok(loaded) => {
+                    document = loaded;
+                    document_path = path;
+                    navigation = NavigationState::new(&document);
+                    writeln!(output, "loaded {}", document_path.display())?;
+                    render_document_with_navigation(&document, Some(&navigation), output)?;
+                }
+                Err(error) => writeln!(errors, "{error}")?,
+            },
             Ok(AuditionCommand::Help) => render_editor_help(output)?,
             Ok(AuditionCommand::Quit) => return Ok(()),
             Ok(AuditionCommand::Empty) => {}
@@ -127,7 +144,7 @@ fn render_document(document: &Document, output: &mut impl Write) -> io::Result<(
     render_document_with_navigation(document, None, output)
 }
 
-fn render_document_with_navigation(
+pub(crate) fn render_document_with_navigation(
     document: &Document,
     navigation: Option<&NavigationState>,
     output: &mut impl Write,
@@ -144,6 +161,6 @@ fn render_document_with_navigation(
 fn render_editor_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
-        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect                    select token/range/paragraph/marker A\n  Mtokens                    list paragraph tokens\n  M@Nplay                    play mapped audio when available\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  h | help                   show this help\n  q | quit                   leave the session"
+        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect                    select token/range/paragraph/marker A\n  Mtokens                    list paragraph tokens\n  M@Nplay                    play mapped audio when available\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
     )
 }
