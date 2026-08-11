@@ -50,10 +50,13 @@ See `navigation.md`.
 Render paragraph boundaries, chunk-boundary symbols, cursor, and selected text
 as visually distinct terminal output.
 
-## Save and restore the visible-document baseline
+## [x] Save and reopen the authoritative visible-document baseline
 
-Persist paragraphs, audio references, and stable IDs early. A document must
-remain readable when recognition metadata is absent.
+Persist exact visible tokens, paragraphs, stable IDs, chunk markers, and optional
+canonical audio mappings in a versioned JSON baseline. Create it with audition
+`--output`, open it with `rde edit`, or replace the current session document with
+`load PATH`/`edit PATH`. Missing audio or recognition metadata must not prevent
+reading and navigation.
 
 ## Replay at the cursor or selection
 

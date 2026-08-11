@@ -9,9 +9,11 @@ use std::{
 
 use crate::chunking::SampleRange;
 use crate::document::Document;
+use crate::editor::render_document_with_navigation;
 use crate::navigation::{
     parse_line, Address, Caret, CommandLine, NavigationState, Selection, SyntaxError,
 };
+use crate::persistence::{load_document, save_document};
 use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +24,8 @@ pub enum AuditionCommand {
     Move(Address),
     Select(Address),
     Tokens(usize),
+    Save(Option<PathBuf>),
+    Load(PathBuf),
     Help,
     Quit,
     Empty,
@@ -48,6 +52,8 @@ pub enum CommandParseError {
     UnexpectedAddress(String),
     #[error("{0} accepts no additional arguments")]
     ExtraArguments(String),
+    #[error("{0} requires a document path")]
+    PathRequired(String),
 }
 
 pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> {
@@ -61,25 +67,43 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         } => (address, name, arguments),
     };
 
-    if !arguments.is_empty() {
-        return Err(CommandParseError::ExtraArguments(name));
-    }
-
     match name.as_str() {
-        "print" | "p" | "list" | "l" => match address {
-            None => Ok(AuditionCommand::Print(None)),
-            Some(Address::Paragraph(paragraph)) => Ok(AuditionCommand::Print(Some(paragraph))),
-            Some(address) => Err(CommandParseError::InvalidAddress {
-                command: name,
+        "save" => no_address(
+            address,
+            name,
+            AuditionCommand::Save((!arguments.is_empty()).then(|| PathBuf::from(arguments))),
+        ),
+        "load" | "edit" => {
+            if arguments.is_empty() {
+                return Err(CommandParseError::PathRequired(name));
+            }
+            no_address(
                 address,
-                expected: "a paragraph address M",
-            }),
-        },
-        "play" => marker_command(address, name, |paragraph, chunk| AuditionCommand::Play {
-            paragraph,
-            chunk,
-        }),
+                name,
+                AuditionCommand::Load(PathBuf::from(arguments)),
+            )
+        }
+        "print" | "p" | "list" | "l" => {
+            reject_arguments(&name, &arguments)?;
+            match address {
+                None => Ok(AuditionCommand::Print(None)),
+                Some(Address::Paragraph(paragraph)) => Ok(AuditionCommand::Print(Some(paragraph))),
+                Some(address) => Err(CommandParseError::InvalidAddress {
+                    command: name,
+                    address,
+                    expected: "a paragraph address M",
+                }),
+            }
+        }
+        "play" => {
+            reject_arguments(&name, &arguments)?;
+            marker_command(address, name, |paragraph, chunk| AuditionCommand::Play {
+                paragraph,
+                chunk,
+            })
+        }
         "select" | "s" => {
+            reject_arguments(&name, &arguments)?;
             address
                 .map(AuditionCommand::Select)
                 .ok_or(CommandParseError::AddressRequired {
@@ -87,25 +111,45 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                     expected: "an address M, M.N, M.N,M.U, M@N, or .",
                 })
         }
-        "tokens" => match address {
-            Some(Address::Paragraph(paragraph)) => Ok(AuditionCommand::Tokens(paragraph)),
-            Some(address) => Err(CommandParseError::InvalidAddress {
-                command: name,
-                address,
-                expected: "a paragraph address M",
-            }),
-            None => Err(CommandParseError::AddressRequired {
-                command: name,
-                expected: "a paragraph address M",
-            }),
-        },
-        "info" | "i" => marker_command(address, name, |paragraph, chunk| AuditionCommand::Info {
-            paragraph,
-            chunk,
-        }),
-        "help" | "h" => no_address(address, name, AuditionCommand::Help),
-        "quit" | "q" => no_address(address, name, AuditionCommand::Quit),
+        "tokens" => {
+            reject_arguments(&name, &arguments)?;
+            match address {
+                Some(Address::Paragraph(paragraph)) => Ok(AuditionCommand::Tokens(paragraph)),
+                Some(address) => Err(CommandParseError::InvalidAddress {
+                    command: name,
+                    address,
+                    expected: "a paragraph address M",
+                }),
+                None => Err(CommandParseError::AddressRequired {
+                    command: name,
+                    expected: "a paragraph address M",
+                }),
+            }
+        }
+        "info" | "i" => {
+            reject_arguments(&name, &arguments)?;
+            marker_command(address, name, |paragraph, chunk| AuditionCommand::Info {
+                paragraph,
+                chunk,
+            })
+        }
+        "help" | "h" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, AuditionCommand::Help)
+        }
+        "quit" | "q" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, AuditionCommand::Quit)
+        }
         _ => Err(CommandParseError::Unknown(name)),
+    }
+}
+
+fn reject_arguments(command: &str, arguments: &str) -> Result<(), CommandParseError> {
+    if arguments.is_empty() {
+        Ok(())
+    } else {
+        Err(CommandParseError::ExtraArguments(command.into()))
     }
 }
 
@@ -251,7 +295,9 @@ pub fn run_recognition_session(
     errors: &mut impl Write,
     player: &mut impl AudioPlayer,
 ) -> io::Result<()> {
-    let document = Document::from_run(run);
+    let mut document = Document::from_run_with_source(run, Some(source));
+    let mut document_path = None::<PathBuf>;
+    let mut loaded_document = false;
     render_recognition_document(run, &document, source, output)?;
     for fallback in document.token_fallbacks() {
         let address = document
@@ -284,22 +330,31 @@ pub fn run_recognition_session(
                     writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
                     continue;
                 };
-                let Some(recognition_chunk) = run
-                    .chunks
-                    .iter()
-                    .find(|candidate| candidate.id == marker.chunk_id())
-                else {
+                let Some((audio_source, range)) = document.audio_mapping(marker.chunk_id()) else {
                     writeln!(
                         errors,
-                        "chunk data is unavailable for marker {paragraph}@{chunk}"
+                        "audio mapping is unavailable for marker {paragraph}@{chunk}"
                     )?;
                     continue;
                 };
-                if let Err(error) = player.play(
-                    source,
-                    run.source.sample_rate_hz,
-                    recognition_chunk.audio_range,
-                ) {
+                let Some(path) = audio_source.path() else {
+                    writeln!(
+                        errors,
+                        "audio source '{}' has no local path",
+                        audio_source.id()
+                    )?;
+                    continue;
+                };
+                if loaded_document && !path.is_file() {
+                    writeln!(
+                        errors,
+                        "audio source '{}' is unavailable at {}",
+                        audio_source.id(),
+                        path.display()
+                    )?;
+                    continue;
+                }
+                if let Err(error) = player.play(path, 16_000, range) {
                     writeln!(
                         errors,
                         "playback failed for marker {paragraph}@{chunk}: {error}"
@@ -324,13 +379,19 @@ pub fn run_recognition_session(
                 };
                 render_chunk_info(run, recognition_chunk, paragraph, chunk, output)?;
             }
-            Ok(AuditionCommand::Print(None)) => render_recognition_document_with_navigation(
-                run,
-                &document,
-                source,
-                Some(&navigation),
-                output,
-            )?,
+            Ok(AuditionCommand::Print(None)) => {
+                if loaded_document {
+                    render_document_with_navigation(&document, Some(&navigation), output)?;
+                } else {
+                    render_recognition_document_with_navigation(
+                        run,
+                        &document,
+                        source,
+                        Some(&navigation),
+                        output,
+                    )?;
+                }
+            }
             Ok(AuditionCommand::Print(Some(paragraph))) => {
                 let Some(value) = document.paragraph(paragraph) else {
                     writeln!(
@@ -357,7 +418,36 @@ pub fn run_recognition_session(
                 };
                 render_tokens(value, paragraph, output)?;
             }
+            Ok(AuditionCommand::Save(path)) => {
+                let path = path.or_else(|| document_path.clone());
+                let Some(path) = path else {
+                    writeln!(
+                        errors,
+                        "save requires a document path in an audition session"
+                    )?;
+                    continue;
+                };
+                match save_document(&path, &document) {
+                    Ok(()) => {
+                        document_path = Some(path.clone());
+                        writeln!(output, "saved {}", path.display())?;
+                    }
+                    Err(error) => writeln!(errors, "{error}")?,
+                }
+            }
+            Ok(AuditionCommand::Load(path)) => match load_document(&path) {
+                Ok(loaded) => {
+                    document = loaded;
+                    document_path = Some(path.clone());
+                    loaded_document = true;
+                    navigation = NavigationState::new(&document);
+                    writeln!(output, "loaded {}", path.display())?;
+                    render_document_with_navigation(&document, Some(&navigation), output)?;
+                }
+                Err(error) => writeln!(errors, "{error}")?,
+            },
             Ok(AuditionCommand::Help) => render_help(output)?,
+
             Ok(AuditionCommand::Quit) => return Ok(()),
             Ok(AuditionCommand::Empty) => {}
             Err(error) => writeln!(errors, "{error}")?,
@@ -409,7 +499,7 @@ fn render_recognition_document_with_navigation(
     Ok(())
 }
 
-fn render_paragraph(
+pub(crate) fn render_paragraph(
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     navigation: Option<&NavigationState>,
@@ -516,7 +606,7 @@ fn token_selection_edge(
         && position.token_id == *token.id()
 }
 
-fn render_tokens(
+pub(crate) fn render_tokens(
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     output: &mut impl Write,
@@ -614,6 +704,15 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
         "  M@Ninfo, M@Ni show details for marker M@N; for example, 2@3info"
     )?;
     writeln!(output, "  list, l        aliases for print")?;
+    writeln!(
+        output,
+        "  save [PATH]    save the visible document; for example, save draft.rde.json"
+    )?;
+    writeln!(
+        output,
+        "  load PATH      replace the document and reset navigation"
+    )?;
+    writeln!(output, "  edit PATH      alias for load PATH")?;
     writeln!(output, "  help, h    show this help")?;
     writeln!(output, "  quit, q    exit")
 }
@@ -699,7 +798,21 @@ mod tests {
         );
         assert_eq!(parse_command("list").unwrap(), AuditionCommand::Print(None));
         assert_eq!(parse_command("h").unwrap(), AuditionCommand::Help);
+        assert_eq!(
+            parse_command("save document.rde.json").unwrap(),
+            AuditionCommand::Save(Some(PathBuf::from("document.rde.json")))
+        );
+        assert_eq!(parse_command("save").unwrap(), AuditionCommand::Save(None));
+        assert_eq!(
+            parse_command("load document.rde.json").unwrap(),
+            AuditionCommand::Load(PathBuf::from("document.rde.json"))
+        );
+        assert_eq!(
+            parse_command("edit other document.json").unwrap(),
+            AuditionCommand::Load(PathBuf::from("other document.json"))
+        );
         assert_eq!(parse_command(" q ").unwrap(), AuditionCommand::Quit);
+
         assert_eq!(parse_command("  ").unwrap(), AuditionCommand::Empty);
     }
 
@@ -727,6 +840,14 @@ mod tests {
         assert_eq!(
             parse_command("1@1play now").unwrap_err(),
             CommandParseError::ExtraArguments("play".into())
+        );
+        assert_eq!(
+            parse_command("unknown argument").unwrap_err(),
+            CommandParseError::Unknown("unknown".into())
+        );
+        assert_eq!(
+            parse_command("load").unwrap_err(),
+            CommandParseError::PathRequired("load".into())
         );
         assert_eq!(
             parse_command("info").unwrap_err(),
@@ -785,6 +906,10 @@ mod tests {
         assert!(output.contains("M@Nplay        play the chunk ending at M@N"));
         assert!(output.contains("M@Ninfo, M@Ni"));
         assert!(output.contains("list, l"));
+        assert!(output.contains("save [PATH]    save the visible document"));
+        assert!(output.contains("save draft.rde.json"));
+        assert!(output.contains("load PATH"));
+        assert!(output.contains("edit PATH"));
         assert!(output.contains("help, h"));
         assert!(output.contains("quit, q"));
     }
