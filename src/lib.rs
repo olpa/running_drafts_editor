@@ -7,3 +7,4 @@ pub mod editor;
 pub mod navigation;
 pub mod persistence;
 pub mod recognition;
+pub mod replay;

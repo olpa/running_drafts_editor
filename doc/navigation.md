@@ -45,6 +45,7 @@ partial-token positions to repair the difference.
 | `M.N` | visible token `N` in paragraph `M` |
 | `M.N,M.U` | tokens `N` through `U`, inclusive when displayed |
 | `M@N` | chunk-boundary marker `N` in paragraph `M` |
+| `M@N,M@U` | marker-bounded interval, left boundary included and right boundary excluded |
 | `.` | current token, marker, or selection when permitted |
 
 Numbers are positive and one-based. The common `M.N` form addresses tokens;
@@ -57,8 +58,9 @@ The general command form is:
 
 The address and command may be attached (`2@3info`) or separated by whitespace
 (`2@3 info`). Commands include `print`/`p`, `play`, `info`/`i`, `select`/`s`,
-`tokens`, `help`/`h`, and `quit`/`q`; `list`/`l` remain print aliases. `play` and
-`info` require a chunk-marker address. `print` accepts no address for the whole
+`tokens`, `help`/`h`, and `quit`/`q`; `list`/`l` remain print aliases. `play`
+accepts any address or uses the current token or selection; `info` requires a
+chunk-marker address. `print` accepts no address for the whole
 document or a paragraph address. `tokens` requires a paragraph address. A bare
 token or marker address moves the caret.
 
@@ -73,9 +75,15 @@ p                     print the document
 2.4,2.9select         select complete tokens 2.4 through 2.9
 2select               select paragraph 2
 2@3select             select chunk marker 2@3
+2@1,2@3sel            select from marker 2@1 up to but not including 2@3
 2@3info               show information for marker 2@3
 2@3play               play the chunk ending at marker 2@3
-play                  planned: play the current token or selection
+play                  play the current token or selection with context
+2.4,2.9play           play an addressed token range with context
+2slowplay             play paragraph 2 at 0.75 speed
+replay                play the last resolved range again
+slowreplay            repeat it at 0.75 speed
+stop                  stop active playback
 2tokens               inspect paragraph 2 tokens
 h                     show help
 q                     quit
@@ -91,16 +99,38 @@ split a chunk or cross a paragraph boundary.
 
 The implementation follows the marker's stable chunk reference and plays that
 chunk's stored audio range. It does not derive audio positions by subtracting
-marker numbers, and it adds no playback context. Context around a cursor or
-selection belongs to the later replay ticket. If the marker or its backing
-chunk is unavailable, the command reports an error instead of guessing a
-range.
+marker numbers, and it adds no playback context. If the marker or its backing
+chunk is unavailable, the command reports an error instead of guessing a range.
+
+### Text replay
+
+`play` resolves an addressed token, token range, or paragraph, or the current
+token or selection, through mappings for the current paragraph revision. It
+adds the fixed context set by `--replay-context-ms` (750 ms by default) and
+clamps the result to the known canonical source length. Marker playback remains
+the exact chunk range and adds no context.
+
+The resolver reports partial coverage when some selected tokens have no usable
+mapping. It also reports inherited or stale alignment instead of presenting it
+as exact. It refuses a target with no defensible range or with ranges from more
+than one audio source. `slowplay` uses the same resolution at 0.75 speed.
+`replay` and `slowreplay` reuse the last successfully started source range;
+`stop` ends the active player subprocess.
+
+A marker range is a half-open boundary interval. The left marker is included as
+the visible start boundary and the right marker is excluded. Playback starts
+with the complete chunk immediately after the left marker and ends with the
+complete chunk at the right marker. For example, `1@1,1@2play` plays the chunk
+between those two markers. The range may cross paragraphs. Every included chunk
+must have a mapping to the same audio source; replay otherwise reports that the
+range is unavailable or spans multiple sources.
 
 ## Cursor and selection state
 
 The cursor is a caret on a visible token or chunk marker. A selection is one
-visible token, a non-empty range of complete visible tokens, one paragraph, or
-one chunk marker. Token ranges may cross paragraph boundaries.
+visible token, a non-empty range of complete visible tokens, one paragraph, one
+chunk marker, or a half-open interval between two chunk markers. Token and
+marker ranges may cross paragraph boundaries.
 
 Displayed and stored token ranges use inclusive endpoint identities. Each
 endpoint records its stable token identity, paragraph identity, and paragraph

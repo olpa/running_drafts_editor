@@ -37,6 +37,9 @@ struct EditArgs {
     /// ffplay-compatible playback executable.
     #[arg(long, default_value = "ffplay")]
     player: PathBuf,
+    /// Context added before and after text replay.
+    #[arg(long, default_value_t = 750)]
+    replay_context_ms: u64,
 }
 
 #[derive(Debug, Args)]
@@ -89,6 +92,9 @@ struct AuditionArgs {
     /// ffplay-compatible playback executable.
     #[arg(long, default_value = "ffplay")]
     player: PathBuf,
+    /// Context added before and after text replay.
+    #[arg(long, default_value_t = 750)]
+    replay_context_ms: u64,
 }
 
 fn main() -> ExitCode {
@@ -125,6 +131,7 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
         &mut output,
         &mut errors,
         &mut player,
+        args.replay_context_ms.saturating_mul(16),
     )?;
     Ok(())
 }
@@ -177,6 +184,7 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
         &mut output,
         &mut errors,
         &mut player,
+        args.replay_context_ms.saturating_mul(16),
     )?;
     Ok(())
 }
@@ -218,6 +226,7 @@ mod tests {
         assert_eq!(args.chunk_strong_pause_ms, 800);
         assert_eq!(args.chunk_long_pause_ms, 2_000);
         assert_eq!(args.chunk_distance_penalty_ms, 20);
+        assert_eq!(args.replay_context_ms, 750);
     }
 
     #[test]
@@ -247,6 +256,7 @@ mod tests {
         };
         assert_eq!(args.document, PathBuf::from("draft.rde.json"));
         assert_eq!(args.player, PathBuf::from("ffplay"));
+        assert_eq!(args.replay_context_ms, 750);
     }
 
     #[test]

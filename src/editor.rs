@@ -6,7 +6,10 @@ use std::{
 };
 
 use crate::{
-    audition::{parse_command, render_paragraph, render_tokens, AudioPlayer, AuditionCommand},
+    audition::{
+        parse_command, render_paragraph, render_tokens, repeat_document_replay,
+        start_document_replay, AudioPlayer, AuditionCommand, ReplayStart,
+    },
     document::Document,
     navigation::NavigationState,
     persistence::{load_document, save_document},
@@ -19,6 +22,7 @@ pub fn run_editor_session(
     output: &mut impl Write,
     errors: &mut impl Write,
     player: &mut impl AudioPlayer,
+    replay_context_samples: u64,
 ) -> io::Result<()> {
     let mut document = document.clone();
     let mut document_path = document_path.to_path_buf();
@@ -42,6 +46,7 @@ pub fn run_editor_session(
     }
     writeln!(output, "Type 'help' for session commands.")?;
     let mut navigation = NavigationState::new(&document);
+    let mut last_playback = None;
     loop {
         write!(output, "rde> ")?;
         output.flush()?;
@@ -69,38 +74,36 @@ pub fn run_editor_session(
                 Some(paragraph) => render_tokens(paragraph, number, output)?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
-            Ok(AuditionCommand::Play { paragraph, chunk }) => {
-                let Some(marker) = document.chunk_marker(paragraph, chunk) else {
-                    writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
-                    continue;
-                };
-                let Some((source, range)) = document.audio_mapping(marker.chunk_id()) else {
-                    writeln!(
-                        errors,
-                        "audio mapping is unavailable for marker {paragraph}@{chunk}"
-                    )?;
-                    continue;
-                };
-                let Some(path) = source.path() else {
-                    writeln!(errors, "audio source '{}' has no local path", source.id())?;
-                    continue;
-                };
-                if !path.is_file() {
-                    writeln!(
-                        errors,
-                        "audio source '{}' is unavailable at {}",
-                        source.id(),
-                        path.display()
-                    )?;
-                    continue;
-                }
-                if let Err(error) = player.play(path, 16_000, range) {
-                    writeln!(
-                        errors,
-                        "playback failed for marker {paragraph}@{chunk}: {error}"
-                    )?;
+            Ok(AuditionCommand::Play { address, speed }) => {
+                if let Some(value) = start_document_replay(
+                    &document,
+                    &navigation,
+                    address.as_ref(),
+                    ReplayStart {
+                        context_samples: replay_context_samples,
+                        speed,
+                        require_file: true,
+                    },
+                    player,
+                    output,
+                    errors,
+                )? {
+                    last_playback = Some(value);
                 }
             }
+            Ok(AuditionCommand::Replay { speed }) => repeat_document_replay(
+                &document,
+                last_playback.as_ref(),
+                speed,
+                player,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Stop) => match player.stop() {
+                Ok(true) => writeln!(output, "playback stopped")?,
+                Ok(false) => writeln!(errors, "nothing is playing")?,
+                Err(error) => writeln!(errors, "could not stop playback: {error}")?,
+            },
             Ok(AuditionCommand::Info { paragraph, chunk }) => {
                 if document.chunk_marker(paragraph, chunk).is_none() {
                     writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
@@ -127,6 +130,7 @@ pub fn run_editor_session(
                     document = loaded;
                     document_path = path;
                     navigation = NavigationState::new(&document);
+                    last_playback = None;
                     writeln!(output, "loaded {}", document_path.display())?;
                     render_document_with_navigation(&document, Some(&navigation), output)?;
                 }
@@ -161,6 +165,6 @@ pub(crate) fn render_document_with_navigation(
 fn render_editor_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
-        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect                    select token/range/paragraph/marker A\n  Mtokens                    list paragraph tokens\n  M@Nplay                    play mapped audio when available\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
+        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
     )
 }

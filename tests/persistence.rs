@@ -40,6 +40,14 @@ fn baseline(path: &std::path::Path, audio_path: &str) {
             {"chunk_id": "c1", "source_id": "audio:hash", "range": {"start_sample": 0, "end_sample": 16000}},
             {"chunk_id": "c2", "source_id": "audio:hash", "range": {"start_sample": 16000, "end_sample": 32000}}
         ],
+        "token_audio_mappings": [{
+            "paragraph_id": "paragraph:run:c1",
+            "paragraph_revision": 1,
+            "token_id": {"kind": "recognition", "run_id": "run", "segment_id": "s1", "token_index": 0},
+            "source_id": "audio:hash",
+            "range": {"start_sample": 100, "end_sample": 8000},
+            "alignment": "exact"
+        }],
         "ignored_future_field": {"safe": true}
     });
     fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
@@ -70,6 +78,7 @@ fn exact_tokens_ids_markers_and_audio_mappings_round_trip() {
         document.chunk_audio_mappings()[1].range().start_sample,
         16000
     );
+    assert_eq!(document.token_audio_mappings()[0].range().start_sample, 100);
 
     save_document(&output, &document).unwrap();
     assert_eq!(load_document(&output).unwrap(), document);

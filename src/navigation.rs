@@ -29,6 +29,12 @@ pub enum Address {
         paragraph: usize,
         marker: usize,
     },
+    MarkerRange {
+        start_paragraph: usize,
+        start_marker: usize,
+        end_paragraph: usize,
+        end_marker_exclusive: usize,
+    },
 }
 
 impl fmt::Display for Address {
@@ -43,6 +49,17 @@ impl fmt::Display for Address {
                 start.paragraph, start.token, end.paragraph, end.token
             ),
             Self::Marker { paragraph, marker } => write!(f, "{paragraph}@{marker}"),
+            Self::MarkerRange {
+                start_paragraph,
+                start_marker,
+                end_paragraph,
+                end_marker_exclusive,
+            } => {
+                write!(
+                    f,
+                    "{start_paragraph}@{start_marker},{end_paragraph}@{end_marker_exclusive}"
+                )
+            }
         }
     }
 }
@@ -60,12 +77,14 @@ pub enum CommandLine {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SyntaxError {
-    #[error("invalid address '{0}'; expected M, M.N, M.N,M.U, M@N, or .")]
+    #[error("invalid address '{0}'; expected M, M.N, M.N,M.U, M@N, M@N,M@U, or .")]
     InvalidAddress(String),
     #[error("address numbers must be positive in '{0}'")]
     ZeroAddress(String),
     #[error("token range '{0}' ends before it starts")]
     ReversedRange(String),
+    #[error("marker range '{0}' must end after it starts")]
+    ReversedMarkerRange(String),
     #[error("invalid command syntax '{0}'")]
     InvalidCommand(String),
 }
@@ -128,6 +147,31 @@ pub fn parse_address(input: &str) -> Result<Address, SyntaxError> {
         return Ok(Address::Current);
     }
     if let Some((start, end)) = split_once(input, ',')? {
+        if start.contains('@') || end.contains('@') {
+            let Some((start_paragraph, start_marker)) = split_once(start, '@')? else {
+                return Err(SyntaxError::InvalidAddress(input.into()));
+            };
+            let Some((end_paragraph, end_marker)) = split_once(end, '@')? else {
+                return Err(SyntaxError::InvalidAddress(input.into()));
+            };
+            let start = (
+                parse_number(start_paragraph, input)?,
+                parse_number(start_marker, input)?,
+            );
+            let end = (
+                parse_number(end_paragraph, input)?,
+                parse_number(end_marker, input)?,
+            );
+            if start >= end {
+                return Err(SyntaxError::ReversedMarkerRange(input.into()));
+            }
+            return Ok(Address::MarkerRange {
+                start_paragraph: start.0,
+                start_marker: start.1,
+                end_paragraph: end.0,
+                end_marker_exclusive: end.1,
+            });
+        }
         let start = parse_token(start, input)?;
         let end = parse_token(end, input)?;
         if (start.paragraph, start.token) > (end.paragraph, end.token) {
@@ -228,6 +272,11 @@ pub enum Selection {
         paragraph_revision: u64,
     },
     Marker(StableMarkerPosition),
+    MarkerRange {
+        start: StableMarkerPosition,
+        end_exclusive: StableMarkerPosition,
+        paragraph_revisions: Vec<StableParagraphRevision>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -358,6 +407,20 @@ impl NavigationState {
             Address::Marker { paragraph, marker } => {
                 Selection::Marker(resolve_marker(document, *paragraph, *marker)?)
             }
+            Address::MarkerRange {
+                start_paragraph,
+                start_marker,
+                end_paragraph,
+                end_marker_exclusive,
+            } => Selection::MarkerRange {
+                start: resolve_marker(document, *start_paragraph, *start_marker)?,
+                end_exclusive: resolve_marker(document, *end_paragraph, *end_marker_exclusive)?,
+                paragraph_revisions: stable_paragraph_revisions(
+                    document,
+                    *start_paragraph,
+                    *end_paragraph,
+                )?,
+            },
             Address::Current => return self.select_current(),
         };
         self.selection = Some(selection);
@@ -480,6 +543,15 @@ mod tests {
                     paragraph: 2,
                     token: 9
                 },
+            }
+        );
+        assert_eq!(
+            parse_address("1@2,2@3").unwrap(),
+            Address::MarkerRange {
+                start_paragraph: 1,
+                start_marker: 2,
+                end_paragraph: 2,
+                end_marker_exclusive: 3,
             }
         );
         assert_eq!(parse_address(".").unwrap(), Address::Current);
@@ -609,6 +681,25 @@ mod tests {
         assert_eq!(paragraph_revisions.len(), 2);
         assert_eq!(start.paragraph_revision, 1);
         assert!(matches!(start.token_id, VisibleTokenId::Recognition { .. }));
+
+        let marker_range = Address::MarkerRange {
+            start_paragraph: 1,
+            start_marker: 1,
+            end_paragraph: 2,
+            end_marker_exclusive: 1,
+        };
+        state.select(&document, &marker_range).unwrap();
+        let Selection::MarkerRange {
+            start,
+            end_exclusive,
+            paragraph_revisions,
+        } = state.selection().unwrap()
+        else {
+            panic!("expected marker range selection");
+        };
+        assert_eq!(start.chunk_id, "c1");
+        assert_eq!(end_exclusive.chunk_id, "c2");
+        assert_eq!(paragraph_revisions.len(), 2);
     }
 
     #[test]
@@ -634,6 +725,14 @@ mod tests {
             parse_address("2.1,1.3").unwrap_err(),
             SyntaxError::ReversedRange("2.1,1.3".into())
         );
+        assert_eq!(
+            parse_address("2@1,2@1").unwrap_err(),
+            SyntaxError::ReversedMarkerRange("2@1,2@1".into())
+        );
+        assert!(matches!(
+            parse_address("1@1,1.2"),
+            Err(SyntaxError::InvalidAddress(_))
+        ));
         assert!(matches!(
             parse_address("1@2@3"),
             Err(SyntaxError::InvalidAddress(_))
