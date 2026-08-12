@@ -148,7 +148,10 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), Box<dyn std::error::Error>
 }
 
 fn validate_output_target(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
     if !parent.is_dir() {
         return Err(format!("output directory '{}' does not exist", parent.display()).into());
     }
@@ -317,6 +320,7 @@ mod tests {
             .to_string()
             .contains("is a directory"));
         assert!(validate_output_target(&directory.path().join("draft.rde.json")).is_ok());
+        assert!(validate_output_target(std::path::Path::new("test.json")).is_ok());
     }
 
     #[test]
