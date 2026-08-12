@@ -45,7 +45,7 @@ pub enum AuditionCommand {
     },
     Replace {
         range: Option<(TokenAddress, TokenAddress)>,
-        text: String,
+        replacement: ReplacementText,
     },
     Delete {
         range: Option<(TokenAddress, TokenAddress)>,
@@ -55,6 +55,12 @@ pub enum AuditionCommand {
     Help,
     Quit,
     Empty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacementText {
+    pub text: String,
+    pub exact_boundaries: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +232,8 @@ pub enum CommandParseError {
     PathRequired(String),
     #[error("{0} requires text after the command")]
     TextRequired(String),
+    #[error("invalid quoted replacement: {0}")]
+    InvalidQuotedReplacement(String),
 }
 
 pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> {
@@ -348,10 +356,9 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
             if arguments.is_empty() {
                 return Err(CommandParseError::TextRequired(name));
             }
-            optional_token_range(address, name).map(|range| AuditionCommand::Replace {
-                range,
-                text: arguments,
-            })
+            let replacement = parse_replacement(&arguments)?;
+            optional_token_range(address, name)
+                .map(|range| AuditionCommand::Replace { range, replacement })
         }
         "delete" => {
             reject_arguments(&name, &arguments)?;
@@ -374,6 +381,55 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         }
         _ => Err(CommandParseError::Unknown(name)),
     }
+}
+
+fn parse_replacement(input: &str) -> Result<ReplacementText, CommandParseError> {
+    if !input.starts_with('"') {
+        return Ok(ReplacementText {
+            text: input.into(),
+            exact_boundaries: false,
+        });
+    }
+    let mut text = String::new();
+    let mut characters = input[1..].chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '"' if characters.as_str().is_empty() => {
+                if text.is_empty() {
+                    return Err(CommandParseError::InvalidQuotedReplacement(
+                        "empty text is not allowed; use delete".into(),
+                    ));
+                }
+                return Ok(ReplacementText {
+                    text,
+                    exact_boundaries: true,
+                });
+            }
+            '"' => {
+                return Err(CommandParseError::InvalidQuotedReplacement(
+                    "unexpected text after the closing quote".into(),
+                ));
+            }
+            '\\' => match characters.next() {
+                Some('"') => text.push('"'),
+                Some('\\') => text.push('\\'),
+                Some(other) => {
+                    return Err(CommandParseError::InvalidQuotedReplacement(format!(
+                        "unsupported escape '\\{other}'"
+                    )));
+                }
+                None => {
+                    return Err(CommandParseError::InvalidQuotedReplacement(
+                        "unfinished escape".into(),
+                    ));
+                }
+            },
+            other => text.push(other),
+        }
+    }
+    Err(CommandParseError::InvalidQuotedReplacement(
+        "missing closing quote".into(),
+    ))
 }
 
 fn reject_arguments(command: &str, arguments: &str) -> Result<(), CommandParseError> {
@@ -761,9 +817,14 @@ pub fn run_recognition_session(
                 output,
                 errors,
             )?,
-            Ok(AuditionCommand::Replace { range, text }) => {
-                apply_replace(&mut document, &mut navigation, range, text, output, errors)?
-            }
+            Ok(AuditionCommand::Replace { range, replacement }) => apply_replace(
+                &mut document,
+                &mut navigation,
+                range,
+                replacement,
+                output,
+                errors,
+            )?,
             Ok(AuditionCommand::Delete { range }) => {
                 apply_delete(&mut document, &mut navigation, range, output, errors)?
             }
@@ -1073,6 +1134,14 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         output,
+        "                    unquoted keeps selected boundary whitespace"
+    )?;
+    writeln!(
+        output,
+        "                    quoted \"TEXT\" controls boundaries exactly"
+    )?;
+    writeln!(
+        output,
         "  [M.N,M.U]delete delete range or current token selection"
     )?;
     writeln!(
@@ -1243,7 +1312,10 @@ mod tests {
                         token: 4,
                     },
                 )),
-                text: "new text".into(),
+                replacement: ReplacementText {
+                    text: "new text".into(),
+                    exact_boundaries: false,
+                },
             }
         );
         assert_eq!(
@@ -1370,7 +1442,10 @@ mod tests {
             parse_command("replace text").unwrap(),
             AuditionCommand::Replace {
                 range: None,
-                text: "text".into(),
+                replacement: ReplacementText {
+                    text: "text".into(),
+                    exact_boundaries: false,
+                },
             }
         );
         assert_eq!(
@@ -1388,6 +1463,32 @@ mod tests {
     }
 
     #[test]
+    fn quoted_replacement_controls_boundaries_and_escapes_quotes_and_backslashes() {
+        assert_eq!(
+            parse_command(r#"replace " exact \"text\"\\ ""#).unwrap(),
+            AuditionCommand::Replace {
+                range: None,
+                replacement: ReplacementText {
+                    text: " exact \"text\"\\ ".into(),
+                    exact_boundaries: true,
+                },
+            }
+        );
+        assert!(matches!(
+            parse_command(r#"replace "unfinished"#),
+            Err(CommandParseError::InvalidQuotedReplacement(_))
+        ));
+        assert!(matches!(
+            parse_command(r#"replace """#),
+            Err(CommandParseError::InvalidQuotedReplacement(_))
+        ));
+        assert!(matches!(
+            parse_command(r#"replace "bad\n""#),
+            Err(CommandParseError::InvalidQuotedReplacement(_))
+        ));
+    }
+
+    #[test]
     fn help_explains_each_session_command_with_examples() {
         let mut output = Vec::new();
 
@@ -1399,6 +1500,9 @@ mod tests {
         assert!(output.contains("M.N, M@N        move the caret"));
         assert!(output.contains("Aselect, Asel, As"));
         assert!(output.contains("Mtokens"));
+        assert!(output.contains("[M.N,M.U]replace TEXT"));
+        assert!(output.contains("unquoted keeps selected boundary whitespace"));
+        assert!(output.contains("quoted \"TEXT\" controls boundaries exactly"));
         assert!(output.contains("[A]play        play current/addressed"));
         assert!(output.contains("M@N,M@Uplay   play marker interval"));
         assert!(output.contains("[A]slowplay"));

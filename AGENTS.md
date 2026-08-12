@@ -44,7 +44,9 @@ large design.
   indivisible pseudo-token with unavailable alignment; it is not divided with
   the Whisper tokenizer. When `replace` or `delete` has no address, it uses the
   current complete-token selection and rejects missing, non-token,
-  cross-paragraph, or stale selections.
+  cross-paragraph, or stale selections. Unquoted replacement text retains the
+  selected text's leading and trailing whitespace; a fully quoted replacement
+  controls both boundaries exactly and supports `\"` and `\\` escapes.
 - Token addresses are derived from the current paragraph revision. Stored
   carets and selections use stable token or chunk identities and paragraph
   revisions rather than treating displayed numbers as stable IDs. Token ranges

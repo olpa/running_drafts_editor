@@ -215,6 +215,23 @@ When `replace` or `delete` omits its address, it uses the current token
 selection. A missing, non-token, cross-paragraph, or stale selection fails
 without changing the document.
 
+An unquoted replacement preserves the maximal leading and trailing Unicode
+whitespace of the selected visible text. This keeps normal corrections from
+joining words accidentally. If the selected text is entirely whitespace, none
+of it is preserved automatically. A quoted replacement controls both
+boundaries exactly:
+
+```text
+replace new text       # keep the selection's boundary whitespace
+replace "new text"     # use exactly: new text
+replace " new text "   # use exactly: space, new text, space
+```
+
+Inside quoted replacement text, `\"` represents a quote and `\\` represents a
+backslash. Other escapes, a missing closing quote, text after the closing quote,
+and an empty quoted replacement are errors. Use `delete` instead of `replace
+""`.
+
 Character offsets and character spans do not exist in the document,
 selection, editing, mapping, replay, or persistence model. Token text is opaque
 to those operations. Rendering and clean export concatenate complete token text

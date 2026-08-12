@@ -41,7 +41,12 @@ fn edit_opens_prints_and_navigates_without_audio_or_recognition() {
         .unwrap();
     let result = child.wait_with_output().unwrap();
 
-    assert!(result.status.success());
+    assert!(
+        result.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
     let output = String::from_utf8(result.stdout).unwrap();
     let errors = String::from_utf8(result.stderr).unwrap();
     assert!(output.contains("hello world"));
@@ -97,7 +102,12 @@ fn session_edit_replaces_document_resets_navigation_and_changes_default_save_pat
         .unwrap();
     let result = child.wait_with_output().unwrap();
 
-    assert!(result.status.success());
+    assert!(
+        result.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
     let output = String::from_utf8(result.stdout).unwrap();
     assert!(output.contains(&format!("loaded {}", second.display())));
     assert!(output.contains("second text"));
@@ -170,12 +180,17 @@ fn session_edits_exact_pseudo_tokens_preserves_mappings_and_rejects_cross_paragr
         .take()
         .unwrap()
         .write_all(
-            b"1.2insert inserted words\n1.3append appended words\n1.2,1.4replace  exact text  \n1.3,2.1replace forbidden\n1.3,1.3delete\nsave\nq\n",
+            b"1.2insert inserted words\n1.3append appended words\n1.2,1.4replace \" exact text  \"\n1.3,2.1replace forbidden\n1.3,1.3delete\nsave\nq\n",
         )
         .unwrap();
     let result = child.wait_with_output().unwrap();
 
-    assert!(result.status.success());
+    assert!(
+        result.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
     let output = String::from_utf8(result.stdout).unwrap();
     let errors = String::from_utf8(result.stderr).unwrap();
     assert!(output.contains("inserted at 1.2"));
@@ -246,4 +261,45 @@ fn unaddressed_replace_uses_the_current_token_selection() {
         1
     );
     assert_eq!(saved["paragraphs"][0]["tokens"][0]["text"], "Oleg");
+}
+
+#[test]
+fn replacement_preserves_boundary_whitespace_unless_quoted() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("whitespace.json");
+    let value = json!({
+        "schema": "rde-document/v1-experimental",
+        "id": "document:whitespace",
+        "paragraphs": [{
+            "id": "paragraph:whitespace",
+            "revision": 1,
+            "tokens": [
+                {"id": {"kind": "pseudo", "id": "before"}, "text": "before", "origin": {"kind": "pseudo", "reason": "test"}},
+                {"id": {"kind": "pseudo", "id": "middle"}, "text": "\t old text \u{2003}", "origin": {"kind": "pseudo", "reason": "test"}},
+                {"id": {"kind": "pseudo", "id": "after"}, "text": "after", "origin": {"kind": "pseudo", "reason": "test"}}
+            ],
+            "chunk_boundaries": [{"chunk_id": "chunk", "after_tokens": 3}]
+        }]
+    });
+    fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
+        .args(["edit", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"1.2,1.2replace new text\np\n1.2,1.2replace \"tight\"\nsave\nq\n")
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+
+    assert!(result.status.success());
+    assert!(result.stderr.is_empty());
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(saved["paragraphs"][0]["tokens"][1]["text"], "tight");
 }
