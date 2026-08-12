@@ -35,7 +35,7 @@ impl Default for RecognitionConfig {
             right_context_samples: 48_000,
             language: "auto".into(),
             threads: 4,
-            top_candidates: 5,
+            top_candidates: 20,
             post_chunking: PostChunkConfig::default(),
         }
     }
