@@ -200,3 +200,50 @@ fn session_edits_exact_pseudo_tokens_preserves_mappings_and_rejects_cross_paragr
         value["paragraphs"][0]["tokens"][0]["id"]
     );
 }
+
+#[test]
+fn unaddressed_replace_uses_the_current_token_selection() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("selection.json");
+    let value = json!({
+        "schema": "rde-document/v1-experimental",
+        "id": "document:selection",
+        "paragraphs": [{
+            "id": "paragraph:selection",
+            "revision": 1,
+            "tokens": [
+                {"id": {"kind": "pseudo", "id": "one"}, "text": "wrong", "origin": {"kind": "pseudo", "reason": "test"}},
+                {"id": {"kind": "pseudo", "id": "two"}, "text": " name", "origin": {"kind": "pseudo", "reason": "test"}}
+            ],
+            "chunk_boundaries": [{"chunk_id": "chunk", "after_tokens": 2}]
+        }]
+    });
+    fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
+        .args(["edit", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"1.1,1.2select\nreplace Oleg\nsave\nq\n")
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+
+    assert!(result.status.success());
+    assert!(String::from_utf8(result.stdout)
+        .unwrap()
+        .contains("replaced 1.1,1.2"));
+    assert!(result.stderr.is_empty());
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(
+        saved["paragraphs"][0]["tokens"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(saved["paragraphs"][0]["tokens"][0]["text"], "Oleg");
+}

@@ -211,6 +211,9 @@ M.N,M.Udelete
 `insert` places `TEXT` before its addressed token and `append` places it after.
 `replace` and `delete` use an inclusive same-paragraph token range. The text
 after the command separator is preserved exactly as the new pseudo-token text.
+When `replace` or `delete` omits its address, it uses the current token
+selection. A missing, non-token, cross-paragraph, or stale selection fails
+without changing the document.
 
 Character offsets and character spans do not exist in the document,
 selection, editing, mapping, replay, or persistence model. Token text is opaque

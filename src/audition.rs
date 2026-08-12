@@ -44,13 +44,11 @@ pub enum AuditionCommand {
         text: String,
     },
     Replace {
-        start: TokenAddress,
-        end: TokenAddress,
+        range: Option<(TokenAddress, TokenAddress)>,
         text: String,
     },
     Delete {
-        start: TokenAddress,
-        end: TokenAddress,
+        range: Option<(TokenAddress, TokenAddress)>,
     },
     Save(Option<PathBuf>),
     Load(PathBuf),
@@ -350,18 +348,14 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
             if arguments.is_empty() {
                 return Err(CommandParseError::TextRequired(name));
             }
-            token_range_command(address, name, |start, end| AuditionCommand::Replace {
-                start,
-                end,
+            optional_token_range(address, name).map(|range| AuditionCommand::Replace {
+                range,
                 text: arguments,
             })
         }
         "delete" => {
             reject_arguments(&name, &arguments)?;
-            token_range_command(address, name, |start, end| AuditionCommand::Delete {
-                start,
-                end,
-            })
+            optional_token_range(address, name).map(|range| AuditionCommand::Delete { range })
         }
         "info" | "i" => {
             reject_arguments(&name, &arguments)?;
@@ -409,22 +403,18 @@ fn marker_command(
     }
 }
 
-fn token_range_command(
+fn optional_token_range(
     address: Option<Address>,
     command: String,
-    build: impl FnOnce(TokenAddress, TokenAddress) -> AuditionCommand,
-) -> Result<AuditionCommand, CommandParseError> {
+) -> Result<Option<(TokenAddress, TokenAddress)>, CommandParseError> {
     match address {
-        Some(Address::TokenRange { start, end }) => Ok(build(start, end)),
+        Some(Address::TokenRange { start, end }) => Ok(Some((start, end))),
         Some(address) => Err(CommandParseError::InvalidAddress {
             command,
             address,
             expected: "an inclusive token range M.N,M.U",
         }),
-        None => Err(CommandParseError::AddressRequired {
-            command,
-            expected: "an inclusive token range M.N,M.U",
-        }),
+        None => Ok(None),
     }
 }
 
@@ -771,17 +761,11 @@ pub fn run_recognition_session(
                 output,
                 errors,
             )?,
-            Ok(AuditionCommand::Replace { start, end, text }) => apply_replace(
-                &mut document,
-                &mut navigation,
-                start,
-                end,
-                text,
-                output,
-                errors,
-            )?,
-            Ok(AuditionCommand::Delete { start, end }) => {
-                apply_delete(&mut document, &mut navigation, start, end, output, errors)?
+            Ok(AuditionCommand::Replace { range, text }) => {
+                apply_replace(&mut document, &mut navigation, range, text, output, errors)?
+            }
+            Ok(AuditionCommand::Delete { range }) => {
+                apply_delete(&mut document, &mut navigation, range, output, errors)?
             }
             Ok(AuditionCommand::Save(path)) => {
                 let path = path.or_else(|| document_path.clone());
@@ -1085,11 +1069,11 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output, "  M.Nappend TEXT insert one pseudo-token after M.N")?;
     writeln!(
         output,
-        "  M.N,M.Ureplace TEXT replace an inclusive same-paragraph range"
+        "  [M.N,M.U]replace TEXT replace range or current token selection"
     )?;
     writeln!(
         output,
-        "  M.N,M.Udelete delete an inclusive same-paragraph range"
+        "  [M.N,M.U]delete delete range or current token selection"
     )?;
     writeln!(
         output,
@@ -1249,28 +1233,32 @@ mod tests {
         assert_eq!(
             parse_command("1.2,1.4replace new text").unwrap(),
             AuditionCommand::Replace {
-                start: TokenAddress {
-                    paragraph: 1,
-                    token: 2,
-                },
-                end: TokenAddress {
-                    paragraph: 1,
-                    token: 4,
-                },
+                range: Some((
+                    TokenAddress {
+                        paragraph: 1,
+                        token: 2,
+                    },
+                    TokenAddress {
+                        paragraph: 1,
+                        token: 4,
+                    },
+                )),
                 text: "new text".into(),
             }
         );
         assert_eq!(
             parse_command("1.2,1.4delete").unwrap(),
             AuditionCommand::Delete {
-                start: TokenAddress {
-                    paragraph: 1,
-                    token: 2,
-                },
-                end: TokenAddress {
-                    paragraph: 1,
-                    token: 4,
-                },
+                range: Some((
+                    TokenAddress {
+                        paragraph: 1,
+                        token: 2,
+                    },
+                    TokenAddress {
+                        paragraph: 1,
+                        token: 4,
+                    },
+                )),
             }
         );
         assert_eq!(
@@ -1377,6 +1365,17 @@ mod tests {
         assert_eq!(
             parse_command("1.2insert").unwrap_err(),
             CommandParseError::TextRequired("insert".into())
+        );
+        assert_eq!(
+            parse_command("replace text").unwrap(),
+            AuditionCommand::Replace {
+                range: None,
+                text: "text".into(),
+            }
+        );
+        assert_eq!(
+            parse_command("delete").unwrap(),
+            AuditionCommand::Delete { range: None }
         );
         assert!(matches!(
             parse_command("1.2replace text"),

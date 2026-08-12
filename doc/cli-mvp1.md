@@ -75,7 +75,8 @@ Text-edit ranges stay within one paragraph. `insert` adds text before an
 addressed token, `append` adds it after, and `replace` and `delete` operate on
 an inclusive range. Each supplied text span becomes one indivisible
 pseudo-token with unavailable alignment. Preserve mappings for retained tokens
-and degrade affected alignment honestly.
+and degrade affected alignment honestly. An unaddressed `replace` or `delete`
+uses the current token selection.
 
 ## Split and merge visible paragraphs
 

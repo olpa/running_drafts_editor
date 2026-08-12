@@ -92,17 +92,11 @@ pub fn run_editor_session(
                 output,
                 errors,
             )?,
-            Ok(AuditionCommand::Replace { start, end, text }) => apply_replace(
-                &mut document,
-                &mut navigation,
-                start,
-                end,
-                text,
-                output,
-                errors,
-            )?,
-            Ok(AuditionCommand::Delete { start, end }) => {
-                apply_delete(&mut document, &mut navigation, start, end, output, errors)?
+            Ok(AuditionCommand::Replace { range, text }) => {
+                apply_replace(&mut document, &mut navigation, range, text, output, errors)?
+            }
+            Ok(AuditionCommand::Delete { range }) => {
+                apply_delete(&mut document, &mut navigation, range, output, errors)?
             }
             Ok(AuditionCommand::Play { address, speed }) => {
                 if let Some(value) = start_document_replay(
@@ -199,12 +193,15 @@ pub(crate) fn apply_insert(
 pub(crate) fn apply_replace(
     document: &mut Document,
     navigation: &mut NavigationState,
-    start: TokenAddress,
-    end: TokenAddress,
+    range: Option<(TokenAddress, TokenAddress)>,
     text: String,
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> io::Result<()> {
+    let (start, end) = match edit_range(document, navigation, range) {
+        Ok(range) => range,
+        Err(error) => return writeln!(errors, "edit failed: {error}"),
+    };
     match document.replace_text(start.paragraph, start.token, end.paragraph, end.token, text) {
         Ok(position) => {
             refresh_navigation(document, navigation, Some(position));
@@ -217,11 +214,14 @@ pub(crate) fn apply_replace(
 pub(crate) fn apply_delete(
     document: &mut Document,
     navigation: &mut NavigationState,
-    start: TokenAddress,
-    end: TokenAddress,
+    range: Option<(TokenAddress, TokenAddress)>,
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> io::Result<()> {
+    let (start, end) = match edit_range(document, navigation, range) {
+        Ok(range) => range,
+        Err(error) => return writeln!(errors, "edit failed: {error}"),
+    };
     match document.delete_text(start.paragraph, start.token, end.paragraph, end.token) {
         Ok(position) => {
             refresh_navigation(document, navigation, position);
@@ -229,6 +229,14 @@ pub(crate) fn apply_delete(
         }
         Err(error) => writeln!(errors, "edit failed: {error}"),
     }
+}
+
+fn edit_range(
+    document: &Document,
+    navigation: &NavigationState,
+    addressed: Option<(TokenAddress, TokenAddress)>,
+) -> Result<(TokenAddress, TokenAddress), crate::navigation::NavigationError> {
+    addressed.map_or_else(|| navigation.selected_token_range(document), Ok)
 }
 
 fn refresh_navigation(
@@ -277,6 +285,6 @@ pub(crate) fn render_document_with_navigation(
 fn render_editor_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
-        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  M.Ninsert TEXT             insert one pseudo-token before M.N\n  M.Nappend TEXT             insert one pseudo-token after M.N\n  M.N,M.Ureplace TEXT        replace an inclusive same-paragraph range\n  M.N,M.Udelete              delete an inclusive same-paragraph range\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
+        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  M.Ninsert TEXT             insert one pseudo-token before M.N\n  M.Nappend TEXT             insert one pseudo-token after M.N\n  [M.N,M.U]replace TEXT      replace range or current token selection\n  [M.N,M.U]delete            delete range or current token selection\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
     )
 }

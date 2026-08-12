@@ -319,6 +319,12 @@ pub enum NavigationError {
     },
     #[error("there is no current caret or selection")]
     NoCurrentPosition,
+    #[error("there is no current token selection")]
+    NoTokenSelection,
+    #[error("the current selection is stale")]
+    StaleSelection,
+    #[error("text-edit ranges cannot cross paragraph boundaries")]
+    CrossParagraphSelection,
 }
 
 impl NavigationState {
@@ -349,6 +355,56 @@ impl NavigationState {
 
     pub fn selection(&self) -> Option<&Selection> {
         self.selection.as_ref()
+    }
+
+    pub fn selected_token_range(
+        &self,
+        document: &Document,
+    ) -> Result<(TokenAddress, TokenAddress), NavigationError> {
+        let Some(Selection::Tokens {
+            start,
+            end_inclusive,
+            ..
+        }) = self.selection.as_ref()
+        else {
+            return Err(NavigationError::NoTokenSelection);
+        };
+        if start.paragraph_id != end_inclusive.paragraph_id {
+            return Err(NavigationError::CrossParagraphSelection);
+        }
+        let paragraph_index = document
+            .paragraphs()
+            .iter()
+            .position(|paragraph| {
+                paragraph.id() == start.paragraph_id
+                    && paragraph.revision() == start.paragraph_revision
+                    && paragraph.revision() == end_inclusive.paragraph_revision
+            })
+            .ok_or(NavigationError::StaleSelection)?;
+        let paragraph = &document.paragraphs()[paragraph_index];
+        let start_index = paragraph
+            .tokens()
+            .iter()
+            .position(|token| token.id() == &start.token_id)
+            .ok_or(NavigationError::StaleSelection)?;
+        let end_index = paragraph
+            .tokens()
+            .iter()
+            .position(|token| token.id() == &end_inclusive.token_id)
+            .ok_or(NavigationError::StaleSelection)?;
+        if start_index > end_index {
+            return Err(NavigationError::StaleSelection);
+        }
+        Ok((
+            TokenAddress {
+                paragraph: paragraph_index + 1,
+                token: start_index + 1,
+            },
+            TokenAddress {
+                paragraph: paragraph_index + 1,
+                token: end_index + 1,
+            },
+        ))
     }
 
     pub fn move_to(
