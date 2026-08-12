@@ -178,6 +178,42 @@ fn validate(document: &Document) -> Result<(), DocumentIoError> {
             )));
         }
     }
+    if !document.replay_chunks().is_empty() {
+        let mut replay_chunk_ids = HashSet::new();
+        for chunk in document.replay_chunks() {
+            if chunk.id().is_empty() || !replay_chunk_ids.insert(chunk.id()) {
+                return Err(DocumentIoError::Invalid(
+                    "derived replay chunk IDs must be nonempty and unique".into(),
+                ));
+            }
+        }
+        if let Some(missing) = chunk_ids.iter().find(|id| !replay_chunk_ids.contains(*id)) {
+            return Err(DocumentIoError::Invalid(format!(
+                "chunk marker '{missing}' has no replay chunk record"
+            )));
+        }
+        for paragraph in document.paragraphs() {
+            let mut start = 0;
+            for marker in paragraph.chunk_boundaries() {
+                let chunk = document
+                    .replay_chunks()
+                    .iter()
+                    .find(|chunk| chunk.id() == marker.chunk_id())
+                    .expect("current marker record was checked above");
+                let expected = paragraph.tokens()[start..marker.after_tokens()]
+                    .iter()
+                    .map(|token| token.id())
+                    .collect::<Vec<_>>();
+                if chunk.token_ids().iter().collect::<Vec<_>>() != expected {
+                    return Err(DocumentIoError::Invalid(format!(
+                        "replay chunk '{}' has stale token membership",
+                        chunk.id()
+                    )));
+                }
+                start = marker.after_tokens();
+            }
+        }
+    }
     let source_ids = document
         .audio_sources()
         .iter()

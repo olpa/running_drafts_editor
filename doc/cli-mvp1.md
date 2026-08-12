@@ -79,10 +79,12 @@ and degrade affected alignment honestly. An unaddressed `replace` or `delete`
 uses the current token selection. Unquoted replacement text preserves the
 selection's boundary whitespace; quoted replacement text controls it exactly.
 
-## Split and merge visible paragraphs
+## [x] Split and merge visible paragraphs
 
-Split at the cursor and merge adjacent paragraphs. A paragraph longer than 30
-seconds remains backed by multiple internal chunks.
+Split replay chunks before or after complete tokens, split paragraphs after
+existing chunk markers, and merge adjacent paragraphs or compatible chunks.
+Paragraph merge preserves exact text and keeps separate chunks. A paragraph
+longer than 30 seconds remains backed by multiple internal chunks.
 
 ## Add undo for text and paragraph operations
 

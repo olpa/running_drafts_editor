@@ -196,8 +196,9 @@ edit but must update their revision and state.
 
 A paragraph is a visible editing and navigation unit, not an audio duration
 promise. It may be backed by one chunk, multiple chunks, partially user-written
-content, or multiple recognition revisions. Conversely, one recognition chunk
-may contribute to multiple paragraphs.
+content, or multiple recognition revisions. Every current replay chunk belongs
+to one paragraph; an arbitrary paragraph boundary first derives child chunks at
+that complete-token boundary.
 
 Paragraph IDs should remain stable for text-only edits. Split and merge create
 new paragraph identity as described below so references cannot silently change
@@ -308,32 +309,20 @@ fallback order is an open product/technical decision.
 
 ### Split
 
-Splitting paragraph `P` at the boundary before visible token `T`:
-
-1. creates two new ordered paragraphs from the complete tokens before `T` and
-   the complete tokens from `T` onward;
-2. tombstones or supersedes `P` while retaining it for undo/provenance;
-3. partitions mappings by token identity;
-4. divides mappings that cover tokens on both sides without splitting a token;
-5. creates an undoable structural operation; and
-6. may schedule a new recognition plan aligned to the new boundary.
+The CLI first creates a replay-chunk boundary before or after a complete visible
+token. The derived child chunks preserve token identities and immutable parent
+provenance. Their audio boundary is exact when adjacent token mappings meet,
+aligned at the midpoint of a mapped gap, or inherited as the complete parent
+range when no defensible precise boundary exists. A paragraph can then split
+after that chunk marker, producing two new paragraph identities.
 
 ### Merge
 
-Merging adjacent paragraphs `A` and `B`:
-
-1. creates one new paragraph with an explicit separator policy (normally a
-   space, unless punctuation/whitespace already supplies one);
-2. supersedes `A` and `B` while retaining their provenance for undo;
-3. combines their mappings, creating an indivisible pseudo-token with
-   unavailable alignment when a separator is needed;
-4. preserves the ordered backing sources even when discontinuous;
-5. creates an undoable structural operation; and
-6. may schedule a new plan, still divided into legal chunks if combined audio
-   exceeds approximately 30 seconds.
-
-The merge separator policy and rules for discontinuous or overlapping backing
-audio require prototyping. Neither operation directly edits historical runs.
+Merging adjacent paragraphs creates one new paragraph identity, concatenates
+their existing token sequences exactly, and preserves their separate chunks.
+It never inserts or infers separator text. A distinct marker-addressed command
+may merge compatible adjacent chunks when their same-source union stays within
+480,000 canonical samples. Neither operation edits historical recognition runs.
 
 ## 12. Revision and provenance requirements
 

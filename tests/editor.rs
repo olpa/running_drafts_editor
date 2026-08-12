@@ -303,3 +303,102 @@ fn replacement_preserves_boundary_whitespace_unless_quoted() {
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(saved["paragraphs"][0]["tokens"][1]["text"], "tight");
 }
+
+#[test]
+fn chunk_and_paragraph_structure_commands_preserve_text_and_persist_provenance() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("structure.json");
+    let token = |index: usize, text: &str| {
+        json!({
+            "id": {"kind": "recognition", "run_id": "run", "segment_id": "s", "token_index": index},
+            "text": text,
+            "origin": {"kind": "recognition"}
+        })
+    };
+    let mapping = |index: usize, start: u64, end: u64| {
+        json!({
+            "paragraph_id": "paragraph:original",
+            "paragraph_revision": 1,
+            "token_id": {"kind": "recognition", "run_id": "run", "segment_id": "s", "token_index": index},
+            "source_id": "audio:run",
+            "range": {"start_sample": start, "end_sample": end},
+            "alignment": "exact"
+        })
+    };
+    let value = json!({
+        "schema": "rde-document/v1-experimental",
+        "id": "document:structure",
+        "paragraphs": [{
+            "id": "paragraph:original",
+            "revision": 1,
+            "tokens": [token(0, "one"), token(1, " two"), token(2, " three"), token(3, " four")],
+            "chunk_boundaries": [{"chunk_id": "chunk:original", "after_tokens": 4}]
+        }],
+        "audio_sources": [{"id": "audio:run", "canonical_sample_count": 400}],
+        "chunk_audio_mappings": [{
+            "chunk_id": "chunk:original",
+            "source_id": "audio:run",
+            "range": {"start_sample": 0, "end_sample": 400}
+        }],
+        "token_audio_mappings": [
+            mapping(0, 0, 100), mapping(1, 100, 200),
+            mapping(2, 200, 300), mapping(3, 300, 400)
+        ]
+    });
+    fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
+        .args(["edit", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"1.3split\n1@1parasplit\n1merge\n1@1merge\nsave\nq\n")
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+
+    assert!(
+        result.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let output = String::from_utf8(result.stdout).unwrap();
+    assert!(output.contains("split chunk before 1.3; new boundary 1@1"));
+    assert!(output.contains("split paragraph 1 after 1@1"));
+    assert!(output.contains("merged paragraphs 1 and 2"));
+    assert!(output.contains("merged chunks at 1@1"));
+
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(saved["paragraphs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        saved["paragraphs"][0]["tokens"].as_array().unwrap().len(),
+        4
+    );
+    assert_eq!(
+        saved["paragraphs"][0]["chunk_boundaries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(saved["replay_chunks"].as_array().unwrap().len(), 4);
+    assert_eq!(saved["chunk_audio_mappings"].as_array().unwrap().len(), 1);
+    assert_eq!(saved["chunk_audio_mappings"][0]["range"]["start_sample"], 0);
+    assert_eq!(saved["chunk_audio_mappings"][0]["range"]["end_sample"], 400);
+    assert_eq!(saved["chunk_audio_mappings"][0]["alignment"], "exact");
+    assert_eq!(
+        saved["paragraphs"][0]["tokens"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|token| token["text"].as_str().unwrap())
+            .collect::<String>(),
+        "one two three four"
+    );
+}

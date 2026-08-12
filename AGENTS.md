@@ -29,8 +29,17 @@ large design.
 - Visible paragraph text is authoritative.
 - Paragraphs are editing units made from one or more complete replay chunks;
   every paragraph boundary is also a replay-chunk boundary. Splitting a
-  paragraph inside a chunk requires splitting that chunk first.
+  paragraph inside a chunk requires splitting that chunk first. `split` and
+  `isplit` create a chunk boundary before a token, `asplit` creates one after,
+  and `parasplit` splits a paragraph after a chunk marker. `Mmerge` joins
+  paragraphs without changing text or joining their chunks; `M@Nmerge` joins
+  compatible chunks around a marker.
 - Chunks are at most about 30 seconds and may overlap.
+- Derived chunk splits retain immutable parent provenance and keep replay
+  available: use an exact shared token boundary, the midpoint of a mapped gap
+  with aligned status, or the complete parent range with inherited status.
+  Derived chunk identity, token membership, parents, and mapping alignment are
+  persisted. Chunk merges require one audio source and at most 480,000 samples.
 - Recognition runs are immutable; retries and boundary changes create revisions.
 - Selection and text editing use ranges of complete visible tokens; a token
   cannot be selected or edited in part. Initial tokens refer to accepted normal

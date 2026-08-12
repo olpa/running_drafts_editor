@@ -103,6 +103,28 @@ pub fn run_editor_session(
             Ok(AuditionCommand::Delete { range }) => {
                 apply_delete(&mut document, &mut navigation, range, output, errors)?
             }
+            Ok(AuditionCommand::SplitChunk { address, after }) => apply_chunk_split(
+                &mut document,
+                &mut navigation,
+                address,
+                after,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::SplitParagraph { marker }) => {
+                apply_paragraph_split(&mut document, &mut navigation, marker, output, errors)?
+            }
+            Ok(AuditionCommand::MergeParagraph(paragraph)) => {
+                apply_paragraph_merge(&mut document, &mut navigation, paragraph, output, errors)?
+            }
+            Ok(AuditionCommand::MergeChunks { paragraph, marker }) => apply_chunk_merge(
+                &mut document,
+                &mut navigation,
+                paragraph,
+                marker,
+                output,
+                errors,
+            )?,
             Ok(AuditionCommand::Play { address, speed }) => {
                 if let Some(value) = start_document_replay(
                     &document,
@@ -288,6 +310,148 @@ fn edit_range(
     addressed.map_or_else(|| navigation.selected_token_range(document), Ok)
 }
 
+pub(crate) fn apply_chunk_split(
+    document: &mut Document,
+    navigation: &mut NavigationState,
+    addressed: Option<TokenAddress>,
+    after: bool,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<()> {
+    let address = match addressed.map_or_else(|| navigation.current_token_address(document), Ok) {
+        Ok(address) => address,
+        Err(error) => return writeln!(errors, "split failed: {error}"),
+    };
+    match document.split_chunk(address.paragraph, address.token, after) {
+        Ok(result) => {
+            *navigation = NavigationState::new(document);
+            if let Some(marker) = result.marker {
+                navigation
+                    .move_to(
+                        document,
+                        &Address::Marker {
+                            paragraph: result.paragraph,
+                            marker,
+                        },
+                    )
+                    .expect("chunk split reports a current marker");
+                if result.created {
+                    writeln!(
+                        output,
+                        "split chunk {} {address}; new boundary {}@{marker}",
+                        if after { "after" } else { "before" },
+                        result.paragraph
+                    )
+                } else {
+                    writeln!(
+                        output,
+                        "chunk boundary already exists at {}@{marker}",
+                        result.paragraph
+                    )
+                }
+            } else {
+                writeln!(output, "chunk boundary already exists at paragraph start")
+            }
+        }
+        Err(error) => writeln!(errors, "split failed: {error}"),
+    }
+}
+
+pub(crate) fn apply_paragraph_split(
+    document: &mut Document,
+    navigation: &mut NavigationState,
+    addressed: Option<(usize, usize)>,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<()> {
+    let (paragraph, marker) =
+        match addressed.map_or_else(|| navigation.current_marker_address(document), Ok) {
+            Ok(address) => address,
+            Err(error) => return writeln!(errors, "paragraph split failed: {error}"),
+        };
+    match document.split_paragraph(paragraph, marker) {
+        Ok(result) => {
+            *navigation = NavigationState::new(document);
+            if document.token(result.right_paragraph, 1).is_some() {
+                navigation
+                    .move_to(
+                        document,
+                        &Address::Token(TokenAddress {
+                            paragraph: result.right_paragraph,
+                            token: 1,
+                        }),
+                    )
+                    .expect("right paragraph begins with a current token");
+            }
+            writeln!(
+                output,
+                "split paragraph {paragraph} after {paragraph}@{marker}"
+            )
+        }
+        Err(error) => writeln!(errors, "paragraph split failed: {error}"),
+    }
+}
+
+pub(crate) fn apply_paragraph_merge(
+    document: &mut Document,
+    navigation: &mut NavigationState,
+    paragraph: usize,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<()> {
+    match document.merge_paragraphs(paragraph) {
+        Ok(result) => {
+            *navigation = NavigationState::new(document);
+            if document
+                .token(result.paragraph, result.first_right_token)
+                .is_some()
+            {
+                navigation
+                    .move_to(
+                        document,
+                        &Address::Token(TokenAddress {
+                            paragraph: result.paragraph,
+                            token: result.first_right_token,
+                        }),
+                    )
+                    .expect("merged right text has a current token");
+            }
+            writeln!(
+                output,
+                "merged paragraphs {paragraph} and {}",
+                paragraph + 1
+            )
+        }
+        Err(error) => writeln!(errors, "paragraph merge failed: {error}"),
+    }
+}
+
+pub(crate) fn apply_chunk_merge(
+    document: &mut Document,
+    navigation: &mut NavigationState,
+    paragraph: usize,
+    marker: usize,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<()> {
+    match document.merge_chunks(paragraph, marker) {
+        Ok(merged_marker) => {
+            *navigation = NavigationState::new(document);
+            navigation
+                .move_to(
+                    document,
+                    &Address::Marker {
+                        paragraph,
+                        marker: merged_marker,
+                    },
+                )
+                .expect("chunk merge reports its right marker");
+            writeln!(output, "merged chunks at {paragraph}@{marker}")
+        }
+        Err(error) => writeln!(errors, "chunk merge failed: {error}"),
+    }
+}
+
 fn refresh_navigation(
     document: &Document,
     navigation: &mut NavigationState,
@@ -334,7 +498,7 @@ pub(crate) fn render_document_with_navigation(
 fn render_editor_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
-        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  M.Ninsert TEXT             insert one pseudo-token before M.N\n  M.Nappend TEXT             insert one pseudo-token after M.N\n  [M.N,M.U]replace TEXT      replace range or current token selection\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            delete range or current token selection\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
+        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  M.Ninsert TEXT             insert one pseudo-token before M.N\n  M.Nappend TEXT             insert one pseudo-token after M.N\n  [M.N,M.U]replace TEXT      replace range or current token selection\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            delete range or current token selection\n  [M.N]split | [M.N]isplit   split chunk before token/current caret\n  [M.N]asplit                split chunk after token/current caret\n  [M@N]parasplit             split paragraph after marker/current marker\n  Mmerge                     merge paragraph M with M+1 exactly\n  M@Nmerge                   merge chunks around marker M@N when legal\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
     )
 }
 

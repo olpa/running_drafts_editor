@@ -407,6 +407,47 @@ impl NavigationState {
         ))
     }
 
+    pub fn current_token_address(
+        &self,
+        document: &Document,
+    ) -> Result<TokenAddress, NavigationError> {
+        let Some(Caret::Token(position)) = self.caret.as_ref() else {
+            return Err(NavigationError::NoCurrentPosition);
+        };
+        stable_token_address(document, position).ok_or(NavigationError::StaleSelection)
+    }
+
+    pub fn current_marker_address(
+        &self,
+        document: &Document,
+    ) -> Result<(usize, usize), NavigationError> {
+        let position = match self.selection.as_ref() {
+            Some(Selection::Marker(position)) => position,
+            Some(_) => return Err(NavigationError::NoCurrentPosition),
+            None => match self.caret.as_ref() {
+                Some(Caret::Marker(position)) => position,
+                _ => return Err(NavigationError::NoCurrentPosition),
+            },
+        };
+        document
+            .paragraphs()
+            .iter()
+            .enumerate()
+            .find_map(|(paragraph_index, paragraph)| {
+                (paragraph.id() == position.paragraph_id
+                    && paragraph.revision() == position.paragraph_revision)
+                    .then(|| {
+                        paragraph
+                            .chunk_boundaries()
+                            .iter()
+                            .position(|marker| marker.chunk_id() == position.chunk_id)
+                            .map(|marker| (paragraph_index + 1, marker + 1))
+                    })
+                    .flatten()
+            })
+            .ok_or(NavigationError::StaleSelection)
+    }
+
     pub fn move_to(
         &mut self,
         document: &Document,
@@ -519,6 +560,31 @@ impl NavigationState {
         self.selection = Some(selection);
         Ok(())
     }
+}
+
+fn stable_token_address(
+    document: &Document,
+    position: &StableTokenPosition,
+) -> Option<TokenAddress> {
+    document
+        .paragraphs()
+        .iter()
+        .enumerate()
+        .find_map(|(paragraph_index, paragraph)| {
+            (paragraph.id() == position.paragraph_id
+                && paragraph.revision() == position.paragraph_revision)
+                .then(|| {
+                    paragraph
+                        .tokens()
+                        .iter()
+                        .position(|token| token.id() == &position.token_id)
+                        .map(|token| TokenAddress {
+                            paragraph: paragraph_index + 1,
+                            token: token + 1,
+                        })
+                })
+                .flatten()
+        })
 }
 
 fn stable_paragraph_revisions(
