@@ -60,6 +60,12 @@ large design.
   carets and selections use stable token or chunk identities and paragraph
   revisions rather than treating displayed numbers as stable IDs. Token ranges
   may cross paragraphs and store their displayed inclusive endpoint identities.
+- `[M.N]alternatives`/`alts` lists every stored Whisper candidate for exactly
+  one current visible recognition token, including the current token,
+  duplicates, special tokens, and empty rendered text. `[M.N]choose U` applies
+  any numbered candidate as one indivisible pseudo-token. An empty candidate
+  remains an addressable empty pseudo-token. Conflicting edits hide the source
+  token's alternatives without deleting their persisted immutable evidence.
 - Character offsets, character spans, and partial-token positions are not part
   of the document, selection, editing, mapping, replay, or persistence model.
   Token text is opaque to these operations.

@@ -91,10 +91,13 @@ longer than 30 seconds remains backed by multiple internal chunks.
 Undo insertion, replacement, deletion, split, and merge together with their
 mapping changes.
 
-## Inspect and choose recognition alternatives
+## [x] Inspect and choose recognition alternatives
 
-Show alternatives relevant to the current visible range and apply one as an
-ordinary text replacement. Hide alternatives invalidated by later edits.
+Show every stored Whisper candidate for one current visible recognition token,
+including the current token, duplicates, special tokens, and empty rendered
+text. Apply a numbered candidate as one pseudo-token through the ordinary edit
+path. Hide alternatives after their source token is edited, while retaining the
+immutable evidence.
 
 ## Replace a selection by voice
 

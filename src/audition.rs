@@ -10,8 +10,9 @@ use std::{
 use crate::chunking::SampleRange;
 use crate::document::Document;
 use crate::editor::{
-    apply_chunk_merge, apply_chunk_split, apply_delete, apply_insert, apply_paragraph_merge,
-    apply_paragraph_split, apply_replace, render_document_with_navigation,
+    apply_alternative, apply_chunk_merge, apply_chunk_split, apply_delete, apply_insert,
+    apply_paragraph_merge, apply_paragraph_split, apply_replace, render_alternatives,
+    render_document_with_navigation,
 };
 use crate::navigation::{
     parse_line, Address, Caret, CommandLine, NavigationState, Selection, SyntaxError, TokenAddress,
@@ -38,6 +39,13 @@ pub enum AuditionCommand {
     Move(Address),
     Select(Address),
     Tokens(usize),
+    Alternatives {
+        address: Option<TokenAddress>,
+    },
+    ChooseAlternative {
+        address: Option<TokenAddress>,
+        candidate: usize,
+    },
     Insert {
         address: TokenAddress,
         text: String,
@@ -249,6 +257,8 @@ pub enum CommandParseError {
     TextRequired(String),
     #[error("invalid quoted replacement: {0}")]
     InvalidQuotedReplacement(String),
+    #[error("{0} requires a positive alternative number")]
+    AlternativeNumberRequired(String),
 }
 
 pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> {
@@ -342,6 +352,19 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                     expected: "a paragraph address M",
                 }),
             }
+        }
+        "alternatives" | "alts" => {
+            reject_arguments(&name, &arguments)?;
+            optional_token(address, name).map(|address| AuditionCommand::Alternatives { address })
+        }
+        "choose" => {
+            let candidate = arguments
+                .parse::<usize>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| CommandParseError::AlternativeNumberRequired(name.clone()))?;
+            optional_token(address, name)
+                .map(|address| AuditionCommand::ChooseAlternative { address, candidate })
         }
         "insert" | "append" => {
             if arguments.is_empty() {
@@ -537,6 +560,21 @@ fn optional_token_range(
             command,
             address,
             expected: "an inclusive token range M.N,M.U",
+        }),
+        None => Ok(None),
+    }
+}
+
+fn optional_token(
+    address: Option<Address>,
+    command: String,
+) -> Result<Option<TokenAddress>, CommandParseError> {
+    match address {
+        Some(Address::Token(token)) => Ok(Some(token)),
+        Some(address) => Err(CommandParseError::InvalidAddress {
+            command,
+            address,
+            expected: "a token address M.N",
         }),
         None => Ok(None),
     }
@@ -867,6 +905,17 @@ pub fn run_recognition_session(
                 };
                 render_tokens(value, paragraph, output)?;
             }
+            Ok(AuditionCommand::Alternatives { address }) => {
+                render_alternatives(&document, &navigation, address, output, errors)?
+            }
+            Ok(AuditionCommand::ChooseAlternative { address, candidate }) => apply_alternative(
+                &mut document,
+                &mut navigation,
+                address,
+                candidate,
+                output,
+                errors,
+            )?,
             Ok(AuditionCommand::Insert { address, text }) => apply_insert(
                 &mut document,
                 &mut navigation,
@@ -1212,6 +1261,14 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
         "  Mtokens         list paragraph M tokens and markers"
+    )?;
+    writeln!(
+        output,
+        "  [M.N]alternatives, alts list alternatives for one token/current token"
+    )?;
+    writeln!(
+        output,
+        "  [M.N]choose N   replace one token with alternative N"
     )?;
     writeln!(
         output,

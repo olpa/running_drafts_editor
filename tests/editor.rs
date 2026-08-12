@@ -7,6 +7,77 @@ use std::{
 use serde_json::json;
 
 #[test]
+fn lists_every_alternative_and_allows_selecting_an_empty_special_token() {
+    let directory = tempfile::tempdir().unwrap();
+    let document = directory.path().join("alternatives.rde.json");
+    let recognition_id = json!({
+        "kind": "recognition", "run_id": "run", "segment_id": "s1", "token_index": 0
+    });
+    let value = json!({
+        "schema": "rde-document/v1-experimental",
+        "id": "document:test",
+        "paragraphs": [{
+            "id": "paragraph:test:1",
+            "revision": 1,
+            "tokens": [{
+                "id": recognition_id,
+                "text": "hello",
+                "origin": {"kind": "recognition"}
+            }],
+            "chunk_boundaries": [{"chunk_id": "c1", "after_tokens": 1}]
+        }],
+        "recognition_token_evidence": [{
+            "token_id": recognition_id,
+            "recognition_token_id": 100,
+            "probability": 0.7,
+            "alternatives": [
+                {"token_id": 100, "text": "hello", "probability": 0.7},
+                {"token_id": 101, "text": "hello", "probability": 0.2},
+                {"token_id": 50257, "text": "", "probability": 0.1}
+            ]
+        }]
+    });
+    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
+        .args(["edit", document.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"1.1alts\n1.1choose 3\n1.1alts\nsave\nq\n")
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(result.status.success());
+    let output = String::from_utf8(result.stdout).unwrap();
+    let errors = String::from_utf8(result.stderr).unwrap();
+    assert!(output.contains("1  id=100  probability=0.700000  text=\"hello\""));
+    assert!(output.contains("2  id=101  probability=0.200000  text=\"hello\""));
+    assert!(output.contains("3  id=50257  probability=0.100000  text=\"\""));
+    assert!(output.contains("chose alternative 3 for 1.1"));
+    assert!(errors.contains("alternatives unavailable for 1.1"));
+
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&document).unwrap()).unwrap();
+    assert_eq!(saved["paragraphs"][0]["tokens"][0]["text"], "");
+    assert_eq!(
+        saved["paragraphs"][0]["tokens"][0]["origin"]["reason"],
+        "recognition alternative"
+    );
+    assert_eq!(
+        saved["recognition_token_evidence"][0]["alternatives"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+#[test]
 fn edit_opens_prints_and_navigates_without_audio_or_recognition() {
     let directory = tempfile::tempdir().unwrap();
     let document = directory.path().join("draft.rde.json");

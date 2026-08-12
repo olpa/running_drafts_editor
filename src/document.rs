@@ -38,6 +38,16 @@ pub enum DocumentEditError {
     RevisionOverflow,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AlternativeEditError {
+    #[error(transparent)]
+    Edit(#[from] DocumentEditError),
+    #[error("recognition alternatives are unavailable for this token")]
+    Unavailable,
+    #[error("unknown alternative {0}")]
+    UnknownCandidate(usize),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkSplitOutcome {
     pub paragraph: usize,
@@ -97,6 +107,8 @@ pub struct Document {
     token_audio_mappings: Vec<TokenAudioMapping>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     replay_chunks: Vec<ReplayChunk>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recognition_token_evidence: Vec<RecognitionTokenEvidence>,
     #[serde(default, skip_serializing_if = "is_zero")]
     next_structure_id: u64,
     #[serde(skip)]
@@ -158,6 +170,34 @@ impl Document {
                 })
             })
             .collect();
+        document.recognition_token_evidence = run
+            .segments
+            .iter()
+            .flat_map(|segment| {
+                segment
+                    .tokens
+                    .iter()
+                    .enumerate()
+                    .map(|(token_index, token)| RecognitionTokenEvidence {
+                        token_id: VisibleTokenId::Recognition {
+                            run_id: run.id.clone(),
+                            segment_id: segment.id.clone(),
+                            token_index,
+                        },
+                        recognition_token_id: token.token_id,
+                        probability: token.probability,
+                        alternatives: token
+                            .alternatives
+                            .iter()
+                            .map(|candidate| RecognitionAlternative {
+                                token_id: candidate.token_id,
+                                text: candidate.text.clone(),
+                                probability: candidate.probability,
+                            })
+                            .collect(),
+                    })
+            })
+            .collect();
         document
     }
 
@@ -206,6 +246,7 @@ impl Document {
             chunk_audio_mappings: Vec::new(),
             token_audio_mappings: Vec::new(),
             replay_chunks: Vec::new(),
+            recognition_token_evidence: Vec::new(),
             next_structure_id: 0,
             token_fallbacks,
         }
@@ -254,6 +295,53 @@ impl Document {
     }
     pub fn replay_chunks(&self) -> &[ReplayChunk] {
         &self.replay_chunks
+    }
+    pub fn recognition_token_evidence(&self) -> &[RecognitionTokenEvidence] {
+        &self.recognition_token_evidence
+    }
+
+    pub fn alternatives(
+        &self,
+        paragraph: usize,
+        token: usize,
+    ) -> Option<&[RecognitionAlternative]> {
+        let visible = self.token(paragraph, token)?;
+        let evidence = self
+            .recognition_token_evidence
+            .iter()
+            .find(|evidence| evidence.token_id == *visible.id())?;
+        Some(&evidence.alternatives)
+    }
+
+    pub fn choose_alternative(
+        &mut self,
+        paragraph: usize,
+        token: usize,
+        candidate: usize,
+    ) -> Result<EditedTokenPosition, AlternativeEditError> {
+        let visible = self
+            .token(paragraph, token)
+            .ok_or(DocumentEditError::UnknownToken { paragraph, token })?;
+        let evidence = self
+            .recognition_token_evidence
+            .iter()
+            .find(|evidence| evidence.token_id == *visible.id())
+            .ok_or(AlternativeEditError::Unavailable)?;
+        let text = evidence
+            .alternatives
+            .get(candidate.checked_sub(1).unwrap_or(usize::MAX))
+            .ok_or(AlternativeEditError::UnknownCandidate(candidate))?
+            .text
+            .clone();
+        self.apply_edit_with_reason(
+            paragraph,
+            token - 1,
+            token,
+            Some(text),
+            false,
+            "recognition alternative",
+        )?;
+        Ok(EditedTokenPosition { paragraph, token })
     }
     pub fn audio_source(&self, source_id: &str) -> Option<&AudioSource> {
         self.audio_sources
@@ -836,6 +924,25 @@ impl Document {
         replacement: Option<String>,
         shift_marker_at_start: bool,
     ) -> Result<(), DocumentEditError> {
+        self.apply_edit_with_reason(
+            paragraph_number,
+            start,
+            end_exclusive,
+            replacement,
+            shift_marker_at_start,
+            "user text",
+        )
+    }
+
+    fn apply_edit_with_reason(
+        &mut self,
+        paragraph_number: usize,
+        start: usize,
+        end_exclusive: usize,
+        replacement: Option<String>,
+        shift_marker_at_start: bool,
+        reason: &str,
+    ) -> Result<(), DocumentEditError> {
         let paragraph = self
             .paragraphs
             .get_mut(paragraph_number.checked_sub(1).unwrap_or(usize::MAX))
@@ -875,7 +982,7 @@ impl Document {
             },
             text,
             origin: VisibleTokenOrigin::Pseudo {
-                reason: "user text".into(),
+                reason: reason.into(),
             },
         });
         paragraph.tokens.splice(start..end_exclusive, replacement);
@@ -1051,6 +1158,45 @@ pub struct VisibleToken {
     id: VisibleTokenId,
     text: String,
     origin: VisibleTokenOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecognitionAlternative {
+    token_id: i32,
+    text: String,
+    probability: f32,
+}
+
+impl Eq for RecognitionAlternative {}
+
+impl RecognitionAlternative {
+    pub fn token_id(&self) -> i32 {
+        self.token_id
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn probability(&self) -> f32 {
+        self.probability
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecognitionTokenEvidence {
+    token_id: VisibleTokenId,
+    recognition_token_id: i32,
+    probability: f32,
+    alternatives: Vec<RecognitionAlternative>,
+}
+
+impl Eq for RecognitionTokenEvidence {}
+
+impl RecognitionTokenEvidence {
+    pub fn token_id(&self) -> &VisibleTokenId {
+        &self.token_id
+    }
 }
 
 impl VisibleToken {

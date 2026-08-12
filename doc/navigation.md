@@ -58,7 +58,8 @@ The general command form is:
 
 The address and command may be attached (`2@3info`) or separated by whitespace
 (`2@3 info`). Commands include `print`/`p`, `play`, `info`/`i`, `select`/`s`,
-`tokens`, `insert`, `append`, `replace`, `delete`, `help`/`h`, and `quit`/`q`;
+`tokens`, `alternatives`/`alts`, `choose`, `insert`, `append`, `replace`,
+`delete`, `help`/`h`, and `quit`/`q`;
 `list`/`l` remain print aliases. `play` accepts any address or uses the current
 token or selection; `info` requires a chunk-marker address. `print` accepts no
 address for the whole document or a paragraph address. `tokens` requires a
@@ -85,6 +86,8 @@ replay                play the last resolved range again
 slowreplay            repeat it at 0.75 speed
 stop                  stop active playback
 2tokens               inspect paragraph 2 tokens
+2.4alts               list every recognition candidate for token 2.4
+2.4choose 3           replace token 2.4 with candidate 3
 h                     show help
 q                     quit
 ```
@@ -236,6 +239,22 @@ Character offsets and character spans do not exist in the document,
 selection, editing, mapping, replay, or persistence model. Token text is opaque
 to those operations. Rendering and clean export concatenate complete token text
 without creating addressable positions inside it.
+
+## Recognition alternatives
+
+`[M.N]alternatives` (or `alts`) lists the stored Whisper candidates for exactly
+one visible recognition token. Without an address it uses a one-token selection
+or the current token caret. The list preserves Whisper order and shows every
+candidate without filtering or deduplication, including the current token,
+special tokens, duplicate text, and empty rendered text. Each row shows its
+one-based candidate number, Whisper token ID, probability, and escaped text.
+
+`[M.N]choose U` replaces the source token with candidate `U` as one indivisible
+pseudo-token. Every listed candidate is selectable. In particular, an empty
+rendered candidate creates an addressable pseudo-token with empty text; this
+does not make an empty typed `replace` valid. Once the source recognition token
+is replaced or deleted, its alternatives are no longer shown. The immutable
+candidate evidence remains stored in the document.
 
 ## Chunk and paragraph structure
 

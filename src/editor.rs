@@ -74,6 +74,17 @@ pub fn run_editor_session(
                 Some(paragraph) => render_tokens(paragraph, number, output)?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
+            Ok(AuditionCommand::Alternatives { address }) => {
+                render_alternatives(&document, &navigation, address, output, errors)?
+            }
+            Ok(AuditionCommand::ChooseAlternative { address, candidate }) => apply_alternative(
+                &mut document,
+                &mut navigation,
+                address,
+                candidate,
+                output,
+                errors,
+            )?,
             Ok(AuditionCommand::Insert { address, text }) => apply_insert(
                 &mut document,
                 &mut navigation,
@@ -302,6 +313,80 @@ pub(crate) fn apply_delete(
     }
 }
 
+pub(crate) fn render_alternatives(
+    document: &Document,
+    navigation: &NavigationState,
+    addressed: Option<TokenAddress>,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<()> {
+    let address = match alternative_address(document, navigation, addressed) {
+        Ok(address) => address,
+        Err(error) => return writeln!(errors, "alternatives unavailable: {error}"),
+    };
+    let Some(alternatives) = document.alternatives(address.paragraph, address.token) else {
+        return writeln!(errors, "alternatives unavailable for {address}");
+    };
+    writeln!(output, "alternatives for {address}:")?;
+    for (index, candidate) in alternatives.iter().enumerate() {
+        writeln!(
+            output,
+            "  {}  id={}  probability={:.6}  text={:?}",
+            index + 1,
+            candidate.token_id(),
+            candidate.probability(),
+            candidate.text()
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_alternative(
+    document: &mut Document,
+    navigation: &mut NavigationState,
+    addressed: Option<TokenAddress>,
+    candidate: usize,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<()> {
+    let address = match alternative_address(document, navigation, addressed) {
+        Ok(address) => address,
+        Err(error) => return writeln!(errors, "alternative failed: {error}"),
+    };
+    match document.choose_alternative(address.paragraph, address.token, candidate) {
+        Ok(position) => {
+            refresh_navigation(document, navigation, Some(position));
+            writeln!(output, "chose alternative {candidate} for {address}")
+        }
+        Err(error) => writeln!(errors, "alternative failed: {error}"),
+    }
+}
+
+fn alternative_address(
+    document: &Document,
+    navigation: &NavigationState,
+    addressed: Option<TokenAddress>,
+) -> Result<TokenAddress, String> {
+    if let Some(address) = addressed {
+        return document
+            .token(address.paragraph, address.token)
+            .map(|_| address)
+            .ok_or_else(|| format!("unknown token {address}"));
+    }
+    if navigation.selection().is_some() {
+        let (start, end) = navigation
+            .selected_token_range(document)
+            .map_err(|error| error.to_string())?;
+        if start != end {
+            return Err("alternatives require exactly one selected token".into());
+        }
+        return Ok(start);
+    }
+    navigation
+        .current_token_address(document)
+        .map_err(|error| error.to_string())
+}
+
 fn edit_range(
     document: &Document,
     navigation: &NavigationState,
@@ -498,7 +583,7 @@ pub(crate) fn render_document_with_navigation(
 fn render_editor_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
-        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  M.Ninsert TEXT             insert one pseudo-token before M.N\n  M.Nappend TEXT             insert one pseudo-token after M.N\n  [M.N,M.U]replace TEXT      replace range or current token selection\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            delete range or current token selection\n  [M.N]split | [M.N]isplit   split chunk before token/current caret\n  [M.N]asplit                split chunk after token/current caret\n  [M@N]parasplit             split paragraph after marker/current marker\n  Mmerge                     merge paragraph M with M+1 exactly\n  M@Nmerge                   merge chunks around marker M@N when legal\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
+        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  [M.N]alternatives | alts   list alternatives for one token/current token\n  [M.N]choose N              replace one token with alternative N\n  M.Ninsert TEXT             insert one pseudo-token before M.N\n  M.Nappend TEXT             insert one pseudo-token after M.N\n  [M.N,M.U]replace TEXT      replace range or current token selection\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            delete range or current token selection\n  [M.N]split | [M.N]isplit   split chunk before token/current caret\n  [M.N]asplit                split chunk after token/current caret\n  [M@N]parasplit             split paragraph after marker/current marker\n  Mmerge                     merge paragraph M with M+1 exactly\n  M@Nmerge                   merge chunks around marker M@N when legal\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
     )
 }
 

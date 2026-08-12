@@ -130,6 +130,19 @@ fn validate(document: &Document) -> Result<(), DocumentIoError> {
     let mut paragraph_ids = HashSet::new();
     let mut token_ids = HashSet::new();
     let mut chunk_ids = HashSet::new();
+    let mut evidence_ids = HashSet::new();
+    for evidence in document.recognition_token_evidence() {
+        if !matches!(evidence.token_id(), VisibleTokenId::Recognition { .. }) {
+            return Err(DocumentIoError::Invalid(
+                "recognition evidence refers to a pseudo-token".into(),
+            ));
+        }
+        if !evidence_ids.insert(token_id_key(evidence.token_id())) {
+            return Err(DocumentIoError::Invalid(
+                "duplicate recognition token evidence".into(),
+            ));
+        }
+    }
     for paragraph in document.paragraphs() {
         if !paragraph_ids.insert(paragraph.id()) {
             return Err(DocumentIoError::Invalid(format!(

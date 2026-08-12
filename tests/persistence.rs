@@ -48,6 +48,16 @@ fn baseline(path: &std::path::Path, audio_path: &str) {
             "range": {"start_sample": 100, "end_sample": 8000},
             "alignment": "exact"
         }],
+        "recognition_token_evidence": [{
+            "token_id": {"kind": "recognition", "run_id": "run", "segment_id": "s1", "token_index": 0},
+            "recognition_token_id": 100,
+            "probability": 0.75,
+            "alternatives": [
+                {"token_id": 100, "text": "hello", "probability": 0.75},
+                {"token_id": 101, "text": "hullo", "probability": 0.2},
+                {"token_id": 50257, "text": "", "probability": 0.05}
+            ]
+        }],
         "ignored_future_field": {"safe": true}
     });
     fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
@@ -79,6 +89,8 @@ fn exact_tokens_ids_markers_and_audio_mappings_round_trip() {
         16000
     );
     assert_eq!(document.token_audio_mappings()[0].range().start_sample, 100);
+    assert_eq!(document.alternatives(1, 1).unwrap().len(), 3);
+    assert_eq!(document.alternatives(1, 1).unwrap()[2].text(), "");
 
     save_document(&output, &document).unwrap();
     assert_eq!(load_document(&output).unwrap(), document);
