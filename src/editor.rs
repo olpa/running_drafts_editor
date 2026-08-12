@@ -10,8 +10,8 @@ use crate::{
         parse_command, render_paragraph, render_tokens, repeat_document_replay,
         start_document_replay, AudioPlayer, AuditionCommand, ReplayStart,
     },
-    document::Document,
-    navigation::NavigationState,
+    document::{Document, EditedTokenPosition},
+    navigation::{Address, NavigationState, TokenAddress},
     persistence::{load_document, save_document},
 };
 
@@ -74,6 +74,36 @@ pub fn run_editor_session(
                 Some(paragraph) => render_tokens(paragraph, number, output)?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
+            Ok(AuditionCommand::Insert { address, text }) => apply_insert(
+                &mut document,
+                &mut navigation,
+                address,
+                false,
+                text,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Append { address, text }) => apply_insert(
+                &mut document,
+                &mut navigation,
+                address,
+                true,
+                text,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Replace { start, end, text }) => apply_replace(
+                &mut document,
+                &mut navigation,
+                start,
+                end,
+                text,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Delete { start, end }) => {
+                apply_delete(&mut document, &mut navigation, start, end, output, errors)?
+            }
             Ok(AuditionCommand::Play { address, speed }) => {
                 if let Some(value) = start_document_replay(
                     &document,
@@ -144,6 +174,88 @@ pub fn run_editor_session(
     }
 }
 
+pub(crate) fn apply_insert(
+    document: &mut Document,
+    navigation: &mut NavigationState,
+    address: TokenAddress,
+    after: bool,
+    text: String,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<()> {
+    match document.insert_text(address.paragraph, address.token, after, text) {
+        Ok(position) => {
+            refresh_navigation(document, navigation, Some(position));
+            writeln!(
+                output,
+                "{} at {position}",
+                if after { "appended" } else { "inserted" }
+            )
+        }
+        Err(error) => writeln!(errors, "edit failed: {error}"),
+    }
+}
+
+pub(crate) fn apply_replace(
+    document: &mut Document,
+    navigation: &mut NavigationState,
+    start: TokenAddress,
+    end: TokenAddress,
+    text: String,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<()> {
+    match document.replace_text(start.paragraph, start.token, end.paragraph, end.token, text) {
+        Ok(position) => {
+            refresh_navigation(document, navigation, Some(position));
+            writeln!(output, "replaced {start},{end}")
+        }
+        Err(error) => writeln!(errors, "edit failed: {error}"),
+    }
+}
+
+pub(crate) fn apply_delete(
+    document: &mut Document,
+    navigation: &mut NavigationState,
+    start: TokenAddress,
+    end: TokenAddress,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> io::Result<()> {
+    match document.delete_text(start.paragraph, start.token, end.paragraph, end.token) {
+        Ok(position) => {
+            refresh_navigation(document, navigation, position);
+            writeln!(output, "deleted {start},{end}")
+        }
+        Err(error) => writeln!(errors, "edit failed: {error}"),
+    }
+}
+
+fn refresh_navigation(
+    document: &Document,
+    navigation: &mut NavigationState,
+    preferred: Option<EditedTokenPosition>,
+) {
+    *navigation = NavigationState::new(document);
+    if let Some(position) = preferred {
+        navigation
+            .move_to(
+                document,
+                &Address::Token(TokenAddress {
+                    paragraph: position.paragraph,
+                    token: position.token,
+                }),
+            )
+            .expect("an edit outcome points to its new document revision");
+    }
+}
+
+impl std::fmt::Display for EditedTokenPosition {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}.{}", self.paragraph, self.token)
+    }
+}
+
 fn render_document(document: &Document, output: &mut impl Write) -> io::Result<()> {
     render_document_with_navigation(document, None, output)
 }
@@ -165,6 +277,6 @@ pub(crate) fn render_document_with_navigation(
 fn render_editor_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
-        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
+        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  M.Ninsert TEXT             insert one pseudo-token before M.N\n  M.Nappend TEXT             insert one pseudo-token after M.N\n  M.N,M.Ureplace TEXT        replace an inclusive same-paragraph range\n  M.N,M.Udelete              delete an inclusive same-paragraph range\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
     )
 }

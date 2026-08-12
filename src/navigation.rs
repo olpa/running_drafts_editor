@@ -94,28 +94,31 @@ pub fn parse_line(input: &str) -> Result<CommandLine, SyntaxError> {
     if input.trim().is_empty() {
         return Ok(CommandLine::Empty);
     }
-    let (first, tail) = split_head(input);
+    let (first, raw_tail) = split_head(input);
     let parsed_address = parse_address(first);
 
     if let Ok(address) = parsed_address {
+        let tail = raw_tail.trim_start();
         if tail.is_empty() {
             return Ok(CommandLine::Address(address));
         }
         let (name, arguments) = split_head(tail);
+        let name = parse_command_name(name)?;
         return Ok(CommandLine::Command {
             address: Some(address),
-            name: parse_command_name(name)?,
-            arguments: arguments.into(),
+            arguments: command_arguments(&name, arguments),
+            name,
         });
     }
 
     let split = first.find(char::is_alphabetic).unwrap_or(0);
     if split > 0 {
         let (address, name) = first.split_at(split);
+        let name = parse_command_name(name)?;
         return Ok(CommandLine::Command {
             address: Some(parse_address(address)?),
-            name: parse_command_name(name)?,
-            arguments: tail.into(),
+            arguments: command_arguments(&name, raw_tail),
+            name,
         });
     }
 
@@ -127,10 +130,11 @@ pub fn parse_line(input: &str) -> Result<CommandLine, SyntaxError> {
         return Err(parsed_address.expect_err("address-shaped input did not parse"));
     }
 
+    let name = parse_command_name(first)?;
     Ok(CommandLine::Command {
         address: None,
-        name: parse_command_name(first)?,
-        arguments: tail.into(),
+        arguments: command_arguments(&name, raw_tail),
+        name,
     })
 }
 
@@ -138,8 +142,21 @@ fn split_head(input: &str) -> (&str, &str) {
     input
         .find(char::is_whitespace)
         .map_or((input, ""), |split| {
-            (&input[..split], input[split..].trim_start())
+            let separator_len = input[split..]
+                .chars()
+                .next()
+                .expect("split points at whitespace")
+                .len_utf8();
+            (&input[..split], &input[split + separator_len..])
         })
+}
+
+fn command_arguments(name: &str, raw: &str) -> String {
+    if matches!(name, "insert" | "append" | "replace") {
+        raw.into()
+    } else {
+        raw.trim_start().into()
+    }
 }
 
 pub fn parse_address(input: &str) -> Result<Address, SyntaxError> {

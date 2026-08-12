@@ -9,9 +9,9 @@ use std::{
 
 use crate::chunking::SampleRange;
 use crate::document::Document;
-use crate::editor::render_document_with_navigation;
+use crate::editor::{apply_delete, apply_insert, apply_replace, render_document_with_navigation};
 use crate::navigation::{
-    parse_line, Address, Caret, CommandLine, NavigationState, Selection, SyntaxError,
+    parse_line, Address, Caret, CommandLine, NavigationState, Selection, SyntaxError, TokenAddress,
 };
 use crate::persistence::{load_document, save_document};
 use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
@@ -35,6 +35,23 @@ pub enum AuditionCommand {
     Move(Address),
     Select(Address),
     Tokens(usize),
+    Insert {
+        address: TokenAddress,
+        text: String,
+    },
+    Append {
+        address: TokenAddress,
+        text: String,
+    },
+    Replace {
+        start: TokenAddress,
+        end: TokenAddress,
+        text: String,
+    },
+    Delete {
+        start: TokenAddress,
+        end: TokenAddress,
+    },
     Save(Option<PathBuf>),
     Load(PathBuf),
     Help,
@@ -209,6 +226,8 @@ pub enum CommandParseError {
     ExtraArguments(String),
     #[error("{0} requires a document path")]
     PathRequired(String),
+    #[error("{0} requires text after the command")]
+    TextRequired(String),
 }
 
 pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> {
@@ -303,6 +322,47 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                 }),
             }
         }
+        "insert" | "append" => {
+            if arguments.is_empty() {
+                return Err(CommandParseError::TextRequired(name));
+            }
+            match address {
+                Some(Address::Token(address)) if name == "insert" => Ok(AuditionCommand::Insert {
+                    address,
+                    text: arguments,
+                }),
+                Some(Address::Token(address)) => Ok(AuditionCommand::Append {
+                    address,
+                    text: arguments,
+                }),
+                Some(address) => Err(CommandParseError::InvalidAddress {
+                    command: name,
+                    address,
+                    expected: "a token address M.N",
+                }),
+                None => Err(CommandParseError::AddressRequired {
+                    command: name,
+                    expected: "a token address M.N",
+                }),
+            }
+        }
+        "replace" => {
+            if arguments.is_empty() {
+                return Err(CommandParseError::TextRequired(name));
+            }
+            token_range_command(address, name, |start, end| AuditionCommand::Replace {
+                start,
+                end,
+                text: arguments,
+            })
+        }
+        "delete" => {
+            reject_arguments(&name, &arguments)?;
+            token_range_command(address, name, |start, end| AuditionCommand::Delete {
+                start,
+                end,
+            })
+        }
         "info" | "i" => {
             reject_arguments(&name, &arguments)?;
             marker_command(address, name, |paragraph, chunk| AuditionCommand::Info {
@@ -345,6 +405,25 @@ fn marker_command(
         None => Err(CommandParseError::AddressRequired {
             command,
             expected: "a chunk-marker address M@N",
+        }),
+    }
+}
+
+fn token_range_command(
+    address: Option<Address>,
+    command: String,
+    build: impl FnOnce(TokenAddress, TokenAddress) -> AuditionCommand,
+) -> Result<AuditionCommand, CommandParseError> {
+    match address {
+        Some(Address::TokenRange { start, end }) => Ok(build(start, end)),
+        Some(address) => Err(CommandParseError::InvalidAddress {
+            command,
+            address,
+            expected: "an inclusive token range M.N,M.U",
+        }),
+        None => Err(CommandParseError::AddressRequired {
+            command,
+            expected: "an inclusive token range M.N,M.U",
         }),
     }
 }
@@ -674,6 +753,36 @@ pub fn run_recognition_session(
                 };
                 render_tokens(value, paragraph, output)?;
             }
+            Ok(AuditionCommand::Insert { address, text }) => apply_insert(
+                &mut document,
+                &mut navigation,
+                address,
+                false,
+                text,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Append { address, text }) => apply_insert(
+                &mut document,
+                &mut navigation,
+                address,
+                true,
+                text,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Replace { start, end, text }) => apply_replace(
+                &mut document,
+                &mut navigation,
+                start,
+                end,
+                text,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Delete { start, end }) => {
+                apply_delete(&mut document, &mut navigation, start, end, output, errors)?
+            }
             Ok(AuditionCommand::Save(path)) => {
                 let path = path.or_else(|| document_path.clone());
                 let Some(path) = path else {
@@ -971,6 +1080,19 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         output,
+        "  M.Ninsert TEXT insert one pseudo-token before M.N"
+    )?;
+    writeln!(output, "  M.Nappend TEXT insert one pseudo-token after M.N")?;
+    writeln!(
+        output,
+        "  M.N,M.Ureplace TEXT replace an inclusive same-paragraph range"
+    )?;
+    writeln!(
+        output,
+        "  M.N,M.Udelete delete an inclusive same-paragraph range"
+    )?;
+    writeln!(
+        output,
         "  [A]play        play current/addressed token range, paragraph, or chunk"
     )?;
     writeln!(
@@ -1105,6 +1227,53 @@ mod tests {
         );
         assert_eq!(parse_command("stop").unwrap(), AuditionCommand::Stop);
         assert_eq!(
+            parse_command("1.2insert  typed text  ").unwrap(),
+            AuditionCommand::Insert {
+                address: TokenAddress {
+                    paragraph: 1,
+                    token: 2,
+                },
+                text: " typed text  ".into(),
+            }
+        );
+        assert_eq!(
+            parse_command("1.2 append text").unwrap(),
+            AuditionCommand::Append {
+                address: TokenAddress {
+                    paragraph: 1,
+                    token: 2,
+                },
+                text: "text".into(),
+            }
+        );
+        assert_eq!(
+            parse_command("1.2,1.4replace new text").unwrap(),
+            AuditionCommand::Replace {
+                start: TokenAddress {
+                    paragraph: 1,
+                    token: 2,
+                },
+                end: TokenAddress {
+                    paragraph: 1,
+                    token: 4,
+                },
+                text: "new text".into(),
+            }
+        );
+        assert_eq!(
+            parse_command("1.2,1.4delete").unwrap(),
+            AuditionCommand::Delete {
+                start: TokenAddress {
+                    paragraph: 1,
+                    token: 2,
+                },
+                end: TokenAddress {
+                    paragraph: 1,
+                    token: 4,
+                },
+            }
+        );
+        assert_eq!(
             parse_command("1@1,1@2sel").unwrap(),
             AuditionCommand::Select(Address::MarkerRange {
                 start_paragraph: 1,
@@ -1205,6 +1374,18 @@ mod tests {
             parse_command("2help").unwrap_err(),
             CommandParseError::UnexpectedAddress("help".into())
         );
+        assert_eq!(
+            parse_command("1.2insert").unwrap_err(),
+            CommandParseError::TextRequired("insert".into())
+        );
+        assert!(matches!(
+            parse_command("1.2replace text"),
+            Err(CommandParseError::InvalidAddress { .. })
+        ));
+        assert!(matches!(
+            parse_command("1.2delete"),
+            Err(CommandParseError::InvalidAddress { .. })
+        ));
     }
 
     #[test]
