@@ -140,7 +140,7 @@ the tool stores:
 
 For every token, the tool stores its text, probability, optional audio range,
 whether it is special, and alternative token candidates. The default limit is
-5 alternatives. Whisper reports time in centiseconds. The tool converts these
+20 alternatives. Whisper reports time in centiseconds. The tool converts these
 values to absolute mono 16 kHz sample positions before storing them. Special
 tokens remain in this evidence even though they are removed from prompts.
 

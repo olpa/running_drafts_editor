@@ -94,7 +94,7 @@ struct RecognitionArgs {
     left_context_samples: u64,
     #[arg(long, default_value_t = 48_000)]
     right_context_samples: u64,
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 20)]
     top_candidates: usize,
     /// Minimum normal text tokens before a strong or usable pause may split a chunk.
     #[arg(long, default_value_t = 8)]
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(args.recognition.target_core_samples, 384_000);
         assert_eq!(args.recognition.left_context_samples, 48_000);
         assert_eq!(args.recognition.right_context_samples, 48_000);
-        assert_eq!(args.recognition.top_candidates, 5);
+        assert_eq!(args.recognition.top_candidates, 20);
         assert_eq!(args.recognition.chunk_minimum_tokens, 8);
         assert_eq!(args.recognition.chunk_target_tokens, 32);
         assert_eq!(args.recognition.chunk_maximum_tokens, 64);

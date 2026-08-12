@@ -66,6 +66,7 @@ large design.
   any numbered candidate as one indivisible pseudo-token. An empty candidate
   remains an addressable empty pseudo-token. Conflicting edits hide the source
   token's alternatives without deleting their persisted immutable evidence.
+  Recognition captures 20 top candidates per token by default.
 - Character offsets, character spans, and partial-token positions are not part
   of the document, selection, editing, mapping, replay, or persistence model.
   Token text is opaque to these operations.
