@@ -9,9 +9,9 @@ use std::{
 
 use crate::chunking::SampleRange;
 use crate::document::Document;
-use crate::editor::render_document_with_navigation;
+use crate::editor::{apply_delete, apply_insert, apply_replace, render_document_with_navigation};
 use crate::navigation::{
-    parse_line, Address, Caret, CommandLine, NavigationState, Selection, SyntaxError,
+    parse_line, Address, Caret, CommandLine, NavigationState, Selection, SyntaxError, TokenAddress,
 };
 use crate::persistence::{load_document, save_document};
 use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
@@ -35,11 +35,32 @@ pub enum AuditionCommand {
     Move(Address),
     Select(Address),
     Tokens(usize),
+    Insert {
+        address: TokenAddress,
+        text: String,
+    },
+    Append {
+        address: TokenAddress,
+        text: String,
+    },
+    Replace {
+        range: Option<(TokenAddress, TokenAddress)>,
+        replacement: ReplacementText,
+    },
+    Delete {
+        range: Option<(TokenAddress, TokenAddress)>,
+    },
     Save(Option<PathBuf>),
     Load(PathBuf),
     Help,
     Quit,
     Empty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacementText {
+    pub text: String,
+    pub exact_boundaries: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +230,10 @@ pub enum CommandParseError {
     ExtraArguments(String),
     #[error("{0} requires a document path")]
     PathRequired(String),
+    #[error("{0} requires text after the command")]
+    TextRequired(String),
+    #[error("invalid quoted replacement: {0}")]
+    InvalidQuotedReplacement(String),
 }
 
 pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> {
@@ -303,6 +328,42 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                 }),
             }
         }
+        "insert" | "append" => {
+            if arguments.is_empty() {
+                return Err(CommandParseError::TextRequired(name));
+            }
+            match address {
+                Some(Address::Token(address)) if name == "insert" => Ok(AuditionCommand::Insert {
+                    address,
+                    text: arguments,
+                }),
+                Some(Address::Token(address)) => Ok(AuditionCommand::Append {
+                    address,
+                    text: arguments,
+                }),
+                Some(address) => Err(CommandParseError::InvalidAddress {
+                    command: name,
+                    address,
+                    expected: "a token address M.N",
+                }),
+                None => Err(CommandParseError::AddressRequired {
+                    command: name,
+                    expected: "a token address M.N",
+                }),
+            }
+        }
+        "replace" => {
+            if arguments.is_empty() {
+                return Err(CommandParseError::TextRequired(name));
+            }
+            let replacement = parse_replacement(&arguments)?;
+            optional_token_range(address, name)
+                .map(|range| AuditionCommand::Replace { range, replacement })
+        }
+        "delete" => {
+            reject_arguments(&name, &arguments)?;
+            optional_token_range(address, name).map(|range| AuditionCommand::Delete { range })
+        }
         "info" | "i" => {
             reject_arguments(&name, &arguments)?;
             marker_command(address, name, |paragraph, chunk| AuditionCommand::Info {
@@ -320,6 +381,55 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         }
         _ => Err(CommandParseError::Unknown(name)),
     }
+}
+
+fn parse_replacement(input: &str) -> Result<ReplacementText, CommandParseError> {
+    if !input.starts_with('"') {
+        return Ok(ReplacementText {
+            text: input.into(),
+            exact_boundaries: false,
+        });
+    }
+    let mut text = String::new();
+    let mut characters = input[1..].chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '"' if characters.as_str().is_empty() => {
+                if text.is_empty() {
+                    return Err(CommandParseError::InvalidQuotedReplacement(
+                        "empty text is not allowed; use delete".into(),
+                    ));
+                }
+                return Ok(ReplacementText {
+                    text,
+                    exact_boundaries: true,
+                });
+            }
+            '"' => {
+                return Err(CommandParseError::InvalidQuotedReplacement(
+                    "unexpected text after the closing quote".into(),
+                ));
+            }
+            '\\' => match characters.next() {
+                Some('"') => text.push('"'),
+                Some('\\') => text.push('\\'),
+                Some(other) => {
+                    return Err(CommandParseError::InvalidQuotedReplacement(format!(
+                        "unsupported escape '\\{other}'"
+                    )));
+                }
+                None => {
+                    return Err(CommandParseError::InvalidQuotedReplacement(
+                        "unfinished escape".into(),
+                    ));
+                }
+            },
+            other => text.push(other),
+        }
+    }
+    Err(CommandParseError::InvalidQuotedReplacement(
+        "missing closing quote".into(),
+    ))
 }
 
 fn reject_arguments(command: &str, arguments: &str) -> Result<(), CommandParseError> {
@@ -346,6 +456,21 @@ fn marker_command(
             command,
             expected: "a chunk-marker address M@N",
         }),
+    }
+}
+
+fn optional_token_range(
+    address: Option<Address>,
+    command: String,
+) -> Result<Option<(TokenAddress, TokenAddress)>, CommandParseError> {
+    match address {
+        Some(Address::TokenRange { start, end }) => Ok(Some((start, end))),
+        Some(address) => Err(CommandParseError::InvalidAddress {
+            command,
+            address,
+            expected: "an inclusive token range M.N,M.U",
+        }),
+        None => Ok(None),
     }
 }
 
@@ -674,6 +799,35 @@ pub fn run_recognition_session(
                 };
                 render_tokens(value, paragraph, output)?;
             }
+            Ok(AuditionCommand::Insert { address, text }) => apply_insert(
+                &mut document,
+                &mut navigation,
+                address,
+                false,
+                text,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Append { address, text }) => apply_insert(
+                &mut document,
+                &mut navigation,
+                address,
+                true,
+                text,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Replace { range, replacement }) => apply_replace(
+                &mut document,
+                &mut navigation,
+                range,
+                replacement,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::Delete { range }) => {
+                apply_delete(&mut document, &mut navigation, range, output, errors)?
+            }
             Ok(AuditionCommand::Save(path)) => {
                 let path = path.or_else(|| document_path.clone());
                 let Some(path) = path else {
@@ -971,6 +1125,27 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         output,
+        "  M.Ninsert TEXT insert one pseudo-token before M.N"
+    )?;
+    writeln!(output, "  M.Nappend TEXT insert one pseudo-token after M.N")?;
+    writeln!(
+        output,
+        "  [M.N,M.U]replace TEXT replace range or current token selection"
+    )?;
+    writeln!(
+        output,
+        "                    unquoted keeps selected boundary whitespace"
+    )?;
+    writeln!(
+        output,
+        "                    quoted \"TEXT\" controls boundaries exactly"
+    )?;
+    writeln!(
+        output,
+        "  [M.N,M.U]delete delete range or current token selection"
+    )?;
+    writeln!(
+        output,
         "  [A]play        play current/addressed token range, paragraph, or chunk"
     )?;
     writeln!(
@@ -1105,6 +1280,60 @@ mod tests {
         );
         assert_eq!(parse_command("stop").unwrap(), AuditionCommand::Stop);
         assert_eq!(
+            parse_command("1.2insert  typed text  ").unwrap(),
+            AuditionCommand::Insert {
+                address: TokenAddress {
+                    paragraph: 1,
+                    token: 2,
+                },
+                text: " typed text  ".into(),
+            }
+        );
+        assert_eq!(
+            parse_command("1.2 append text").unwrap(),
+            AuditionCommand::Append {
+                address: TokenAddress {
+                    paragraph: 1,
+                    token: 2,
+                },
+                text: "text".into(),
+            }
+        );
+        assert_eq!(
+            parse_command("1.2,1.4replace new text").unwrap(),
+            AuditionCommand::Replace {
+                range: Some((
+                    TokenAddress {
+                        paragraph: 1,
+                        token: 2,
+                    },
+                    TokenAddress {
+                        paragraph: 1,
+                        token: 4,
+                    },
+                )),
+                replacement: ReplacementText {
+                    text: "new text".into(),
+                    exact_boundaries: false,
+                },
+            }
+        );
+        assert_eq!(
+            parse_command("1.2,1.4delete").unwrap(),
+            AuditionCommand::Delete {
+                range: Some((
+                    TokenAddress {
+                        paragraph: 1,
+                        token: 2,
+                    },
+                    TokenAddress {
+                        paragraph: 1,
+                        token: 4,
+                    },
+                )),
+            }
+        );
+        assert_eq!(
             parse_command("1@1,1@2sel").unwrap(),
             AuditionCommand::Select(Address::MarkerRange {
                 start_paragraph: 1,
@@ -1205,6 +1434,58 @@ mod tests {
             parse_command("2help").unwrap_err(),
             CommandParseError::UnexpectedAddress("help".into())
         );
+        assert_eq!(
+            parse_command("1.2insert").unwrap_err(),
+            CommandParseError::TextRequired("insert".into())
+        );
+        assert_eq!(
+            parse_command("replace text").unwrap(),
+            AuditionCommand::Replace {
+                range: None,
+                replacement: ReplacementText {
+                    text: "text".into(),
+                    exact_boundaries: false,
+                },
+            }
+        );
+        assert_eq!(
+            parse_command("delete").unwrap(),
+            AuditionCommand::Delete { range: None }
+        );
+        assert!(matches!(
+            parse_command("1.2replace text"),
+            Err(CommandParseError::InvalidAddress { .. })
+        ));
+        assert!(matches!(
+            parse_command("1.2delete"),
+            Err(CommandParseError::InvalidAddress { .. })
+        ));
+    }
+
+    #[test]
+    fn quoted_replacement_controls_boundaries_and_escapes_quotes_and_backslashes() {
+        assert_eq!(
+            parse_command(r#"replace " exact \"text\"\\ ""#).unwrap(),
+            AuditionCommand::Replace {
+                range: None,
+                replacement: ReplacementText {
+                    text: " exact \"text\"\\ ".into(),
+                    exact_boundaries: true,
+                },
+            }
+        );
+        assert!(matches!(
+            parse_command(r#"replace "unfinished"#),
+            Err(CommandParseError::InvalidQuotedReplacement(_))
+        ));
+        assert!(matches!(
+            parse_command(r#"replace """#),
+            Err(CommandParseError::InvalidQuotedReplacement(_))
+        ));
+        assert!(matches!(
+            parse_command(r#"replace "bad\n""#),
+            Err(CommandParseError::InvalidQuotedReplacement(_))
+        ));
     }
 
     #[test]
@@ -1219,6 +1500,9 @@ mod tests {
         assert!(output.contains("M.N, M@N        move the caret"));
         assert!(output.contains("Aselect, Asel, As"));
         assert!(output.contains("Mtokens"));
+        assert!(output.contains("[M.N,M.U]replace TEXT"));
+        assert!(output.contains("unquoted keeps selected boundary whitespace"));
+        assert!(output.contains("quoted \"TEXT\" controls boundaries exactly"));
         assert!(output.contains("[A]play        play current/addressed"));
         assert!(output.contains("M@N,M@Uplay   play marker interval"));
         assert!(output.contains("[A]slowplay"));

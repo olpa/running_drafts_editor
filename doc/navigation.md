@@ -58,11 +58,11 @@ The general command form is:
 
 The address and command may be attached (`2@3info`) or separated by whitespace
 (`2@3 info`). Commands include `print`/`p`, `play`, `info`/`i`, `select`/`s`,
-`tokens`, `help`/`h`, and `quit`/`q`; `list`/`l` remain print aliases. `play`
-accepts any address or uses the current token or selection; `info` requires a
-chunk-marker address. `print` accepts no address for the whole
-document or a paragraph address. `tokens` requires a paragraph address. A bare
-token or marker address moves the caret.
+`tokens`, `insert`, `append`, `replace`, `delete`, `help`/`h`, and `quit`/`q`;
+`list`/`l` remain print aliases. `play` accepts any address or uses the current
+token or selection; `info` requires a chunk-marker address. `print` accepts no
+address for the whole document or a paragraph address. `tokens` requires a
+paragraph address. A bare token or marker address moves the caret.
 
 Examples describe the intended language; each ticket implements only commands
 within its scope:
@@ -190,13 +190,47 @@ whitespace, long tokens, narrow terminals, and redirected output.
 ## Edits and pseudo-tokens
 
 Recognition evidence is immutable. Replacing selected recognition tokens
-removes their references from the visible sequence and inserts one or more
-pseudo-tokens. The original recognition tokens remain as evidence.
+removes their references from the visible sequence and inserts one
+pseudo-token. The original recognition tokens remain as evidence.
 
 A pseudo-token is indivisible after creation. To change it, the user selects
 and replaces the complete pseudo-token, just as with a recognition token. A
-replacement command may deliberately create several pseudo-tokens, but no
-operation implicitly splits an existing token.
+single insertion or replacement always creates one pseudo-token from the
+complete supplied text. The editor does not divide it with the Whisper
+tokenizer. Its alignment is unavailable.
+
+Text-edit ranges never cross paragraph boundaries. The edit commands are:
+
+```text
+M.Ninsert TEXT
+M.Nappend TEXT
+M.N,M.Ureplace TEXT
+M.N,M.Udelete
+```
+
+`insert` places `TEXT` before its addressed token and `append` places it after.
+`replace` and `delete` use an inclusive same-paragraph token range. The text
+after the command separator is preserved exactly as the new pseudo-token text.
+When `replace` or `delete` omits its address, it uses the current token
+selection. A missing, non-token, cross-paragraph, or stale selection fails
+without changing the document.
+
+An unquoted replacement preserves the maximal leading and trailing Unicode
+whitespace of the selected visible text. This keeps normal corrections from
+joining words accidentally. If the selected text is entirely whitespace, none
+of it is preserved automatically. A quoted replacement controls both
+boundaries exactly:
+
+```text
+replace new text       # keep the selection's boundary whitespace
+replace "new text"     # use exactly: new text
+replace " new text "   # use exactly: space, new text, space
+```
+
+Inside quoted replacement text, `\"` represents a quote and `\\` represents a
+backslash. Other escapes, a missing closing quote, text after the closing quote,
+and an empty quoted replacement are errors. Use `delete` instead of `replace
+""`.
 
 Character offsets and character spans do not exist in the document,
 selection, editing, mapping, replay, or persistence model. Token text is opaque

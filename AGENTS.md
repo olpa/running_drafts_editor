@@ -37,6 +37,16 @@ large design.
   Whisper tokens. Edits may replace or add them with indivisible pseudo-tokens
   that preserve user-authored text. Timestamp and other special tokens remain
   recognition evidence and are not selectable text.
+- Text-edit ranges never cross paragraph boundaries. `M.Ninsert TEXT` inserts
+  one pseudo-token before the addressed token, `M.Nappend TEXT` inserts one
+  after it, `M.N,M.Ureplace TEXT` replaces an inclusive same-paragraph range,
+  and `M.N,M.Udelete` deletes one. The complete supplied `TEXT` is one
+  indivisible pseudo-token with unavailable alignment; it is not divided with
+  the Whisper tokenizer. When `replace` or `delete` has no address, it uses the
+  current complete-token selection and rejects missing, non-token,
+  cross-paragraph, or stale selections. Unquoted replacement text retains the
+  selected text's leading and trailing whitespace; a fully quoted replacement
+  controls both boundaries exactly and supports `\"` and `\\` escapes.
 - Token addresses are derived from the current paragraph revision. Stored
   carets and selections use stable token or chunk identities and paragraph
   revisions rather than treating displayed numbers as stable IDs. Token ranges

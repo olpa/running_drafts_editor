@@ -11,6 +11,33 @@ use crate::chunking::SampleRange;
 
 use crate::recognition::{ChunkBoundaryReason, DecodedSegment, RecognitionChunk, RecognitionRun};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditedTokenPosition {
+    pub paragraph: usize,
+    pub token: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DocumentEditError {
+    #[error("inserted or replacement text cannot be empty")]
+    EmptyText,
+    #[error("unknown paragraph {0}")]
+    UnknownParagraph(usize),
+    #[error("unknown token {paragraph}.{token}")]
+    UnknownToken { paragraph: usize, token: usize },
+    #[error("text-edit ranges cannot cross paragraph boundaries")]
+    CrossParagraphRange,
+    #[error("token range '{start_paragraph}.{start_token},{end_paragraph}.{end_token}' ends before it starts")]
+    ReversedRange {
+        start_paragraph: usize,
+        start_token: usize,
+        end_paragraph: usize,
+        end_token: usize,
+    },
+    #[error("paragraph revision cannot be increased")]
+    RevisionOverflow,
+}
+
 pub const DOCUMENT_SCHEMA: &str = "rde-document/v1-experimental";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +230,180 @@ impl Document {
                     .position(|marker| marker.chunk_id == chunk_id)
                     .map(|marker| (paragraph + 1, marker + 1))
             })
+    }
+
+    pub fn insert_text(
+        &mut self,
+        paragraph: usize,
+        token: usize,
+        after: bool,
+        text: String,
+    ) -> Result<EditedTokenPosition, DocumentEditError> {
+        if text.is_empty() {
+            return Err(DocumentEditError::EmptyText);
+        }
+        let token_count = self.checked_token_count(paragraph, token)?;
+        let position = if after { token } else { token - 1 };
+        let shift_marker_at_position = after;
+        self.apply_edit(
+            paragraph,
+            position,
+            position,
+            Some(text),
+            shift_marker_at_position,
+        )?;
+        debug_assert_eq!(
+            self.paragraph(paragraph).unwrap().tokens().len(),
+            token_count + 1
+        );
+        Ok(EditedTokenPosition {
+            paragraph,
+            token: position + 1,
+        })
+    }
+
+    pub fn replace_text(
+        &mut self,
+        start_paragraph: usize,
+        start_token: usize,
+        end_paragraph: usize,
+        end_token: usize,
+        text: String,
+    ) -> Result<EditedTokenPosition, DocumentEditError> {
+        if text.is_empty() {
+            return Err(DocumentEditError::EmptyText);
+        }
+        self.checked_range(start_paragraph, start_token, end_paragraph, end_token)?;
+        self.apply_edit(
+            start_paragraph,
+            start_token - 1,
+            end_token,
+            Some(text),
+            false,
+        )?;
+        Ok(EditedTokenPosition {
+            paragraph: start_paragraph,
+            token: start_token,
+        })
+    }
+
+    pub fn delete_text(
+        &mut self,
+        start_paragraph: usize,
+        start_token: usize,
+        end_paragraph: usize,
+        end_token: usize,
+    ) -> Result<Option<EditedTokenPosition>, DocumentEditError> {
+        self.checked_range(start_paragraph, start_token, end_paragraph, end_token)?;
+        self.apply_edit(start_paragraph, start_token - 1, end_token, None, false)?;
+        let remaining = self.paragraph(start_paragraph).unwrap().tokens().len();
+        Ok((remaining > 0).then_some(EditedTokenPosition {
+            paragraph: start_paragraph,
+            token: start_token.min(remaining),
+        }))
+    }
+
+    fn checked_token_count(
+        &self,
+        paragraph: usize,
+        token: usize,
+    ) -> Result<usize, DocumentEditError> {
+        let value = self
+            .paragraph(paragraph)
+            .ok_or(DocumentEditError::UnknownParagraph(paragraph))?;
+        if token == 0 || token > value.tokens.len() {
+            return Err(DocumentEditError::UnknownToken { paragraph, token });
+        }
+        Ok(value.tokens.len())
+    }
+
+    fn checked_range(
+        &self,
+        start_paragraph: usize,
+        start_token: usize,
+        end_paragraph: usize,
+        end_token: usize,
+    ) -> Result<(), DocumentEditError> {
+        if start_paragraph != end_paragraph {
+            return Err(DocumentEditError::CrossParagraphRange);
+        }
+        if start_token > end_token {
+            return Err(DocumentEditError::ReversedRange {
+                start_paragraph,
+                start_token,
+                end_paragraph,
+                end_token,
+            });
+        }
+        self.checked_token_count(start_paragraph, start_token)?;
+        self.checked_token_count(end_paragraph, end_token)?;
+        Ok(())
+    }
+
+    fn apply_edit(
+        &mut self,
+        paragraph_number: usize,
+        start: usize,
+        end_exclusive: usize,
+        replacement: Option<String>,
+        shift_marker_at_start: bool,
+    ) -> Result<(), DocumentEditError> {
+        let paragraph = self
+            .paragraphs
+            .get_mut(paragraph_number.checked_sub(1).unwrap_or(usize::MAX))
+            .ok_or(DocumentEditError::UnknownParagraph(paragraph_number))?;
+        let old_revision = paragraph.revision;
+        let new_revision = old_revision
+            .checked_add(1)
+            .ok_or(DocumentEditError::RevisionOverflow)?;
+        let removed = end_exclusive - start;
+        let inserted = usize::from(replacement.is_some());
+
+        for marker in &mut paragraph.chunk_boundaries {
+            marker.after_tokens = if removed == 0 {
+                if marker.after_tokens > start
+                    || (shift_marker_at_start && marker.after_tokens == start)
+                {
+                    marker.after_tokens + inserted
+                } else {
+                    marker.after_tokens
+                }
+            } else if marker.after_tokens <= start {
+                marker.after_tokens
+            } else if marker.after_tokens <= end_exclusive {
+                start + inserted
+            } else {
+                marker.after_tokens - removed + inserted
+            };
+        }
+
+        let removed_ids = paragraph.tokens[start..end_exclusive]
+            .iter()
+            .map(|token| token.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let replacement = replacement.map(|text| VisibleToken {
+            id: VisibleTokenId::Pseudo {
+                id: format!("edit:{}:{new_revision}", paragraph.id),
+            },
+            text,
+            origin: VisibleTokenOrigin::Pseudo {
+                reason: "user text".into(),
+            },
+        });
+        paragraph.tokens.splice(start..end_exclusive, replacement);
+        paragraph.revision = new_revision;
+
+        self.token_audio_mappings.retain_mut(|mapping| {
+            if mapping.paragraph_id != paragraph.id || mapping.paragraph_revision != old_revision {
+                return true;
+            }
+            if removed_ids.contains(&mapping.token_id) {
+                return false;
+            }
+            mapping.paragraph_revision = new_revision;
+            true
+        });
+        Ok(())
     }
 }
 
@@ -606,5 +807,115 @@ mod tests {
 
         assert_eq!(document.paragraphs()[0].tokens().len(), 1);
         assert_eq!(document.paragraphs()[0].tokens()[0].text(), "shown");
+    }
+
+    #[test]
+    fn edits_create_one_pseudo_token_and_keep_markers_on_token_boundaries() {
+        let segments = vec![
+            segment("s1", "a", vec![token("a")]),
+            segment("s2", " b c", vec![token(" b"), token(" c")]),
+        ];
+        let chunks = vec![
+            chunk("a", "s1", "a", ChunkBoundaryReason::StrongPause),
+            chunk("b", "s2", " b c", ChunkBoundaryReason::SourceEnd),
+        ];
+        let mut document = Document::from_evidence("run", &segments, &chunks);
+
+        let inserted = document
+            .insert_text(1, 2, false, " inserted words".into())
+            .unwrap();
+        assert_eq!(
+            inserted,
+            EditedTokenPosition {
+                paragraph: 1,
+                token: 2
+            }
+        );
+        assert_eq!(document.paragraphs()[0].text(), "a inserted words b c");
+        assert_eq!(document.paragraphs()[0].tokens().len(), 4);
+        assert_eq!(
+            document.paragraphs()[0].chunk_boundaries()[0].after_tokens(),
+            1
+        );
+        assert_eq!(
+            document.paragraphs()[0].chunk_boundaries()[1].after_tokens(),
+            4
+        );
+
+        document
+            .replace_text(1, 2, 1, 3, " replacement span".into())
+            .unwrap();
+        let paragraph = &document.paragraphs()[0];
+        assert_eq!(paragraph.text(), "a replacement span c");
+        assert_eq!(paragraph.tokens().len(), 3);
+        assert_eq!(paragraph.revision(), 3);
+        assert!(matches!(
+            paragraph.tokens()[1].origin(),
+            VisibleTokenOrigin::Pseudo { reason } if reason == "user text"
+        ));
+        assert_eq!(paragraph.chunk_boundaries()[0].after_tokens(), 1);
+        assert_eq!(paragraph.chunk_boundaries()[1].after_tokens(), 3);
+    }
+
+    #[test]
+    fn append_stays_immediately_before_a_marker_and_delete_can_empty_a_paragraph() {
+        let segments = vec![segment("s1", "a", vec![token("a")])];
+        let chunks = vec![chunk("a", "s1", "a", ChunkBoundaryReason::SourceEnd)];
+        let mut document = Document::from_evidence("run", &segments, &chunks);
+
+        document.insert_text(1, 1, true, " tail".into()).unwrap();
+        assert_eq!(document.paragraphs()[0].text(), "a tail");
+        assert_eq!(
+            document.paragraphs()[0].chunk_boundaries()[0].after_tokens(),
+            2
+        );
+
+        assert_eq!(document.delete_text(1, 1, 1, 2).unwrap(), None);
+        assert!(document.paragraphs()[0].tokens().is_empty());
+        assert_eq!(
+            document.paragraphs()[0].chunk_boundaries()[0].after_tokens(),
+            0
+        );
+    }
+
+    #[test]
+    fn edit_preserves_retained_mappings_at_the_new_revision_and_rejects_cross_paragraphs() {
+        let segments = vec![
+            segment("s1", "a", vec![token("a")]),
+            segment("s2", " b", vec![token(" b")]),
+        ];
+        let chunks = vec![
+            chunk("a", "s1", "a", ChunkBoundaryReason::LongPause),
+            chunk("b", "s2", " b", ChunkBoundaryReason::SourceEnd),
+        ];
+        let mut document = Document::from_evidence("run", &segments, &chunks);
+        let first_id = document.paragraphs[0].tokens[0].id.clone();
+        document.token_audio_mappings.push(TokenAudioMapping {
+            paragraph_id: document.paragraphs[0].id.clone(),
+            paragraph_revision: 1,
+            token_id: first_id.clone(),
+            source_id: "audio".into(),
+            range: SampleRange {
+                start_sample: 1,
+                end_sample: 2,
+            },
+            alignment: AlignmentState::Exact,
+        });
+        let before = document.clone();
+
+        assert_eq!(
+            document.replace_text(1, 1, 2, 1, "no".into()),
+            Err(DocumentEditError::CrossParagraphRange)
+        );
+        assert_eq!(document, before);
+
+        document.insert_text(1, 1, true, " added".into()).unwrap();
+        assert_eq!(document.token_audio_mappings.len(), 1);
+        assert_eq!(document.token_audio_mappings[0].token_id, first_id);
+        assert_eq!(document.token_audio_mappings[0].paragraph_revision, 2);
+        assert!(document
+            .token_audio_mappings
+            .iter()
+            .all(|mapping| !matches!(mapping.token_id, VisibleTokenId::Pseudo { .. })));
     }
 }

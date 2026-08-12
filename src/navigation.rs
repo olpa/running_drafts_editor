@@ -94,28 +94,31 @@ pub fn parse_line(input: &str) -> Result<CommandLine, SyntaxError> {
     if input.trim().is_empty() {
         return Ok(CommandLine::Empty);
     }
-    let (first, tail) = split_head(input);
+    let (first, raw_tail) = split_head(input);
     let parsed_address = parse_address(first);
 
     if let Ok(address) = parsed_address {
+        let tail = raw_tail.trim_start();
         if tail.is_empty() {
             return Ok(CommandLine::Address(address));
         }
         let (name, arguments) = split_head(tail);
+        let name = parse_command_name(name)?;
         return Ok(CommandLine::Command {
             address: Some(address),
-            name: parse_command_name(name)?,
-            arguments: arguments.into(),
+            arguments: command_arguments(&name, arguments),
+            name,
         });
     }
 
     let split = first.find(char::is_alphabetic).unwrap_or(0);
     if split > 0 {
         let (address, name) = first.split_at(split);
+        let name = parse_command_name(name)?;
         return Ok(CommandLine::Command {
             address: Some(parse_address(address)?),
-            name: parse_command_name(name)?,
-            arguments: tail.into(),
+            arguments: command_arguments(&name, raw_tail),
+            name,
         });
     }
 
@@ -127,10 +130,11 @@ pub fn parse_line(input: &str) -> Result<CommandLine, SyntaxError> {
         return Err(parsed_address.expect_err("address-shaped input did not parse"));
     }
 
+    let name = parse_command_name(first)?;
     Ok(CommandLine::Command {
         address: None,
-        name: parse_command_name(first)?,
-        arguments: tail.into(),
+        arguments: command_arguments(&name, raw_tail),
+        name,
     })
 }
 
@@ -138,8 +142,21 @@ fn split_head(input: &str) -> (&str, &str) {
     input
         .find(char::is_whitespace)
         .map_or((input, ""), |split| {
-            (&input[..split], input[split..].trim_start())
+            let separator_len = input[split..]
+                .chars()
+                .next()
+                .expect("split points at whitespace")
+                .len_utf8();
+            (&input[..split], &input[split + separator_len..])
         })
+}
+
+fn command_arguments(name: &str, raw: &str) -> String {
+    if matches!(name, "insert" | "append" | "replace") {
+        raw.into()
+    } else {
+        raw.trim_start().into()
+    }
 }
 
 pub fn parse_address(input: &str) -> Result<Address, SyntaxError> {
@@ -302,6 +319,12 @@ pub enum NavigationError {
     },
     #[error("there is no current caret or selection")]
     NoCurrentPosition,
+    #[error("there is no current token selection")]
+    NoTokenSelection,
+    #[error("the current selection is stale")]
+    StaleSelection,
+    #[error("text-edit ranges cannot cross paragraph boundaries")]
+    CrossParagraphSelection,
 }
 
 impl NavigationState {
@@ -332,6 +355,56 @@ impl NavigationState {
 
     pub fn selection(&self) -> Option<&Selection> {
         self.selection.as_ref()
+    }
+
+    pub fn selected_token_range(
+        &self,
+        document: &Document,
+    ) -> Result<(TokenAddress, TokenAddress), NavigationError> {
+        let Some(Selection::Tokens {
+            start,
+            end_inclusive,
+            ..
+        }) = self.selection.as_ref()
+        else {
+            return Err(NavigationError::NoTokenSelection);
+        };
+        if start.paragraph_id != end_inclusive.paragraph_id {
+            return Err(NavigationError::CrossParagraphSelection);
+        }
+        let paragraph_index = document
+            .paragraphs()
+            .iter()
+            .position(|paragraph| {
+                paragraph.id() == start.paragraph_id
+                    && paragraph.revision() == start.paragraph_revision
+                    && paragraph.revision() == end_inclusive.paragraph_revision
+            })
+            .ok_or(NavigationError::StaleSelection)?;
+        let paragraph = &document.paragraphs()[paragraph_index];
+        let start_index = paragraph
+            .tokens()
+            .iter()
+            .position(|token| token.id() == &start.token_id)
+            .ok_or(NavigationError::StaleSelection)?;
+        let end_index = paragraph
+            .tokens()
+            .iter()
+            .position(|token| token.id() == &end_inclusive.token_id)
+            .ok_or(NavigationError::StaleSelection)?;
+        if start_index > end_index {
+            return Err(NavigationError::StaleSelection);
+        }
+        Ok((
+            TokenAddress {
+                paragraph: paragraph_index + 1,
+                token: start_index + 1,
+            },
+            TokenAddress {
+                paragraph: paragraph_index + 1,
+                token: end_index + 1,
+            },
+        ))
     }
 
     pub fn move_to(
