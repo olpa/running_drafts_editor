@@ -236,3 +236,23 @@ Character offsets and character spans do not exist in the document,
 selection, editing, mapping, replay, or persistence model. Token text is opaque
 to those operations. Rendering and clean export concatenate complete token text
 without creating addressable positions inside it.
+
+## Chunk and paragraph structure
+
+`M.Nsplit` and `M.Nisplit` create a replay-chunk boundary immediately before
+token `M.N`; `M.Nasplit` creates one immediately after it. Bare forms use the
+current token caret. An existing boundary is reported and no empty chunk is
+created. A derived split preserves exact token text and identities. Its replay
+mapping uses an exact token boundary, the midpoint of a mapped gap with aligned
+status, or the complete parent range with inherited status.
+
+`M@Nparasplit` splits a paragraph after a nonfinal marker. Its bare form uses a
+current marker caret or single-marker selection. `Mmerge` joins paragraph `M`
+with its successor, preserves their chunks, and concatenates token text exactly
+without adding a separator. `M@Nmerge` joins the chunks around an internal
+marker when their same-source union is at most 480,000 canonical samples.
+
+Chunk split and merge create persistent derived chunk identities with parent
+provenance and current token membership. Original recognition chunks remain
+immutable. Paragraph split creates two new paragraph identities; paragraph
+merge creates one. Every paragraph boundary remains a replay-chunk boundary.

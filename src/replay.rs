@@ -48,11 +48,11 @@ pub fn resolve(
             },
         },
     };
-    if let Some((source_id, range)) = marker_range(document, target)? {
+    if let Some((source_id, range, alignment)) = marker_range(document, target)? {
         return Ok(ResolvedReplay {
             source_id,
             range,
-            alignment: AlignmentState::Exact,
+            alignment,
             partial: false,
         });
     }
@@ -117,7 +117,7 @@ enum Target<'a> {
 fn marker_range(
     document: &Document,
     target: Target<'_>,
-) -> Result<Option<(String, SampleRange)>, ReplayResolutionError> {
+) -> Result<Option<(String, SampleRange, AlignmentState)>, ReplayResolutionError> {
     match target {
         Target::Address(Address::MarkerRange {
             start_paragraph,
@@ -179,17 +179,21 @@ fn marker_range(
         }
         _ => return Ok(None),
     };
-    let Some((source, range)) = document.audio_mapping(marker.chunk_id()) else {
+    let Some(mapping) = document.chunk_audio_mapping(marker.chunk_id()) else {
         return Err(ReplayResolutionError::Unavailable);
     };
-    Ok(Some((source.id().to_owned(), range)))
+    Ok(Some((
+        mapping.source_id().to_owned(),
+        mapping.range(),
+        mapping.alignment(),
+    )))
 }
 
 fn resolve_marker_interval(
     document: &Document,
     start_chunk_id: &str,
     end_chunk_id: &str,
-) -> Result<(String, SampleRange), ReplayResolutionError> {
+) -> Result<(String, SampleRange, AlignmentState), ReplayResolutionError> {
     let markers = document
         .paragraphs()
         .iter()
@@ -208,14 +212,20 @@ fn resolve_marker_interval(
     }
     let mut source_id = None::<String>;
     let mut range = None::<SampleRange>;
+    let mut alignment = AlignmentState::Exact;
     for marker in &markers[start + 1..=end] {
-        let Some((source, chunk_range)) = document.audio_mapping(marker.chunk_id()) else {
+        let Some(mapping) = document.chunk_audio_mapping(marker.chunk_id()) else {
             return Err(ReplayResolutionError::Unavailable);
         };
-        if source_id.as_deref().is_some_and(|id| id != source.id()) {
+        if source_id
+            .as_deref()
+            .is_some_and(|id| id != mapping.source_id())
+        {
             return Err(ReplayResolutionError::MultipleSources);
         }
-        source_id.get_or_insert_with(|| source.id().to_owned());
+        source_id.get_or_insert_with(|| mapping.source_id().to_owned());
+        let chunk_range = mapping.range();
+        alignment = alignment.max(mapping.alignment());
         range = Some(match range {
             None => chunk_range,
             Some(current) => SampleRange {
@@ -227,6 +237,7 @@ fn resolve_marker_interval(
     Ok((
         source_id.ok_or(ReplayResolutionError::Unavailable)?,
         range.ok_or(ReplayResolutionError::Unavailable)?,
+        alignment,
     ))
 }
 
@@ -393,6 +404,45 @@ mod tests {
             ],
             "token_audio_mappings": mappings
         })).unwrap()
+    }
+
+    #[test]
+    fn derived_chunk_split_keeps_coarse_marker_replay_available() {
+        let mut document: Document = serde_json::from_value(json!({
+            "schema": "rde-document/v1-experimental", "id": "document:split",
+            "paragraphs": [{
+                "id": "p1", "revision": 1,
+                "tokens": [
+                    {"id": {"kind": "pseudo", "id": "a"}, "text": "a", "origin": {"kind": "pseudo", "reason": "test"}},
+                    {"id": {"kind": "pseudo", "id": "b"}, "text": " b", "origin": {"kind": "pseudo", "reason": "test"}}
+                ],
+                "chunk_boundaries": [{"chunk_id": "c1", "after_tokens": 2}]
+            }],
+            "audio_sources": [{"id": "audio", "canonical_sample_count": 1000}],
+            "chunk_audio_mappings": [{
+                "chunk_id": "c1", "source_id": "audio",
+                "range": {"start_sample": 100, "end_sample": 900}
+            }]
+        }))
+        .unwrap();
+        document.split_chunk(1, 2, false).unwrap();
+        let navigation = NavigationState::new(&document);
+
+        for marker in 1..=2 {
+            let replay = resolve(
+                &document,
+                &navigation,
+                Some(&Address::Marker {
+                    paragraph: 1,
+                    marker,
+                }),
+                0,
+            )
+            .unwrap();
+            assert_eq!(replay.range.start_sample, 100);
+            assert_eq!(replay.range.end_sample, 900);
+            assert_eq!(replay.alignment, AlignmentState::Inherited);
+        }
     }
 
     #[test]

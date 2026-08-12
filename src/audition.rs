@@ -9,7 +9,10 @@ use std::{
 
 use crate::chunking::SampleRange;
 use crate::document::Document;
-use crate::editor::{apply_delete, apply_insert, apply_replace, render_document_with_navigation};
+use crate::editor::{
+    apply_chunk_merge, apply_chunk_split, apply_delete, apply_insert, apply_paragraph_merge,
+    apply_paragraph_split, apply_replace, render_document_with_navigation,
+};
 use crate::navigation::{
     parse_line, Address, Caret, CommandLine, NavigationState, Selection, SyntaxError, TokenAddress,
 };
@@ -49,6 +52,18 @@ pub enum AuditionCommand {
     },
     Delete {
         range: Option<(TokenAddress, TokenAddress)>,
+    },
+    SplitChunk {
+        address: Option<TokenAddress>,
+        after: bool,
+    },
+    SplitParagraph {
+        marker: Option<(usize, usize)>,
+    },
+    MergeParagraph(usize),
+    MergeChunks {
+        paragraph: usize,
+        marker: usize,
     },
     Save(Option<PathBuf>),
     Load(PathBuf),
@@ -363,6 +378,59 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         "delete" => {
             reject_arguments(&name, &arguments)?;
             optional_token_range(address, name).map(|range| AuditionCommand::Delete { range })
+        }
+        "split" | "isplit" | "asplit" => {
+            reject_arguments(&name, &arguments)?;
+            let token = match address {
+                Some(Address::Token(token)) => Some(token),
+                None => None,
+                Some(address) => {
+                    return Err(CommandParseError::InvalidAddress {
+                        command: name,
+                        address,
+                        expected: "a token address M.N",
+                    })
+                }
+            };
+            Ok(AuditionCommand::SplitChunk {
+                address: token,
+                after: name == "asplit",
+            })
+        }
+        "parasplit" => {
+            reject_arguments(&name, &arguments)?;
+            let marker = match address {
+                Some(Address::Marker { paragraph, marker }) => Some((paragraph, marker)),
+                None => None,
+                Some(address) => {
+                    return Err(CommandParseError::InvalidAddress {
+                        command: name,
+                        address,
+                        expected: "a chunk-marker address M@N",
+                    })
+                }
+            };
+            Ok(AuditionCommand::SplitParagraph { marker })
+        }
+        "merge" => {
+            reject_arguments(&name, &arguments)?;
+            match address {
+                Some(Address::Paragraph(paragraph)) => {
+                    Ok(AuditionCommand::MergeParagraph(paragraph))
+                }
+                Some(Address::Marker { paragraph, marker }) => {
+                    Ok(AuditionCommand::MergeChunks { paragraph, marker })
+                }
+                Some(address) => Err(CommandParseError::InvalidAddress {
+                    command: name,
+                    address,
+                    expected: "a paragraph M or chunk-marker M@N address",
+                }),
+                None => Err(CommandParseError::AddressRequired {
+                    command: name,
+                    expected: "a paragraph M or chunk-marker M@N address",
+                }),
+            }
         }
         "info" | "i" => {
             reject_arguments(&name, &arguments)?;
@@ -828,6 +896,28 @@ pub fn run_recognition_session(
             Ok(AuditionCommand::Delete { range }) => {
                 apply_delete(&mut document, &mut navigation, range, output, errors)?
             }
+            Ok(AuditionCommand::SplitChunk { address, after }) => apply_chunk_split(
+                &mut document,
+                &mut navigation,
+                address,
+                after,
+                output,
+                errors,
+            )?,
+            Ok(AuditionCommand::SplitParagraph { marker }) => {
+                apply_paragraph_split(&mut document, &mut navigation, marker, output, errors)?
+            }
+            Ok(AuditionCommand::MergeParagraph(paragraph)) => {
+                apply_paragraph_merge(&mut document, &mut navigation, paragraph, output, errors)?
+            }
+            Ok(AuditionCommand::MergeChunks { paragraph, marker }) => apply_chunk_merge(
+                &mut document,
+                &mut navigation,
+                paragraph,
+                marker,
+                output,
+                errors,
+            )?,
             Ok(AuditionCommand::Save(path)) => {
                 let path = path.or_else(|| document_path.clone());
                 let Some(path) = path else {
@@ -1146,6 +1236,26 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         output,
+        "  [M.N]split/isplit split chunk before token/current caret"
+    )?;
+    writeln!(
+        output,
+        "  [M.N]asplit split chunk after token/current caret"
+    )?;
+    writeln!(
+        output,
+        "  [M@N]parasplit split paragraph after marker/current marker"
+    )?;
+    writeln!(
+        output,
+        "  Mmerge         merge paragraph M with M+1 exactly"
+    )?;
+    writeln!(
+        output,
+        "  M@Nmerge       merge chunks around marker M@N when legal"
+    )?;
+    writeln!(
+        output,
         "  [A]play        play current/addressed token range, paragraph, or chunk"
     )?;
     writeln!(
@@ -1279,6 +1389,40 @@ mod tests {
             }
         );
         assert_eq!(parse_command("stop").unwrap(), AuditionCommand::Stop);
+        assert_eq!(
+            parse_command("1.2split").unwrap(),
+            AuditionCommand::SplitChunk {
+                address: Some(TokenAddress {
+                    paragraph: 1,
+                    token: 2,
+                }),
+                after: false,
+            }
+        );
+        assert_eq!(
+            parse_command("asplit").unwrap(),
+            AuditionCommand::SplitChunk {
+                address: None,
+                after: true,
+            }
+        );
+        assert_eq!(
+            parse_command("1@2parasplit").unwrap(),
+            AuditionCommand::SplitParagraph {
+                marker: Some((1, 2)),
+            }
+        );
+        assert_eq!(
+            parse_command("1merge").unwrap(),
+            AuditionCommand::MergeParagraph(1)
+        );
+        assert_eq!(
+            parse_command("1@2merge").unwrap(),
+            AuditionCommand::MergeChunks {
+                paragraph: 1,
+                marker: 2,
+            }
+        );
         assert_eq!(
             parse_command("1.2insert  typed text  ").unwrap(),
             AuditionCommand::Insert {
@@ -1503,6 +1647,9 @@ mod tests {
         assert!(output.contains("[M.N,M.U]replace TEXT"));
         assert!(output.contains("unquoted keeps selected boundary whitespace"));
         assert!(output.contains("quoted \"TEXT\" controls boundaries exactly"));
+        assert!(output.contains("split/isplit split chunk before"));
+        assert!(output.contains("parasplit split paragraph"));
+        assert!(output.contains("M@Nmerge"));
         assert!(output.contains("[A]play        play current/addressed"));
         assert!(output.contains("M@N,M@Uplay   play marker interval"));
         assert!(output.contains("[A]slowplay"));

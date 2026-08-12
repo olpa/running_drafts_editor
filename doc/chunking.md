@@ -214,15 +214,17 @@ number inside that paragraph. For example, `2@3info` shows information about
 the third chunk in the second paragraph. Boundary selection and boundary
 changes are future work.
 
-Paragraph operations must preserve complete chunks. Joining two paragraphs
-removes only the paragraph break; it does not join their chunks. A paragraph
-can be split only at an existing chunk boundary. To split it inside a chunk,
-the user must first split that chunk.
+Paragraph operations preserve complete chunks. Joining two paragraphs removes
+only the paragraph break; it does not join their chunks or change exact token
+text. A paragraph can be split only at an existing chunk boundary. The CLI can
+first create such a boundary before or after any complete visible token by
+deriving two chunks from the immutable parent chunk.
 
 This CLI feasibility rule is narrower than the earlier product and technical
 proposals, which allow paragraph splits at arbitrary text positions and a
 many-to-many relationship between paragraphs and chunks. For the current CLI,
-the chunk must be split first. The broader model is not implemented.
+the chunk must be split first; `split`/`isplit` and `asplit` perform that
+explicit step.
 
 ## Rust domain types
 
