@@ -82,8 +82,11 @@ large design.
   tokens, paragraph revisions, stable IDs, chunk markers, and optional canonical
   audio mappings. `rde edit <document.rde.json>` opens it without recognition;
   session `save [PATH]` uses atomic replacement. Session `load PATH` and `edit
-  PATH` replace the current document and reset navigation. `audition --output
-  PATH` saves the recognized baseline before the prompt.
+  PATH` replace the current document and reset navigation. `rde transcribe
+  AUDIO --model MODEL --output DOCUMENT` recognizes, atomically saves the
+  baseline, and exits without a prompt. It shares recognition settings with the
+  developer `audition` command, whose optional `--output PATH` saves before the
+  prompt.
 
 - Async or refreshed recognition must not overwrite newer user edits.
 - Canonical audio and recognition positions use mono 16 kHz sample offsets;

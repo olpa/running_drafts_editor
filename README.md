@@ -1,9 +1,9 @@
 # Running Drafts Editor
 
 Running Drafts Editor (`rde`) is an experimental line-oriented tool for turning
-existing recordings and imperfect recognition into usable text. It can run
-bounded, overlapping Whisper recognition for decoded-text audition. Transcript
-editing is not implemented yet.
+existing recordings and imperfect recognition into usable text. It can
+transcribe a recording to a saved JSON document and open that document in a
+line-oriented editor. A developer audition command exposes recognition details.
 
 ## Build and test
 
@@ -23,7 +23,7 @@ project-specific environment variable, or runtime shared-library path is
 needed. A first native build can take about a minute and requires a C/C++
 compiler, CMake, and libclang for bindgen.
 
-## Experimental decoded-audition command
+## Transcribe and edit
 
 First, build the executable:
 
@@ -31,17 +31,37 @@ First, build the executable:
 cargo build
 ```
 
-The command requires two external files:
+Transcription requires two external files:
 
-- `--input` must point to a PCM WAV recording. The tool accepts 8-, 16-, 24-,
+- `AUDIO` must point to a PCM WAV recording. The tool accepts 8-, 16-, 24-,
   and 32-bit integer PCM or 32-bit float samples, averages multiple channels,
   and resamples the audio to mono 16 kHz internally. Compressed WAV files and
   non-WAV formats are not supported.
 - `--model` must point to a Whisper ggml model. Models are not included in this
   repository.
 
-Run the `audition` command. Options such as `--input` cannot be passed directly
-to `rde`:
+Create a versioned JSON document without opening an interactive prompt:
+
+```console
+./target/debug/rde transcribe recording.wav \
+  --model ggml-tiny.bin \
+  --output draft.rde.json \
+  --language de
+```
+
+Then open it in the line-oriented editor:
+
+```console
+./target/debug/rde edit draft.rde.json
+```
+
+For all recognition and chunking options, run `rde transcribe --help`.
+Recognition may take some time. On success, `transcribe` saves the document
+atomically and exits. It does not start playback or read an interactive prompt.
+
+## Experimental decoded-audition command
+
+Developers can inspect the same recognition pipeline interactively:
 
 ```console
 ./target/debug/rde audition \
@@ -50,29 +70,13 @@ to `rde`:
   --language de
 ```
 
-For all recognition and chunking options, run:
-
-```console
-./target/debug/rde audition --help
-```
-
-Recognition may take some time. When it finishes, the tool shows the recognized
-text with markers such as `⟦1.2⟧` and opens a `chunk>` prompt. Type `help` at
-that prompt to see the available session commands:
-
-```text
-Session commands:
-  Nplay, Np  play chunk N; for example, 3p
-  M.Ninfo    show details for marker M.N; for example, 2.3info
-  list, l    show the recognized text and chunk markers
-  help, h    show this help
-  quit, q    exit
-```
+When recognition finishes, the tool shows the recognized document and opens an
+`rde>` prompt. Type `help` there to see the current session commands.
 
 The listing contains replay chunks built from whole accepted Whisper segments.
-Pause length and normal text-token count choose their boundaries. `3play` or
-`3p` replays the exact range of the third chunk. `2.3info` shows the time range,
-duration, token count, boundary reason, and text for marker `2.3`. All
+Pause length and normal text-token count choose their boundaries. Marker play
+replays an exact chunk, and marker info shows its time range, duration, token
+count, boundary reason, and text. All
 overlapping window hypotheses remain immutable evidence; midpoint ownership is
 only the initial deterministic deduplication rule.
 

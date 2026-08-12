@@ -15,7 +15,7 @@ use running_drafts_editor::recognition::{
     name = "rde",
     version,
     about = "Running Drafts Editor (experimental)",
-    after_help = "Get started:\n  rde audition --input recording.wav --model ggml-tiny.bin\n  rde edit draft.rde.json\n\nRun a command with '--help' for its options."
+    after_help = "Get started:\n  rde transcribe recording.wav --model ggml-tiny.bin --output draft.rde.json\n  rde edit draft.rde.json\n\nDeveloper recognition inspection:\n  rde audition --input recording.wav --model ggml-tiny.bin\n\nRun a command with '--help' for its options."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -24,10 +24,26 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Transcribe audio to a saved document and exit.
+    Transcribe(TranscribeArgs),
     /// Decode, list, and interactively replay recognition chunks.
     Audition(AuditionArgs),
     /// Open a saved visible document without running recognition.
     Edit(EditArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(
+    after_help = "Example:\n  rde transcribe recording.wav --model ggml-tiny.bin --output draft.rde.json"
+)]
+struct TranscribeArgs {
+    /// PCM WAV audio; channels and sample rate are converted automatically.
+    input: PathBuf,
+    /// Destination for the versioned JSON document.
+    #[arg(long)]
+    output: PathBuf,
+    #[command(flatten)]
+    recognition: RecognitionArgs,
 }
 
 #[derive(Debug, Args)]
@@ -50,6 +66,21 @@ struct AuditionArgs {
     /// PCM WAV audio; channels and sample rate are converted automatically.
     #[arg(long)]
     input: PathBuf,
+    #[command(flatten)]
+    recognition: RecognitionArgs,
+    /// Save the recognized visible document before entering the session.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// ffplay-compatible playback executable.
+    #[arg(long, default_value = "ffplay")]
+    player: PathBuf,
+    /// Context added before and after text replay.
+    #[arg(long, default_value_t = 750)]
+    replay_context_ms: u64,
+}
+
+#[derive(Debug, Args)]
+struct RecognitionArgs {
     /// Whisper ggml model.
     #[arg(long)]
     model: PathBuf,
@@ -86,15 +117,6 @@ struct AuditionArgs {
     /// Score penalty per token of distance from the target size.
     #[arg(long, default_value_t = 20)]
     chunk_distance_penalty_ms: u64,
-    /// Save the recognized visible document before entering the session.
-    #[arg(long)]
-    output: Option<PathBuf>,
-    /// ffplay-compatible playback executable.
-    #[arg(long, default_value = "ffplay")]
-    player: PathBuf,
-    /// Context added before and after text replay.
-    #[arg(long, default_value_t = 750)]
-    replay_context_ms: u64,
 }
 
 fn main() -> ExitCode {
@@ -110,9 +132,30 @@ fn main() -> ExitCode {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Cli { command } = Cli::parse();
     match command {
+        Command::Transcribe(args) => run_transcribe(args),
         Command::Audition(args) => run_audition(args),
         Command::Edit(args) => run_edit(args),
     }
+}
+
+fn run_transcribe(args: TranscribeArgs) -> Result<(), Box<dyn std::error::Error>> {
+    validate_output_target(&args.output)?;
+    let run = recognize_audio(&args.input, &args.recognition)?;
+    let document = Document::from_run_with_source(&run, Some(&args.input));
+    save_document(&args.output, &document)?;
+    println!("saved {}", args.output.display());
+    Ok(())
+}
+
+fn validate_output_target(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    if !parent.is_dir() {
+        return Err(format!("output directory '{}' does not exist", parent.display()).into());
+    }
+    if path.is_dir() {
+        return Err(format!("output path '{}' is a directory", path.display()).into());
+    }
+    Ok(())
 }
 
 fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -137,33 +180,10 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let wav = read_canonical_wav(&args.input)?;
-    let source = SourceFacts {
-        sha256: wav.source_sha256,
-        sample_rate_hz: wav.sample_rate_hz,
-        channels: wav.channels,
-        decoded_sample_count: u64::try_from(wav.samples.len())?,
-    };
-    let config = RecognitionConfig {
-        target_core_samples: args.target_core_samples,
-        left_context_samples: args.left_context_samples,
-        right_context_samples: args.right_context_samples,
-        language: args.language,
-        threads: args.threads,
-        top_candidates: args.top_candidates,
-        post_chunking: PostChunkConfig {
-            minimum_tokens: args.chunk_minimum_tokens,
-            target_tokens: args.chunk_target_tokens,
-            maximum_tokens: args.chunk_maximum_tokens,
-            usable_pause_ms: args.chunk_usable_pause_ms,
-            strong_pause_ms: args.chunk_strong_pause_ms,
-            long_pause_ms: args.chunk_long_pause_ms,
-            distance_penalty_ms: args.chunk_distance_penalty_ms,
-        },
-        ..RecognitionConfig::default()
-    };
-    let mut decoder = WhisperDecoder::load(&args.model, &config)?;
-    let run = recognize(source, &wav.samples, config, &mut decoder)?;
+    if let Some(path) = &args.output {
+        validate_output_target(path)?;
+    }
+    let run = recognize_audio(&args.input, &args.recognition)?;
     if let Some(path) = &args.output {
         let document = Document::from_run_with_source(&run, Some(&args.input));
         save_document(path, &document)?;
@@ -189,6 +209,40 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn recognize_audio(
+    input: &std::path::Path,
+    args: &RecognitionArgs,
+) -> Result<running_drafts_editor::recognition::RecognitionRun, Box<dyn std::error::Error>> {
+    let wav = read_canonical_wav(input)?;
+    let source = SourceFacts {
+        sha256: wav.source_sha256,
+        sample_rate_hz: wav.sample_rate_hz,
+        channels: wav.channels,
+        decoded_sample_count: u64::try_from(wav.samples.len())?,
+    };
+    let config = RecognitionConfig {
+        target_core_samples: args.target_core_samples,
+        left_context_samples: args.left_context_samples,
+        right_context_samples: args.right_context_samples,
+        language: args.language.clone(),
+        threads: args.threads,
+        top_candidates: args.top_candidates,
+        post_chunking: PostChunkConfig {
+            minimum_tokens: args.chunk_minimum_tokens,
+            target_tokens: args.chunk_target_tokens,
+            maximum_tokens: args.chunk_maximum_tokens,
+            usable_pause_ms: args.chunk_usable_pause_ms,
+            strong_pause_ms: args.chunk_strong_pause_ms,
+            long_pause_ms: args.chunk_long_pause_ms,
+            distance_penalty_ms: args.chunk_distance_penalty_ms,
+        },
+        ..RecognitionConfig::default()
+    };
+    let mut decoder = WhisperDecoder::load(&args.model, &config)?;
+    let run = recognize(source, &wav.samples, config, &mut decoder)?;
+    Ok(run)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,21 +266,57 @@ mod tests {
         assert_eq!(args.input, PathBuf::from("audio.wav"));
         assert_eq!(args.player, PathBuf::from("ffplay"));
         assert_eq!(args.output, None);
-        assert_eq!(args.model, PathBuf::from("whisper.bin"));
-        assert_eq!(args.language, "auto");
-        assert_eq!(args.threads, 4);
-        assert_eq!(args.target_core_samples, 384_000);
-        assert_eq!(args.left_context_samples, 48_000);
-        assert_eq!(args.right_context_samples, 48_000);
-        assert_eq!(args.top_candidates, 5);
-        assert_eq!(args.chunk_minimum_tokens, 8);
-        assert_eq!(args.chunk_target_tokens, 32);
-        assert_eq!(args.chunk_maximum_tokens, 64);
-        assert_eq!(args.chunk_usable_pause_ms, 300);
-        assert_eq!(args.chunk_strong_pause_ms, 800);
-        assert_eq!(args.chunk_long_pause_ms, 2_000);
-        assert_eq!(args.chunk_distance_penalty_ms, 20);
+        assert_eq!(args.recognition.model, PathBuf::from("whisper.bin"));
+        assert_eq!(args.recognition.language, "auto");
+        assert_eq!(args.recognition.threads, 4);
+        assert_eq!(args.recognition.target_core_samples, 384_000);
+        assert_eq!(args.recognition.left_context_samples, 48_000);
+        assert_eq!(args.recognition.right_context_samples, 48_000);
+        assert_eq!(args.recognition.top_candidates, 5);
+        assert_eq!(args.recognition.chunk_minimum_tokens, 8);
+        assert_eq!(args.recognition.chunk_target_tokens, 32);
+        assert_eq!(args.recognition.chunk_maximum_tokens, 64);
+        assert_eq!(args.recognition.chunk_usable_pause_ms, 300);
+        assert_eq!(args.recognition.chunk_strong_pause_ms, 800);
+        assert_eq!(args.recognition.chunk_long_pause_ms, 2_000);
+        assert_eq!(args.recognition.chunk_distance_penalty_ms, 20);
         assert_eq!(args.replay_context_ms, 750);
+    }
+
+    #[test]
+    fn transcribe_requires_explicit_input_model_and_output() {
+        let cli = Cli::try_parse_from([
+            "rde",
+            "transcribe",
+            "audio.wav",
+            "--model",
+            "whisper.bin",
+            "--output",
+            "draft.rde.json",
+        ])
+        .unwrap();
+        let Command::Transcribe(args) = cli.command else {
+            panic!("expected transcribe");
+        };
+        assert_eq!(args.input, PathBuf::from("audio.wav"));
+        assert_eq!(args.output, PathBuf::from("draft.rde.json"));
+        assert_eq!(args.recognition.model, PathBuf::from("whisper.bin"));
+        assert!(Cli::try_parse_from(["rde", "transcribe", "audio.wav"]).is_err());
+    }
+
+    #[test]
+    fn transcribe_output_is_checked_before_recognition() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing_parent = directory.path().join("missing/draft.rde.json");
+        assert!(validate_output_target(&missing_parent)
+            .unwrap_err()
+            .to_string()
+            .contains("does not exist"));
+        assert!(validate_output_target(directory.path())
+            .unwrap_err()
+            .to_string()
+            .contains("is a directory"));
+        assert!(validate_output_target(&directory.path().join("draft.rde.json")).is_ok());
     }
 
     #[test]
@@ -263,6 +353,9 @@ mod tests {
     fn top_level_help_points_to_the_runnable_command() {
         let help = Cli::command().render_long_help().to_string();
 
+        assert!(help.contains(
+            "rde transcribe recording.wav --model ggml-tiny.bin --output draft.rde.json"
+        ));
         assert!(help.contains("rde audition --input recording.wav --model ggml-tiny.bin"));
         assert!(help.contains("rde edit draft.rde.json"));
         assert!(help.contains("Run a command with '--help'"));
