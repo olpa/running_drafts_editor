@@ -425,7 +425,7 @@ fn chunk_and_paragraph_structure_commands_preserve_text_and_persist_provenance()
         .stdin
         .take()
         .unwrap()
-        .write_all(b"1.3split\n1@1parasplit\n1merge\n1@1merge\nsave\nq\n")
+        .write_all(b"1.3split\n1@1parasplit\n1merge\n1@1merge\n3undo\n2redo\n9redo\nsave\nq\n")
         .unwrap();
     let result = child.wait_with_output().unwrap();
 
@@ -440,6 +440,9 @@ fn chunk_and_paragraph_structure_commands_preserve_text_and_persist_provenance()
     assert!(output.contains("split paragraph 1 after 1@1"));
     assert!(output.contains("merged paragraphs 1 and 2"));
     assert!(output.contains("merged chunks at 1@1"));
+    assert!(output.contains("undid 3 edits"));
+    assert!(output.contains("redid 2 edits"));
+    assert!(output.contains("redid 1 edit"));
 
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(saved["paragraphs"].as_array().unwrap().len(), 1);
