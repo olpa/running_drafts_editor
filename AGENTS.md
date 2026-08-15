@@ -41,6 +41,10 @@ large design.
   Derived chunk identity, token membership, parents, and mapping alignment are
   persisted. Chunk merges require one audio source and at most 480,000 samples.
 - Recognition runs are immutable; retries and boundary changes create revisions.
+- Successful text and structural edits persist restorable before-state history
+  with the document. History includes visible structure and current mappings but
+  does not duplicate immutable recognition evidence; user-facing undo behavior
+  is implemented separately.
 - Selection and text editing use ranges of complete visible tokens; a token
   cannot be selected or edited in part. Initial tokens refer to accepted normal
   Whisper tokens. Edits may replace or add them with indivisible pseudo-tokens

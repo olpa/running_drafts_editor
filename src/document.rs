@@ -113,8 +113,24 @@ pub struct Document {
     recognition_runs: Vec<RecognitionRun>,
     #[serde(default, skip_serializing_if = "is_zero")]
     next_structure_id: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    edit_history: Vec<EditHistoryEntry>,
     #[serde(skip)]
     token_fallbacks: Vec<TokenFallback>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EditHistoryEntry {
+    before: EditableDocumentState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EditableDocumentState {
+    paragraphs: Vec<Paragraph>,
+    chunk_audio_mappings: Vec<ChunkAudioMapping>,
+    token_audio_mappings: Vec<TokenAudioMapping>,
+    replay_chunks: Vec<ReplayChunk>,
+    next_structure_id: u64,
 }
 
 impl Document {
@@ -252,6 +268,7 @@ impl Document {
             recognition_token_evidence: Vec::new(),
             recognition_runs: Vec::new(),
             next_structure_id: 0,
+            edit_history: Vec::new(),
             token_fallbacks,
         }
     }
@@ -305,6 +322,22 @@ impl Document {
     }
     pub fn recognition_runs(&self) -> &[RecognitionRun] {
         &self.recognition_runs
+    }
+
+    pub fn edit_history_len(&self) -> usize {
+        self.edit_history.len()
+    }
+
+    fn remember_editable_state(&mut self) {
+        self.edit_history.push(EditHistoryEntry {
+            before: EditableDocumentState {
+                paragraphs: self.paragraphs.clone(),
+                chunk_audio_mappings: self.chunk_audio_mappings.clone(),
+                token_audio_mappings: self.token_audio_mappings.clone(),
+                replay_chunks: self.replay_chunks.clone(),
+                next_structure_id: self.next_structure_id,
+            },
+        });
     }
 
     pub fn chunk_for_token(&self, paragraph: usize, token: usize) -> Option<(usize, &str)> {
@@ -619,6 +652,7 @@ impl Document {
         let right_edge = paragraph.tokens[boundary].id.clone();
         let paragraph_id = paragraph.id.clone();
         let paragraph_revision = paragraph.revision;
+        self.remember_editable_state();
         self.ensure_replay_chunks();
         let (left_id, right_id) = (
             self.new_structure_id("chunk"),
@@ -808,6 +842,7 @@ impl Document {
             return Err(StructureEditError::FinalMarker);
         }
         let boundary = paragraph.chunk_boundaries[marker_index].after_tokens;
+        self.remember_editable_state();
         let left_id = self.new_structure_id("paragraph");
         let right_id = self.new_structure_id("paragraph");
         let left = Paragraph {
@@ -856,6 +891,7 @@ impl Document {
             .get(index + 1)
             .ok_or(StructureEditError::NoFollowingParagraph(paragraph_number))?
             .clone();
+        self.remember_editable_state();
         let new_id = self.new_structure_id("paragraph");
         let left_count = left.tokens.len();
         let mut tokens = left.tokens.clone();
@@ -946,6 +982,7 @@ impl Document {
         if range.len() > 480_000 {
             return Err(StructureEditError::ChunkTooLong);
         }
+        self.remember_editable_state();
         self.ensure_replay_chunks();
         let left_tokens = self
             .replay_chunks
@@ -1119,14 +1156,19 @@ impl Document {
         shift_marker_at_start: bool,
         reason: &str,
     ) -> Result<(), DocumentEditError> {
+        let old_revision = self
+            .paragraphs
+            .get(paragraph_number.checked_sub(1).unwrap_or(usize::MAX))
+            .ok_or(DocumentEditError::UnknownParagraph(paragraph_number))?
+            .revision;
+        let new_revision = old_revision
+            .checked_add(1)
+            .ok_or(DocumentEditError::RevisionOverflow)?;
+        self.remember_editable_state();
         let paragraph = self
             .paragraphs
             .get_mut(paragraph_number.checked_sub(1).unwrap_or(usize::MAX))
             .ok_or(DocumentEditError::UnknownParagraph(paragraph_number))?;
-        let old_revision = paragraph.revision;
-        let new_revision = old_revision
-            .checked_add(1)
-            .ok_or(DocumentEditError::RevisionOverflow)?;
         let removed = end_exclusive - start;
         let inserted = usize::from(replacement.is_some());
 
