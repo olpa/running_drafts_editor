@@ -7,7 +7,7 @@ use std::{
 use serde_json::json;
 
 #[test]
-fn lists_every_alternative_and_allows_selecting_an_empty_special_token() {
+fn lists_every_alternative_but_requires_a_model_before_choose() {
     let directory = tempfile::tempdir().unwrap();
     let document = directory.path().join("alternatives.rde.json");
     let recognition_id = json!({
@@ -59,15 +59,10 @@ fn lists_every_alternative_and_allows_selecting_an_empty_special_token() {
     assert!(output.contains("1  id=100  probability=0.700000  text=\"hello\""));
     assert!(output.contains("2  id=101  probability=0.200000  text=\"hello\""));
     assert!(output.contains("3  id=50257  probability=0.100000  text=\"\""));
-    assert!(output.contains("chose alternative 3 for 1.1"));
-    assert!(errors.contains("alternatives unavailable for 1.1"));
+    assert!(errors.contains("start with --model MODEL or use: model PATH"));
 
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&document).unwrap()).unwrap();
-    assert_eq!(saved["paragraphs"][0]["tokens"][0]["text"], "");
-    assert_eq!(
-        saved["paragraphs"][0]["tokens"][0]["origin"]["reason"],
-        "recognition alternative"
-    );
+    assert_eq!(saved["paragraphs"][0]["tokens"][0]["text"], "hello");
     assert_eq!(
         saved["recognition_token_evidence"][0]["alternatives"]
             .as_array()
@@ -264,23 +259,20 @@ fn session_edits_exact_pseudo_tokens_preserves_mappings_and_rejects_cross_paragr
     );
     let output = String::from_utf8(result.stdout).unwrap();
     let errors = String::from_utf8(result.stderr).unwrap();
-    assert!(output.contains("inserted at 1.2"));
-    assert!(output.contains("appended at 1.4"));
-    assert!(output.contains("replaced 1.2,1.4"));
-    assert!(output.contains("deleted 1.3,1.3"));
-    assert!(errors.contains("text-edit ranges cannot cross paragraph boundaries"));
+    assert!(!output.contains("inserted at"));
+    assert!(errors.contains("start with --model MODEL or use: model PATH"));
+    assert!(errors.contains("delete is disabled"));
 
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let first = &saved["paragraphs"][0];
-    assert_eq!(first["revision"], 5);
-    assert_eq!(first["tokens"].as_array().unwrap().len(), 2);
+    assert_eq!(first["revision"], 1);
+    assert_eq!(first["tokens"].as_array().unwrap().len(), 3);
     assert_eq!(first["tokens"][0]["text"], "a");
-    assert_eq!(first["tokens"][1]["text"], " exact text  ");
-    assert_eq!(first["tokens"][1]["origin"]["reason"], "user text");
+    assert_eq!(first["tokens"][1]["text"], " b");
     assert_eq!(first["chunk_boundaries"][0]["after_tokens"], 1);
-    assert_eq!(first["chunk_boundaries"][1]["after_tokens"], 2);
-    assert_eq!(saved["token_audio_mappings"].as_array().unwrap().len(), 1);
-    assert_eq!(saved["token_audio_mappings"][0]["paragraph_revision"], 5);
+    assert_eq!(first["chunk_boundaries"][1]["after_tokens"], 3);
+    assert_eq!(saved["token_audio_mappings"].as_array().unwrap().len(), 2);
+    assert_eq!(saved["token_audio_mappings"][0]["paragraph_revision"], 1);
     assert_eq!(
         saved["token_audio_mappings"][0]["token_id"],
         value["paragraphs"][0]["tokens"][0]["id"]
@@ -288,7 +280,7 @@ fn session_edits_exact_pseudo_tokens_preserves_mappings_and_rejects_cross_paragr
 }
 
 #[test]
-fn unaddressed_replace_uses_the_current_token_selection() {
+fn unaddressed_replace_requires_a_model_and_keeps_the_selection_text() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("selection.json");
     let value = json!({
@@ -322,20 +314,19 @@ fn unaddressed_replace_uses_the_current_token_selection() {
     let result = child.wait_with_output().unwrap();
 
     assert!(result.status.success());
-    assert!(String::from_utf8(result.stdout)
+    assert!(String::from_utf8(result.stderr)
         .unwrap()
-        .contains("replaced 1.1,1.2"));
-    assert!(result.stderr.is_empty());
+        .contains("start with --model MODEL"));
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(
         saved["paragraphs"][0]["tokens"].as_array().unwrap().len(),
-        1
+        2
     );
-    assert_eq!(saved["paragraphs"][0]["tokens"][0]["text"], "Oleg");
+    assert_eq!(saved["paragraphs"][0]["tokens"][0]["text"], "wrong");
 }
 
 #[test]
-fn replacement_preserves_boundary_whitespace_unless_quoted() {
+fn replacement_without_a_model_does_not_change_boundary_whitespace() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("whitespace.json");
     let value = json!({
@@ -370,9 +361,14 @@ fn replacement_preserves_boundary_whitespace_unless_quoted() {
     let result = child.wait_with_output().unwrap();
 
     assert!(result.status.success());
-    assert!(result.stderr.is_empty());
+    assert!(String::from_utf8(result.stderr)
+        .unwrap()
+        .contains("start with --model MODEL"));
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-    assert_eq!(saved["paragraphs"][0]["tokens"][1]["text"], "tight");
+    assert_eq!(
+        saved["paragraphs"][0]["tokens"][1]["text"],
+        "\t old text \u{2003}"
+    );
 }
 
 #[test]

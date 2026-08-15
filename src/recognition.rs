@@ -172,6 +172,146 @@ pub struct RecognitionRun {
     pub chunks: Vec<RecognitionChunk>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChunkRefreshRequest {
+    pub source: SourceFacts,
+    pub chunk_range: SampleRange,
+    pub language: String,
+    pub forced_tokens: Vec<i32>,
+    pub revision: u64,
+}
+
+pub struct RecognizerSession {
+    decoder: WhisperDecoder,
+    model_path: std::path::PathBuf,
+}
+
+impl RecognizerSession {
+    pub fn load(model: &Path, config: &RecognitionConfig) -> Result<Self, RecognitionError> {
+        Ok(Self {
+            decoder: WhisperDecoder::load(model, config)?,
+            model_path: model.into(),
+        })
+    }
+
+    pub fn model_path(&self) -> &Path {
+        &self.model_path
+    }
+    pub fn language(&self) -> &str {
+        &self.decoder.language
+    }
+    pub fn set_language(&mut self, language: String) {
+        self.decoder.language = language;
+    }
+
+    pub fn tokenize(&self, text: &str) -> Result<Vec<i32>, RecognitionError> {
+        let maximum = text.len().saturating_add(256).max(256);
+        self.decoder
+            .context
+            .tokenize(text, maximum)
+            .map_err(|error| RecognitionError::Model(error.to_string()))
+    }
+
+    pub fn render_tokens(&self, tokens: &[i32]) -> Result<String, RecognitionError> {
+        tokens
+            .iter()
+            .map(|id| {
+                self.decoder
+                    .context
+                    .token_to_string(*id)
+                    .map_err(|error| RecognitionError::Model(error.to_string()))
+            })
+            .collect()
+    }
+
+    pub fn refresh_chunk(
+        &mut self,
+        request: ChunkRefreshRequest,
+        samples: &[f32],
+    ) -> Result<RecognitionRun, RecognitionError> {
+        if request.source.sample_rate_hz != WHISPER_SAMPLE_RATE_HZ
+            || request.source.channels != 1
+            || request.source.decoded_sample_count != samples.len() as u64
+            || request.chunk_range.is_empty()
+            || request.chunk_range.end_sample > request.source.decoded_sample_count
+            || request.chunk_range.len() > 480_000
+        {
+            return Err(RecognitionError::InvalidConfiguration(
+                "invalid existing chunk audio range".into(),
+            ));
+        }
+        let start = usize::try_from(request.chunk_range.start_sample)
+            .map_err(|_| RecognitionError::AudioTooLong)?;
+        let end = usize::try_from(request.chunk_range.end_sample)
+            .map_err(|_| RecognitionError::AudioTooLong)?;
+        self.decoder.language = request.language.clone();
+        let relative = self
+            .decoder
+            .decode_forced(&samples[start..end], request.forced_tokens.clone())
+            .map_err(RecognitionError::Model)?;
+        let segments = normalize_segments(relative, request.chunk_range, 1);
+        let chunk_text = segments
+            .iter()
+            .flat_map(|s| &s.tokens)
+            .filter(|t| !t.is_special)
+            .map(|t| t.text.as_str())
+            .collect::<String>();
+        let segment_ids = segments.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+        let chunk = RecognitionChunk {
+            id: "refresh-chunk".into(),
+            ordinal: 1,
+            segment_ids,
+            audio_range: request.chunk_range,
+            text: chunk_text,
+            token_count: segments
+                .iter()
+                .flat_map(|s| &s.tokens)
+                .filter(|t| !t.is_special)
+                .count(),
+            boundary: ChunkBoundary {
+                reason: ChunkBoundaryReason::SourceEnd,
+                pause_samples: None,
+            },
+        };
+        let config = RecognitionConfig {
+            language: request.language,
+            ..RecognitionConfig::default()
+        };
+        let window = ProcessingWindow {
+            ordinal: 1,
+            submitted: request.chunk_range,
+            core: request.chunk_range,
+            prompt_token_ids: Vec::new(),
+            advance_reason: AdvanceReason::SourceEnd,
+            hypotheses: segments.clone(),
+            accepted_segment_ids: segments.iter().map(|s| s.id.clone()).collect(),
+            error: None,
+        };
+        let recognizer = self.decoder.identity.clone();
+        let base_id = run_id(
+            &request.source,
+            &recognizer,
+            &config,
+            std::slice::from_ref(&window),
+            &segments,
+            std::slice::from_ref(&chunk),
+        );
+        let id = format!("{base_id}-r{}", request.revision);
+        Ok(RecognitionRun {
+            schema: RECOGNITION_RUN_SCHEMA.into(),
+            id,
+            revision: request.revision,
+            source: request.source,
+            recognizer,
+            config,
+            status: RecognitionStatus::Succeeded,
+            windows: vec![window],
+            segments,
+            chunks: vec![chunk],
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSegment {
     pub audio_range: SampleRange,
@@ -691,22 +831,26 @@ impl WhisperDecoder {
         }
         Ok(output)
     }
-}
 
-impl WindowDecoder for WhisperDecoder {
-    fn identity(&self) -> RecognizerIdentity {
-        self.identity.clone()
-    }
-
-    fn decode(
+    fn decode_forced(
         &mut self,
         audio: &[f32],
-        prompt_token_ids: &[i32],
+        forced_tokens: Vec<i32>,
     ) -> Result<Vec<WindowSegment>, String> {
         let mut state = self
             .context
             .create_state()
             .map_err(|error| error.to_string())?;
+        let mut params = self.params();
+        params.set_single_segment(true);
+        params.set_forced_tokens_owned(forced_tokens);
+        state
+            .full(params, audio)
+            .map_err(|error| error.to_string())?;
+        self.extract_segments(&state)
+    }
+
+    fn params(&self) -> FullParams<'_, '_> {
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
             beam_size: 5,
             patience: -1.0,
@@ -723,6 +867,25 @@ impl WindowDecoder for WhisperDecoder {
         params.set_print_special(false);
         params.set_capture_top_candidates(self.top_candidates > 0);
         params.set_n_top_candidates(i32::try_from(self.top_candidates).unwrap_or(i32::MAX));
+        params
+    }
+}
+
+impl WindowDecoder for WhisperDecoder {
+    fn identity(&self) -> RecognizerIdentity {
+        self.identity.clone()
+    }
+
+    fn decode(
+        &mut self,
+        audio: &[f32],
+        prompt_token_ids: &[i32],
+    ) -> Result<Vec<WindowSegment>, String> {
+        let mut state = self
+            .context
+            .create_state()
+            .map_err(|error| error.to_string())?;
+        let mut params = self.params();
         if !prompt_token_ids.is_empty() {
             params.set_tokens(prompt_token_ids);
         }

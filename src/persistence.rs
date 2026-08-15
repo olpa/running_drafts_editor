@@ -118,7 +118,7 @@ pub fn save_document(path: &Path, document: &Document) -> Result<(), DocumentIoE
     result
 }
 
-fn validate(document: &Document) -> Result<(), DocumentIoError> {
+pub(crate) fn validate(document: &Document) -> Result<(), DocumentIoError> {
     if document.schema() != DOCUMENT_SCHEMA {
         return Err(DocumentIoError::UnsupportedSchema {
             found: document.schema().into(),
@@ -131,11 +131,47 @@ fn validate(document: &Document) -> Result<(), DocumentIoError> {
     let mut token_ids = HashSet::new();
     let mut chunk_ids = HashSet::new();
     let mut evidence_ids = HashSet::new();
+    let mut run_ids = HashSet::new();
+    for run in document.recognition_runs() {
+        if run.id.is_empty() || !run_ids.insert(run.id.as_str()) {
+            return Err(DocumentIoError::Invalid(
+                "recognition run IDs must be nonempty and unique".into(),
+            ));
+        }
+    }
     for evidence in document.recognition_token_evidence() {
         if !matches!(evidence.token_id(), VisibleTokenId::Recognition { .. }) {
             return Err(DocumentIoError::Invalid(
                 "recognition evidence refers to a pseudo-token".into(),
             ));
+        }
+        if !run_ids.is_empty() {
+            let VisibleTokenId::Recognition {
+                run_id,
+                segment_id,
+                token_index,
+            } = evidence.token_id()
+            else {
+                unreachable!()
+            };
+            let run = document
+                .recognition_runs()
+                .iter()
+                .find(|run| &run.id == run_id)
+                .ok_or_else(|| {
+                    DocumentIoError::Invalid("recognition evidence refers to an unknown run".into())
+                })?;
+            if run
+                .segments
+                .iter()
+                .find(|segment| &segment.id == segment_id)
+                .and_then(|segment| segment.tokens.get(*token_index))
+                .is_none()
+            {
+                return Err(DocumentIoError::Invalid(
+                    "recognition evidence refers to an unknown run token".into(),
+                ));
+            }
         }
         if !evidence_ids.insert(token_id_key(evidence.token_id())) {
             return Err(DocumentIoError::Invalid(
@@ -161,6 +197,15 @@ fn validate(document: &Document) -> Result<(), DocumentIoError> {
                 return Err(DocumentIoError::Invalid(
                     "duplicate visible token ID".into(),
                 ));
+            }
+            if !run_ids.is_empty() {
+                if let VisibleTokenId::Recognition { run_id, .. } = token.id() {
+                    if !run_ids.contains(run_id.as_str()) {
+                        return Err(DocumentIoError::Invalid(
+                            "visible recognition token refers to an unknown run".into(),
+                        ));
+                    }
+                }
             }
         }
         let mut previous = 0;
@@ -252,6 +297,15 @@ fn validate(document: &Document) -> Result<(), DocumentIoError> {
                 mapping.chunk_id()
             )));
         }
+        if document
+            .audio_source(mapping.source_id())
+            .and_then(|s| s.canonical_sample_count())
+            .is_some_and(|n| mapping.range().end_sample > n)
+        {
+            return Err(DocumentIoError::Invalid(
+                "chunk audio mapping exceeds its source bounds".into(),
+            ));
+        }
         if !mapped_chunks.insert(mapping.chunk_id()) {
             return Err(DocumentIoError::Invalid(format!(
                 "chunk '{}' has more than one audio mapping",
@@ -296,6 +350,15 @@ fn validate(document: &Document) -> Result<(), DocumentIoError> {
         if mapping.range().start_sample >= mapping.range().end_sample {
             return Err(DocumentIoError::Invalid(
                 "token audio mapping has an empty or reversed range".into(),
+            ));
+        }
+        if document
+            .audio_source(mapping.source_id())
+            .and_then(|s| s.canonical_sample_count())
+            .is_some_and(|n| mapping.range().end_sample > n)
+        {
+            return Err(DocumentIoError::Invalid(
+                "token audio mapping exceeds its source bounds".into(),
             ));
         }
         if !mapped_tokens.insert(key) {
