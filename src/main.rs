@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand};
 use running_drafts_editor::audition::{run_recognition_session, Ffplay};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
 use running_drafts_editor::document::Document;
-use running_drafts_editor::editor::run_editor_session;
+use running_drafts_editor::editor::run_editor_session_with_model;
 use running_drafts_editor::persistence::{load_document, save_document};
 use running_drafts_editor::recognition::{
     recognize, PostChunkConfig, RecognitionConfig, WhisperDecoder,
@@ -50,6 +50,9 @@ struct TranscribeArgs {
 struct EditArgs {
     /// Versioned JSON document to open and save.
     document: PathBuf,
+    /// Whisper ggml model used for correction and refresh.
+    #[arg(long)]
+    model: Option<PathBuf>,
     /// ffplay-compatible playback executable.
     #[arg(long, default_value = "ffplay")]
     player: PathBuf,
@@ -170,7 +173,7 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    run_editor_session(
+    run_editor_session_with_model(
         &document,
         &args.document,
         &mut input,
@@ -178,6 +181,7 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
         &mut errors,
         &mut player,
         args.replay_context_ms.saturating_mul(16),
+        args.model.as_deref(),
     )?;
     Ok(())
 }

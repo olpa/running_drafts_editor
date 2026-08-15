@@ -35,6 +35,11 @@ pub enum AuditionCommand {
         paragraph: usize,
         chunk: usize,
     },
+    Refresh {
+        marker: Option<(usize, usize)>,
+    },
+    Model(Option<PathBuf>),
+    Language(Option<String>),
     Print(Option<usize>),
     Move(Address),
     Select(Address),
@@ -273,6 +278,31 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
     };
 
     match name.as_str() {
+        "model" => no_address(
+            address,
+            name,
+            AuditionCommand::Model((!arguments.is_empty()).then(|| PathBuf::from(arguments))),
+        ),
+        "language" => no_address(
+            address,
+            name,
+            AuditionCommand::Language((!arguments.is_empty()).then_some(arguments)),
+        ),
+        "refresh" => {
+            reject_arguments(&name, &arguments)?;
+            let marker = match address {
+                Some(Address::Marker { paragraph, marker }) => Some((paragraph, marker)),
+                None => None,
+                Some(address) => {
+                    return Err(CommandParseError::InvalidAddress {
+                        command: name,
+                        address,
+                        expected: "a chunk-marker address M@N",
+                    })
+                }
+            };
+            Ok(AuditionCommand::Refresh { marker })
+        }
         "save" => no_address(
             address,
             name,
@@ -865,6 +895,13 @@ pub fn run_recognition_session(
                     continue;
                 };
                 render_chunk_info(run, recognition_chunk, paragraph, chunk, output)?;
+            }
+            Ok(
+                AuditionCommand::Refresh { .. }
+                | AuditionCommand::Model(_)
+                | AuditionCommand::Language(_),
+            ) => {
+                writeln!(errors, "recognition settings and refresh are available in: rde edit DOCUMENT --model MODEL")?;
             }
             Ok(AuditionCommand::Print(None)) => {
                 if loaded_document {

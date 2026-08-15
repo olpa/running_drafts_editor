@@ -94,7 +94,7 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     schema: String,
     id: String,
@@ -109,6 +109,8 @@ pub struct Document {
     replay_chunks: Vec<ReplayChunk>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recognition_token_evidence: Vec<RecognitionTokenEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recognition_runs: Vec<RecognitionRun>,
     #[serde(default, skip_serializing_if = "is_zero")]
     next_structure_id: u64,
     #[serde(skip)]
@@ -198,6 +200,7 @@ impl Document {
                     })
             })
             .collect();
+        document.recognition_runs.push(run.clone());
         document
     }
 
@@ -247,6 +250,7 @@ impl Document {
             token_audio_mappings: Vec::new(),
             replay_chunks: Vec::new(),
             recognition_token_evidence: Vec::new(),
+            recognition_runs: Vec::new(),
             next_structure_id: 0,
             token_fallbacks,
         }
@@ -299,6 +303,164 @@ impl Document {
     pub fn recognition_token_evidence(&self) -> &[RecognitionTokenEvidence] {
         &self.recognition_token_evidence
     }
+    pub fn recognition_runs(&self) -> &[RecognitionRun] {
+        &self.recognition_runs
+    }
+
+    pub fn chunk_for_token(&self, paragraph: usize, token: usize) -> Option<(usize, &str)> {
+        let paragraph = self.paragraph(paragraph)?;
+        if token == 0 || token > paragraph.tokens.len() {
+            return None;
+        }
+        paragraph
+            .chunk_boundaries
+            .iter()
+            .enumerate()
+            .find(|(_, marker)| token <= marker.after_tokens)
+            .map(|(index, marker)| (index + 1, marker.chunk_id.as_str()))
+    }
+
+    pub fn install_chunk_recognition(
+        &mut self,
+        paragraph_number: usize,
+        marker_number: usize,
+        run: RecognitionRun,
+    ) -> Result<(), String> {
+        let mut next = self.clone();
+        next.install_chunk_recognition_inner(paragraph_number, marker_number, run)?;
+        crate::persistence::validate(&next).map_err(|error| error.to_string())?;
+        *self = next;
+        Ok(())
+    }
+
+    fn install_chunk_recognition_inner(
+        &mut self,
+        paragraph_number: usize,
+        marker_number: usize,
+        run: RecognitionRun,
+    ) -> Result<(), String> {
+        if run.chunks.len() != 1 {
+            return Err("chunk refresh must contain exactly one chunk".into());
+        }
+        if self.recognition_runs.iter().any(|old| old.id == run.id) {
+            return Err("recognition run ID is not unique".into());
+        }
+        let paragraph = self
+            .paragraph(paragraph_number)
+            .ok_or_else(|| format!("unknown paragraph {paragraph_number}"))?;
+        let marker_index = marker_number
+            .checked_sub(1)
+            .filter(|i| *i < paragraph.chunk_boundaries.len())
+            .ok_or_else(|| format!("unknown chunk marker {paragraph_number}@{marker_number}"))?;
+        if paragraph.revision == u64::MAX {
+            return Err("paragraph revision cannot be increased".into());
+        }
+        let start = marker_index
+            .checked_sub(1)
+            .map_or(0, |i| paragraph.chunk_boundaries[i].after_tokens);
+        let end = paragraph.chunk_boundaries[marker_index].after_tokens;
+        let chunk_id = paragraph.chunk_boundaries[marker_index].chunk_id.clone();
+        let paragraph_id = paragraph.id.clone();
+        let old_revision = paragraph.revision;
+        let source_id = self
+            .chunk_audio_mapping(&chunk_id)
+            .ok_or("chunk has no audio mapping")?
+            .source_id
+            .clone();
+        let mut tokens = Vec::new();
+        for segment in &run.segments {
+            for (token_index, token) in segment.tokens.iter().enumerate() {
+                if !token.is_special {
+                    tokens.push(VisibleToken {
+                        id: VisibleTokenId::Recognition {
+                            run_id: run.id.clone(),
+                            segment_id: segment.id.clone(),
+                            token_index,
+                        },
+                        text: token.text.clone(),
+                        origin: VisibleTokenOrigin::Recognition,
+                    });
+                }
+            }
+        }
+        let expected = tokens.iter().map(|t| t.text.as_str()).collect::<String>();
+        if expected != run.chunks[0].text {
+            return Err("normal recognition tokens do not reproduce refreshed chunk text".into());
+        }
+        let removed = self.paragraphs[paragraph_number - 1].tokens[start..end]
+            .iter()
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>();
+        let new_ids = tokens.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        let delta = tokens.len() as isize - (end - start) as isize;
+        let paragraph = &mut self.paragraphs[paragraph_number - 1];
+        paragraph.tokens.splice(start..end, tokens);
+        for marker in &mut paragraph.chunk_boundaries[marker_index..] {
+            marker.after_tokens = marker
+                .after_tokens
+                .checked_add_signed(delta)
+                .ok_or("invalid marker adjustment")?;
+        }
+        paragraph.revision += 1;
+        self.ensure_replay_chunks();
+        let replay = self
+            .replay_chunks
+            .iter_mut()
+            .find(|c| c.id == chunk_id)
+            .ok_or("chunk has no replay record")?;
+        replay.token_ids = new_ids.clone();
+        self.recognition_token_evidence
+            .retain(|e| !removed.contains(&e.token_id));
+        self.token_audio_mappings
+            .retain(|m| !removed.contains(&m.token_id));
+        for mapping in &mut self.token_audio_mappings {
+            if mapping.paragraph_id == paragraph_id && mapping.paragraph_revision == old_revision {
+                mapping.paragraph_revision += 1;
+            }
+        }
+        for segment in &run.segments {
+            for (token_index, token) in segment.tokens.iter().enumerate() {
+                let id = VisibleTokenId::Recognition {
+                    run_id: run.id.clone(),
+                    segment_id: segment.id.clone(),
+                    token_index,
+                };
+                self.recognition_token_evidence
+                    .push(RecognitionTokenEvidence {
+                        token_id: id.clone(),
+                        recognition_token_id: token.token_id,
+                        probability: token.probability,
+                        alternatives: token
+                            .alternatives
+                            .iter()
+                            .map(|a| RecognitionAlternative {
+                                token_id: a.token_id,
+                                text: a.text.clone(),
+                                probability: a.probability,
+                            })
+                            .collect(),
+                    });
+                if !token.is_special {
+                    if let Some(range) = token.audio_range.filter(|r| {
+                        !r.is_empty()
+                            && r.start_sample >= run.chunks[0].audio_range.start_sample
+                            && r.end_sample <= run.chunks[0].audio_range.end_sample
+                    }) {
+                        self.token_audio_mappings.push(TokenAudioMapping {
+                            paragraph_id: paragraph_id.clone(),
+                            paragraph_revision: old_revision + 1,
+                            token_id: id,
+                            source_id: source_id.clone(),
+                            range,
+                            alignment: AlignmentState::Exact,
+                        });
+                    }
+                }
+            }
+        }
+        self.recognition_runs.push(run);
+        Ok(())
+    }
 
     pub fn alternatives(
         &self,
@@ -311,6 +473,20 @@ impl Document {
             .iter()
             .find(|evidence| evidence.token_id == *visible.id())?;
         Some(&evidence.alternatives)
+    }
+    pub fn alternative_token_id(
+        &self,
+        paragraph: usize,
+        token: usize,
+        candidate: usize,
+    ) -> Option<i32> {
+        let visible = self.token(paragraph, token)?;
+        self.recognition_token_evidence
+            .iter()
+            .find(|e| e.token_id == *visible.id())?
+            .alternatives
+            .get(candidate.checked_sub(1)?)
+            .map(|a| a.token_id)
     }
 
     pub fn choose_alternative(
@@ -1258,6 +1434,9 @@ impl AudioSource {
 
     pub fn canonical_sample_count(&self) -> Option<u64> {
         self.canonical_sample_count
+    }
+    pub fn sha256(&self) -> Option<&str> {
+        self.sha256.as_deref()
     }
 }
 
