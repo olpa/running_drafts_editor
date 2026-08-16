@@ -1,18 +1,41 @@
 use std::{
     collections::VecDeque,
-    io::Cursor,
+    io::{self, Cursor},
     path::{Path, PathBuf},
 };
 
 use running_drafts_editor::{
     chunking::{SampleRange, SourceFacts},
+    document::Document,
     persistence::load_document,
     recognition::{
         recognize, AdvanceReason, ChunkBoundaryReason, PostChunkConfig, RecognitionConfig,
         RecognitionStatus, RecognitionToken, RecognizerIdentity, WindowDecoder, WindowSegment,
     },
-    session::{open_audio, AudioPlayer, PlaybackError},
+    session::{run_session, AudioPlayer, PlaybackError, SessionContext},
 };
+
+fn open_audio(
+    run: &running_drafts_editor::recognition::RecognitionRun,
+    source: &Path,
+    document_path: Option<&Path>,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+    errors: &mut impl io::Write,
+    player: &mut FakePlayer,
+    replay_context_samples: u64,
+) -> io::Result<()> {
+    let document = Document::from_run_with_source(run, Some(source));
+    run_session(
+        &document,
+        SessionContext::recognized_audio(run, source, document_path, None),
+        input,
+        output,
+        errors,
+        player,
+        replay_context_samples,
+    )
+}
 
 #[derive(Default)]
 struct FakeDecoder {

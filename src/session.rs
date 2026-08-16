@@ -840,14 +840,14 @@ impl Drop for Ffplay {
 pub struct SessionContext<'a> {
     document_path: Option<&'a Path>,
     recognition_run: Option<&'a RecognitionRun>,
-    start: SessionStart,
+    start: SessionStart<'a>,
     model: Option<&'a Path>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SessionStart {
+enum SessionStart<'a> {
     SavedDocument,
-    RecognizedAudio,
+    RecognizedAudio { source: &'a Path },
 }
 
 impl<'a> SessionContext<'a> {
@@ -862,13 +862,14 @@ impl<'a> SessionContext<'a> {
 
     pub fn recognized_audio(
         recognition_run: &'a RecognitionRun,
+        source: &'a Path,
         document_path: Option<&'a Path>,
         model: Option<&'a Path>,
     ) -> Self {
         Self {
             document_path,
             recognition_run: Some(recognition_run),
-            start: SessionStart::RecognizedAudio,
+            start: SessionStart::RecognizedAudio { source },
             model,
         }
     }
@@ -893,25 +894,44 @@ pub fn run_session(
     let mut document = document.clone();
     let mut document_path = document_path.map(Path::to_path_buf);
     let mut recognition_run = recognition_run;
-    if start == SessionStart::SavedDocument {
-        render_document(&document, output)?;
-    }
-
-    if start == SessionStart::SavedDocument {
-        for source in document.audio_sources() {
-            match source.path() {
-                None => writeln!(
+    match start {
+        SessionStart::SavedDocument => {
+            render_document(&document, output)?;
+            for source in document.audio_sources() {
+                match source.path() {
+                    None => writeln!(
+                        errors,
+                        "audio source '{}' has no local path; replay is unavailable",
+                        source.id()
+                    )?,
+                    Some(path) if !path.is_file() => writeln!(
+                        errors,
+                        "audio source '{}' is unavailable at {}; text remains editable",
+                        source.id(),
+                        path.display()
+                    )?,
+                    Some(_) => {}
+                }
+            }
+        }
+        SessionStart::RecognizedAudio { source } => {
+            let run = recognition_run.expect("recognized-audio context has a recognition run");
+            render_recognition_document(run, &document, source, output)?;
+            for fallback in document.token_fallbacks() {
+                let address = document
+                    .marker_address_for_chunk(fallback.chunk_id())
+                    .map_or_else(
+                        || fallback.chunk_id().to_owned(),
+                        |(paragraph, marker)| format!("{paragraph}@{marker}"),
+                    );
+                writeln!(
                     errors,
-                    "audio source '{}' has no local path; replay is unavailable",
-                    source.id()
-                )?,
-                Some(path) if !path.is_file() => writeln!(
-                    errors,
-                    "audio source '{}' is unavailable at {}; text remains editable",
-                    source.id(),
-                    path.display()
-                )?,
-                Some(_) => {}
+                    "token alignment unavailable for marker {address}: {}; using chunk text as one pseudo-token",
+                    fallback.reason()
+                )?;
+            }
+            if run.chunks.is_empty() {
+                return Ok(());
             }
         }
     }
@@ -1156,7 +1176,7 @@ pub fn run_session(
                     ReplayStart {
                         context_samples: replay_context_samples,
                         speed,
-                        require_file: start == SessionStart::SavedDocument,
+                        require_file: matches!(start, SessionStart::SavedDocument),
                     },
                     player,
                     output,
@@ -1264,70 +1284,6 @@ fn samples_as_seconds(samples: u64, sample_rate_hz: u32) -> String {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn open_audio(
-    run: &RecognitionRun,
-    source: &Path,
-    document_path: Option<&Path>,
-    input: &mut impl BufRead,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-    player: &mut impl AudioPlayer,
-    replay_context_samples: u64,
-) -> io::Result<()> {
-    open_audio_with_model(
-        run,
-        source,
-        document_path,
-        input,
-        output,
-        errors,
-        player,
-        replay_context_samples,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn open_audio_with_model(
-    run: &RecognitionRun,
-    source: &Path,
-    document_path: Option<&Path>,
-    input: &mut impl BufRead,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-    player: &mut impl AudioPlayer,
-    replay_context_samples: u64,
-    model: Option<&Path>,
-) -> io::Result<()> {
-    let document = Document::from_run_with_source(run, Some(source));
-    render_recognition_document(run, &document, source, output)?;
-    for fallback in document.token_fallbacks() {
-        let address = document
-            .marker_address_for_chunk(fallback.chunk_id())
-            .map_or_else(
-                || fallback.chunk_id().to_owned(),
-                |(paragraph, marker)| format!("{paragraph}@{marker}"),
-            );
-        writeln!(
-            errors,
-            "token alignment unavailable for marker {address}: {}; using chunk text as one pseudo-token",
-            fallback.reason()
-        )?;
-    }
-    if run.chunks.is_empty() {
-        return Ok(());
-    }
-    run_session(
-        &document,
-        SessionContext::recognized_audio(run, document_path, model),
-        input,
-        output,
-        errors,
-        player,
-        replay_context_samples,
-    )
-}
 pub fn render_recognition_chunks(
     run: &RecognitionRun,
     source: &Path,

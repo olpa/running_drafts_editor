@@ -7,7 +7,7 @@ use running_drafts_editor::persistence::{load_document, save_document};
 use running_drafts_editor::recognition::{
     recognize, PostChunkConfig, RecognitionConfig, WhisperDecoder,
 };
-use running_drafts_editor::session::{open_audio_with_model, run_session, Ffplay, SessionContext};
+use running_drafts_editor::session::{run_session, Ffplay, SessionContext};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -188,8 +188,8 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
         validate_output_target(path)?;
     }
     let run = recognize_audio(&args.input, &args.recognition)?;
+    let document = Document::from_run_with_source(&run, Some(&args.input));
     if let Some(path) = &args.output {
-        let document = Document::from_run_with_source(&run, Some(&args.input));
         save_document(path, &document)?;
         println!("saved {}", path.display());
     }
@@ -201,16 +201,19 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    open_audio_with_model(
-        &run,
-        &args.input,
-        args.output.as_deref(),
+    run_session(
+        &document,
+        SessionContext::recognized_audio(
+            &run,
+            &args.input,
+            args.output.as_deref(),
+            Some(&args.recognition.model),
+        ),
         &mut input,
         &mut output,
         &mut errors,
         &mut player,
         args.replay_context_ms.saturating_mul(16),
-        Some(&args.recognition.model),
     )?;
     Ok(())
 }
