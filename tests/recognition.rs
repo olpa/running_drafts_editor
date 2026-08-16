@@ -15,6 +15,7 @@ use running_drafts_editor::{
     session::{run_session, AudioPlayer, PlaybackError, SessionContext},
 };
 
+#[allow(clippy::too_many_arguments)]
 fn open_audio(
     run: &running_drafts_editor::recognition::RecognitionRun,
     source: &Path,

@@ -1,3 +1,5 @@
+//! End-to-end tests for the shared CLI session entered through `rde edit`.
+
 use std::{
     fs,
     io::Write,
