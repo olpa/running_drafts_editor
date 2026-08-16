@@ -65,7 +65,7 @@ Use the same recognition pipeline and open its result interactively:
 
 ```console
 ./target/debug/rde open-audio \
-  --input recording.wav \
+  recording.wav \
   --model ggml-tiny.bin \
   --language de
 ```

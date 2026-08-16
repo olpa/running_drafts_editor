@@ -3,19 +3,18 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::{Args, Parser, Subcommand};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
 use running_drafts_editor::document::Document;
-use running_drafts_editor::editor::run_session;
 use running_drafts_editor::persistence::{load_document, save_document};
 use running_drafts_editor::recognition::{
     recognize, PostChunkConfig, RecognitionConfig, WhisperDecoder,
 };
-use running_drafts_editor::session::{open_audio_with_model, Ffplay};
+use running_drafts_editor::session::{open_audio_with_model, run_session, Ffplay, SessionContext};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "rde",
     version,
     about = "Running Drafts Editor (experimental)",
-    after_help = "Get started:\n  rde transcribe recording.wav --model ggml-tiny.bin --output draft.rde.json\n  rde edit draft.rde.json\n\nTranscribe and open audio:\n  rde open-audio --input recording.wav --model ggml-tiny.bin\n\nRun a command with '--help' for its options."
+    after_help = "Get started:\n  rde transcribe recording.wav --model ggml-tiny.bin --output draft.rde.json\n  rde edit draft.rde.json\n\nTranscribe and open audio:\n  rde open-audio recording.wav --model ggml-tiny.bin\n\nRun a command with '--help' for its options."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -63,11 +62,10 @@ struct EditArgs {
 
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Example:\n  rde open-audio --input recording.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'rde>' prompt to see session commands."
+    after_help = "Example:\n  rde open-audio recording.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'rde>' prompt to see session commands."
 )]
 struct OpenAudioArgs {
     /// PCM WAV audio; channels and sample rate are converted automatically.
-    #[arg(long)]
     input: PathBuf,
     #[command(flatten)]
     recognition: RecognitionArgs,
@@ -175,16 +173,12 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut player = Ffplay::new(args.player);
     run_session(
         &document,
-        Some(&args.document),
-        None,
-        true,
-        true,
+        SessionContext::saved_document(&args.document, args.model.as_deref()),
         &mut input,
         &mut output,
         &mut errors,
         &mut player,
         args.replay_context_ms.saturating_mul(16),
-        args.model.as_deref(),
     )?;
     Ok(())
 }
@@ -210,6 +204,7 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     open_audio_with_model(
         &run,
         &args.input,
+        args.output.as_deref(),
         &mut input,
         &mut output,
         &mut errors,
@@ -261,15 +256,8 @@ mod tests {
 
     #[test]
     fn open_audio_has_inspectable_whisper_window_defaults() {
-        let cli = Cli::try_parse_from([
-            "rde",
-            "open-audio",
-            "--input",
-            "audio.wav",
-            "--model",
-            "whisper.bin",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["rde", "open-audio", "audio.wav", "--model", "whisper.bin"])
+            .unwrap();
         let Command::OpenAudio(args) = cli.command else {
             panic!("expected open-audio")
         };
@@ -336,7 +324,6 @@ mod tests {
         let cli = Cli::try_parse_from([
             "rde",
             "open-audio",
-            "--input",
             "audio.wav",
             "--model",
             "whisper.bin",
@@ -368,7 +355,7 @@ mod tests {
         assert!(help.contains(
             "rde transcribe recording.wav --model ggml-tiny.bin --output draft.rde.json"
         ));
-        assert!(help.contains("rde open-audio --input recording.wav --model ggml-tiny.bin"));
+        assert!(help.contains("rde open-audio recording.wav --model ggml-tiny.bin"));
         assert!(help.contains("rde edit draft.rde.json"));
         assert!(help.contains("Run a command with '--help'"));
     }

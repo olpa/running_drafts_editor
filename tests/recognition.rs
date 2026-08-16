@@ -6,6 +6,7 @@ use std::{
 
 use running_drafts_editor::{
     chunking::{SampleRange, SourceFacts},
+    persistence::load_document,
     recognition::{
         recognize, AdvanceReason, ChunkBoundaryReason, PostChunkConfig, RecognitionConfig,
         RecognitionStatus, RecognitionToken, RecognizerIdentity, WindowDecoder, WindowSegment,
@@ -497,6 +498,7 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
     open_audio(
         &run,
         Path::new("audio.wav"),
+        None,
         &mut input,
         &mut output,
         &mut errors,
@@ -545,6 +547,7 @@ fn open_audio_reports_token_fallback_and_keeps_chunk_text_selectable() {
     open_audio(
         &run,
         Path::new("audio.wav"),
+        None,
         &mut input,
         &mut output,
         &mut errors,
@@ -560,6 +563,43 @@ fn open_audio_reports_token_fallback_and_keeps_chunk_text_selectable() {
         String::from_utf8(errors).unwrap(),
         "token alignment unavailable for marker 1@1: normal recognition tokens do not reproduce the chunk text; using chunk text as one pseudo-token\n"
     );
+}
+
+#[test]
+fn open_audio_output_becomes_the_default_session_save_path() {
+    let run = recognize_post_chunks(
+        vec![segment_with_tokens(0, 16_000, "visible text", &[1])],
+        16_000,
+        PostChunkConfig::default(),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let document_path = directory.path().join("draft.rde.json");
+    let mut input = Cursor::new(b"save\nquit\n");
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let mut player = FakePlayer::default();
+
+    open_audio(
+        &run,
+        Path::new("audio.wav"),
+        Some(&document_path),
+        &mut input,
+        &mut output,
+        &mut errors,
+        &mut player,
+        12_000,
+    )
+    .unwrap();
+
+    let saved = load_document(&document_path).unwrap();
+    assert_eq!(
+        saved.paragraph(1).unwrap().tokens()[0].text(),
+        "visible text"
+    );
+    assert!(String::from_utf8(output)
+        .unwrap()
+        .contains(&format!("saved {}", document_path.display())));
+    assert!(errors.is_empty(), "{}", String::from_utf8_lossy(&errors));
 }
 
 #[test]
@@ -587,6 +627,7 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     open_audio(
         &run,
         Path::new("audio.wav"),
+        None,
         &mut input,
         &mut output,
         &mut errors,

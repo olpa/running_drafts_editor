@@ -91,8 +91,8 @@ large design.
   PATH` replace the current document and reset navigation. `rde transcribe
   AUDIO --model MODEL --output DOCUMENT` recognizes, atomically saves the
   baseline, and exits without a prompt. It shares recognition settings with the
-  `open-audio` command, whose optional `--output PATH` saves before the
-  prompt.
+  `open-audio` command, whose optional `--output PATH` saves before the prompt
+  and becomes the default path for session `save`.
 
 - Async or refreshed recognition must not overwrite newer user edits.
 - Visible-token corrections synchronously re-recognize their one complete replay chunk with a forced decoder prefix; `refresh` does the same without a prefix. The operation keeps chunk structure, appends an immutable run, and installs new recognition truth atomically. Session model and language settings are not persisted, and `delete` is disabled pending audio-backed deletion semantics.
@@ -106,7 +106,7 @@ large design.
 - Chunk boundaries are derived during Whisper recognition from timestamped
   decoded segments; there is no separate pre-recognition planner.
 - A missing or unreadable CLI model is a preflight error.
-- `rde open-audio --input <audio.wav> --model <whisper.bin>` runs Whisper,
+- `rde open-audio <audio.wav> --model <whisper.bin>` runs Whisper,
   lists accepted decoded segments with text and timestamp-derived sample ranges,
   and plays them through a replaceable, ffplay-compatible subprocess selected
   with `--player`.
