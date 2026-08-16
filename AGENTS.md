@@ -118,6 +118,9 @@ large design.
   marker `M@N`; `M@Ninfo` inspects that chunk. A bare token or marker address
   moves the caret, `Aselect` selects a token, token range, paragraph, or marker,
   and `Mtokens` lists the individually addressable tokens in a paragraph.
+- `edit` and the developer `audition` command enter the same interactive shell;
+  audition supplies fresh recognition details as optional session context
+  instead of maintaining a separate command loop.
 - `[A]play` replays the current or addressed token range, paragraph, or marker;
   text replay adds configurable fixed context while marker replay stays exact.
   `[A]slowplay` uses 0.75 speed, `replay`/`slowreplay` repeat the last resolved

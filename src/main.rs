@@ -1,7 +1,7 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
-use running_drafts_editor::audition::{run_recognition_session, Ffplay};
+use running_drafts_editor::audition::{run_recognition_session_with_model, Ffplay};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
 use running_drafts_editor::document::Document;
 use running_drafts_editor::editor::run_editor_session_with_model;
@@ -204,7 +204,7 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    run_recognition_session(
+    run_recognition_session_with_model(
         &run,
         &args.input,
         &mut input,
@@ -212,6 +212,7 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
         &mut errors,
         &mut player,
         args.replay_context_ms.saturating_mul(16),
+        Some(&args.recognition.model),
     )?;
     Ok(())
 }

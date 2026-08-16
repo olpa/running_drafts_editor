@@ -619,7 +619,7 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     assert!(output.contains("source end"));
     assert_eq!(
         String::from_utf8(errors).unwrap(),
-        "unknown paragraph 3; expected 1..=2\nunknown chunk marker 3@1\n"
+        "unknown paragraph 3\nunknown chunk marker 3@1\n"
     );
     assert_eq!(
         player.calls,

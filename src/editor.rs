@@ -7,14 +7,14 @@ use std::{
 
 use crate::{
     audition::{
-        parse_command, render_paragraph, render_tokens, repeat_document_replay,
-        start_document_replay, AudioPlayer, AuditionCommand, ReplacementText, ReplayStart,
+        parse_command, render_chunk_info, render_paragraph, render_tokens, repeat_document_replay,
+        start_document_replay, AudioPlayer, AuditionCommand, ReplayStart,
     },
     chunking::{read_canonical_wav, SourceFacts},
-    document::{Document, EditedTokenPosition},
+    document::Document,
     navigation::{Address, NavigationState, TokenAddress},
     persistence::{load_document, save_document},
-    recognition::{ChunkRefreshRequest, RecognitionConfig, RecognizerSession},
+    recognition::{ChunkRefreshRequest, RecognitionConfig, RecognitionRun, RecognizerSession},
 };
 
 pub fn run_editor_session(
@@ -49,24 +49,59 @@ pub fn run_editor_session_with_model(
     replay_context_samples: u64,
     model: Option<&Path>,
 ) -> io::Result<()> {
-    let mut document = document.clone();
-    let mut document_path = document_path.to_path_buf();
-    render_document(&document, output)?;
+    run_session(
+        document,
+        Some(document_path),
+        None,
+        true,
+        true,
+        input,
+        output,
+        errors,
+        player,
+        replay_context_samples,
+        model,
+    )
+}
 
-    for source in document.audio_sources() {
-        match source.path() {
-            None => writeln!(
-                errors,
-                "audio source '{}' has no local path; replay is unavailable",
-                source.id()
-            )?,
-            Some(path) if !path.is_file() => writeln!(
-                errors,
-                "audio source '{}' is unavailable at {}; text remains editable",
-                source.id(),
-                path.display()
-            )?,
-            Some(_) => {}
+#[allow(clippy::too_many_arguments)]
+pub fn run_session(
+    document: &Document,
+    document_path: Option<&Path>,
+    recognition_run: Option<&RecognitionRun>,
+    require_audio_file: bool,
+    render_initial_document: bool,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+    player: &mut impl AudioPlayer,
+    replay_context_samples: u64,
+    model: Option<&Path>,
+) -> io::Result<()> {
+    let mut document = document.clone();
+    let mut document_path = document_path.map(Path::to_path_buf);
+    let mut recognition_run = recognition_run;
+    let mut require_audio_file = require_audio_file;
+    if render_initial_document {
+        render_document(&document, output)?;
+    }
+
+    if require_audio_file {
+        for source in document.audio_sources() {
+            match source.path() {
+                None => writeln!(
+                    errors,
+                    "audio source '{}' has no local path; replay is unavailable",
+                    source.id()
+                )?,
+                Some(path) if !path.is_file() => writeln!(
+                    errors,
+                    "audio source '{}' is unavailable at {}; text remains editable",
+                    source.id(),
+                    path.display()
+                )?,
+                Some(_) => {}
+            }
         }
     }
     writeln!(output, "Type 'help' for session commands.")?;
@@ -310,7 +345,7 @@ pub fn run_editor_session_with_model(
                     ReplayStart {
                         context_samples: replay_context_samples,
                         speed,
-                        require_file: true,
+                        require_file: require_audio_file,
                     },
                     player,
                     output,
@@ -333,8 +368,24 @@ pub fn run_editor_session_with_model(
                 Err(error) => writeln!(errors, "could not stop playback: {error}")?,
             },
             Ok(AuditionCommand::Info { paragraph, chunk }) => {
-                if document.chunk_marker(paragraph, chunk).is_none() {
+                let Some(marker) = document.chunk_marker(paragraph, chunk) else {
                     writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
+                    continue;
+                };
+                if let Some(run) = recognition_run {
+                    match run
+                        .chunks
+                        .iter()
+                        .find(|candidate| candidate.id == marker.chunk_id())
+                    {
+                        Some(recognition_chunk) => {
+                            render_chunk_info(run, recognition_chunk, paragraph, chunk, output)?
+                        }
+                        None => writeln!(
+                            errors,
+                            "chunk data is unavailable for marker {paragraph}@{chunk}"
+                        )?,
+                    }
                 } else {
                     writeln!(
                         errors,
@@ -343,10 +394,14 @@ pub fn run_editor_session_with_model(
                 }
             }
             Ok(AuditionCommand::Save(path)) => {
-                let path = path.unwrap_or_else(|| document_path.clone());
+                let path = path.or_else(|| document_path.clone());
+                let Some(path) = path else {
+                    writeln!(errors, "save requires a document path")?;
+                    continue;
+                };
                 match save_document(&path, &document) {
                     Ok(()) => {
-                        document_path = path.clone();
+                        document_path = Some(path.clone());
                         writeln!(output, "saved {}", path.display())?;
                     }
 
@@ -356,10 +411,16 @@ pub fn run_editor_session_with_model(
             Ok(AuditionCommand::Load(path)) => match load_document(&path) {
                 Ok(loaded) => {
                     document = loaded;
-                    document_path = path;
+                    document_path = Some(path);
+                    recognition_run = None;
+                    require_audio_file = true;
                     navigation = NavigationState::new(&document);
                     last_playback = None;
-                    writeln!(output, "loaded {}", document_path.display())?;
+                    writeln!(
+                        output,
+                        "loaded {}",
+                        document_path.as_ref().unwrap().display()
+                    )?;
                     render_document_with_navigation(&document, Some(&navigation), output)?;
                 }
                 Err(error) => writeln!(errors, "{error}")?,
@@ -369,60 +430,6 @@ pub fn run_editor_session_with_model(
             Ok(AuditionCommand::Empty) => {}
             Err(error) => writeln!(errors, "{error}")?,
         }
-    }
-}
-
-pub(crate) fn apply_insert(
-    document: &mut Document,
-    navigation: &mut NavigationState,
-    address: TokenAddress,
-    after: bool,
-    text: String,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-) -> io::Result<()> {
-    match document.insert_text(address.paragraph, address.token, after, text) {
-        Ok(position) => {
-            refresh_navigation(document, navigation, Some(position));
-            writeln!(
-                output,
-                "{} at {position}",
-                if after { "appended" } else { "inserted" }
-            )
-        }
-        Err(error) => writeln!(errors, "edit failed: {error}"),
-    }
-}
-
-pub(crate) fn apply_replace(
-    document: &mut Document,
-    navigation: &mut NavigationState,
-    range: Option<(TokenAddress, TokenAddress)>,
-    replacement: ReplacementText,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-) -> io::Result<()> {
-    let (start, end) = match edit_range(document, navigation, range) {
-        Ok(range) => range,
-        Err(error) => return writeln!(errors, "edit failed: {error}"),
-    };
-    if start.paragraph != end.paragraph {
-        return writeln!(
-            errors,
-            "edit failed: text-edit ranges cannot cross paragraph boundaries"
-        );
-    }
-    let text = if replacement.exact_boundaries {
-        replacement.text
-    } else {
-        preserve_boundary_whitespace(document, start, end, replacement.text)
-    };
-    match document.replace_text(start.paragraph, start.token, end.paragraph, end.token, text) {
-        Ok(position) => {
-            refresh_navigation(document, navigation, Some(position));
-            writeln!(output, "replaced {start},{end}")
-        }
-        Err(error) => writeln!(errors, "edit failed: {error}"),
     }
 }
 
@@ -457,26 +464,6 @@ fn preserve_boundary_whitespace(
         replacement,
         &selected[trailing_start..]
     )
-}
-
-pub(crate) fn apply_delete(
-    document: &mut Document,
-    navigation: &mut NavigationState,
-    range: Option<(TokenAddress, TokenAddress)>,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-) -> io::Result<()> {
-    let (start, end) = match edit_range(document, navigation, range) {
-        Ok(range) => range,
-        Err(error) => return writeln!(errors, "edit failed: {error}"),
-    };
-    match document.delete_text(start.paragraph, start.token, end.paragraph, end.token) {
-        Ok(position) => {
-            refresh_navigation(document, navigation, position);
-            writeln!(output, "deleted {start},{end}")
-        }
-        Err(error) => writeln!(errors, "edit failed: {error}"),
-    }
 }
 
 pub(crate) fn apply_history(
@@ -530,27 +517,6 @@ pub(crate) fn render_alternatives(
         )?;
     }
     Ok(())
-}
-
-pub(crate) fn apply_alternative(
-    document: &mut Document,
-    navigation: &mut NavigationState,
-    addressed: Option<TokenAddress>,
-    candidate: usize,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-) -> io::Result<()> {
-    let address = match alternative_address(document, navigation, addressed) {
-        Ok(address) => address,
-        Err(error) => return writeln!(errors, "alternative failed: {error}"),
-    };
-    match document.choose_alternative(address.paragraph, address.token, candidate) {
-        Ok(position) => {
-            refresh_navigation(document, navigation, Some(position));
-            writeln!(output, "chose alternative {candidate} for {address}")
-        }
-        Err(error) => writeln!(errors, "alternative failed: {error}"),
-    }
 }
 
 fn alternative_address(
@@ -921,31 +887,6 @@ pub(crate) fn apply_chunk_merge(
     }
 }
 
-fn refresh_navigation(
-    document: &Document,
-    navigation: &mut NavigationState,
-    preferred: Option<EditedTokenPosition>,
-) {
-    *navigation = NavigationState::new(document);
-    if let Some(position) = preferred {
-        navigation
-            .move_to(
-                document,
-                &Address::Token(TokenAddress {
-                    paragraph: position.paragraph,
-                    token: position.token,
-                }),
-            )
-            .expect("an edit outcome points to its new document revision");
-    }
-}
-
-impl std::fmt::Display for EditedTokenPosition {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}.{}", self.paragraph, self.token)
-    }
-}
-
 fn render_document(document: &Document, output: &mut impl Write) -> io::Result<()> {
     render_document_with_navigation(document, None, output)
 }
@@ -964,7 +905,7 @@ pub(crate) fn render_document_with_navigation(
     Ok(())
 }
 
-fn render_editor_help(output: &mut impl Write) -> io::Result<()> {
+pub(crate) fn render_editor_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
         "History: undo | Nundo | redo | Nredo (N is a positive maximum count)"

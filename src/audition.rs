@@ -9,15 +9,9 @@ use std::{
 
 use crate::chunking::SampleRange;
 use crate::document::Document;
-use crate::editor::{
-    apply_alternative, apply_chunk_merge, apply_chunk_split, apply_delete, apply_history,
-    apply_insert, apply_paragraph_merge, apply_paragraph_split, apply_replace, render_alternatives,
-    render_document_with_navigation,
-};
 use crate::navigation::{
     parse_line, Address, Caret, CommandLine, NavigationState, Selection, SyntaxError, TokenAddress,
 };
-use crate::persistence::{load_document, save_document};
 use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
 use crate::replay::{resolve as resolve_replay, ResolvedReplay};
 
@@ -858,9 +852,30 @@ pub fn run_recognition_session(
     player: &mut impl AudioPlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    let mut document = Document::from_run_with_source(run, Some(source));
-    let mut document_path = None::<PathBuf>;
-    let mut loaded_document = false;
+    run_recognition_session_with_model(
+        run,
+        source,
+        input,
+        output,
+        errors,
+        player,
+        replay_context_samples,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_recognition_session_with_model(
+    run: &RecognitionRun,
+    source: &Path,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+    player: &mut impl AudioPlayer,
+    replay_context_samples: u64,
+    model: Option<&Path>,
+) -> io::Result<()> {
+    let document = Document::from_run_with_source(run, Some(source));
     render_recognition_document(run, &document, source, output)?;
     for fallback in document.token_fallbacks() {
         let address = document
@@ -878,216 +893,20 @@ pub fn run_recognition_session(
     if run.chunks.is_empty() {
         return Ok(());
     }
-    render_help(output)?;
-    let mut navigation = NavigationState::new(&document);
-    let mut last_playback = None;
-    loop {
-        write!(output, "rde> ")?;
-        output.flush()?;
-        let mut line = String::new();
-        if input.read_line(&mut line)? == 0 {
-            return Ok(());
-        }
-        match parse_command(&line) {
-            Ok(AuditionCommand::Play { address, speed }) => {
-                if let Some(value) = start_document_replay(
-                    &document,
-                    &navigation,
-                    address.as_ref(),
-                    ReplayStart {
-                        context_samples: replay_context_samples,
-                        speed,
-                        require_file: loaded_document,
-                    },
-                    player,
-                    output,
-                    errors,
-                )? {
-                    last_playback = Some(value);
-                }
-            }
-            Ok(AuditionCommand::Replay { speed }) => repeat_document_replay(
-                &document,
-                last_playback.as_ref(),
-                speed,
-                player,
-                output,
-                errors,
-            )?,
-            Ok(AuditionCommand::Stop) => match player.stop() {
-                Ok(true) => writeln!(output, "playback stopped")?,
-                Ok(false) => writeln!(errors, "nothing is playing")?,
-                Err(error) => writeln!(errors, "could not stop playback: {error}")?,
-            },
-            Ok(AuditionCommand::Info { paragraph, chunk }) => {
-                let Some(marker) = document.chunk_marker(paragraph, chunk) else {
-                    writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
-                    continue;
-                };
-                let Some(recognition_chunk) = run
-                    .chunks
-                    .iter()
-                    .find(|candidate| candidate.id == marker.chunk_id())
-                else {
-                    writeln!(
-                        errors,
-                        "chunk data is unavailable for marker {paragraph}@{chunk}"
-                    )?;
-                    continue;
-                };
-                render_chunk_info(run, recognition_chunk, paragraph, chunk, output)?;
-            }
-            Ok(
-                AuditionCommand::Refresh { .. }
-                | AuditionCommand::Model(_)
-                | AuditionCommand::Language(_),
-            ) => {
-                writeln!(errors, "recognition settings and refresh are available in: rde edit DOCUMENT --model MODEL")?;
-            }
-            Ok(AuditionCommand::Print(None)) => {
-                if loaded_document {
-                    render_document_with_navigation(&document, Some(&navigation), output)?;
-                } else {
-                    render_recognition_document_with_navigation(
-                        run,
-                        &document,
-                        source,
-                        Some(&navigation),
-                        output,
-                    )?;
-                }
-            }
-            Ok(AuditionCommand::Print(Some(paragraph))) => {
-                let Some(value) = document.paragraph(paragraph) else {
-                    writeln!(
-                        errors,
-                        "unknown paragraph {paragraph}; expected 1..={}",
-                        document.paragraphs().len()
-                    )?;
-                    continue;
-                };
-                render_paragraph(value, paragraph, Some(&navigation), output)?;
-            }
-            Ok(AuditionCommand::Move(address)) => match navigation.move_to(&document, &address) {
-                Ok(()) => writeln!(output, "caret {address}")?,
-                Err(error) => writeln!(errors, "{error}")?,
-            },
-            Ok(AuditionCommand::Select(address)) => match navigation.select(&document, &address) {
-                Ok(()) => writeln!(output, "selected {address}")?,
-                Err(error) => writeln!(errors, "{error}")?,
-            },
-            Ok(AuditionCommand::Tokens(paragraph)) => {
-                let Some(value) = document.paragraph(paragraph) else {
-                    writeln!(errors, "unknown paragraph {paragraph}")?;
-                    continue;
-                };
-                render_tokens(value, paragraph, output)?;
-            }
-            Ok(AuditionCommand::Alternatives { address }) => {
-                render_alternatives(&document, &navigation, address, output, errors)?
-            }
-            Ok(AuditionCommand::ChooseAlternative { address, candidate }) => apply_alternative(
-                &mut document,
-                &mut navigation,
-                address,
-                candidate,
-                output,
-                errors,
-            )?,
-            Ok(AuditionCommand::Insert { address, text }) => apply_insert(
-                &mut document,
-                &mut navigation,
-                address,
-                false,
-                text,
-                output,
-                errors,
-            )?,
-            Ok(AuditionCommand::Append { address, text }) => apply_insert(
-                &mut document,
-                &mut navigation,
-                address,
-                true,
-                text,
-                output,
-                errors,
-            )?,
-            Ok(AuditionCommand::Replace { range, replacement }) => apply_replace(
-                &mut document,
-                &mut navigation,
-                range,
-                replacement,
-                output,
-                errors,
-            )?,
-            Ok(AuditionCommand::Delete { range }) => {
-                apply_delete(&mut document, &mut navigation, range, output, errors)?
-            }
-            Ok(AuditionCommand::SplitChunk { address, after }) => apply_chunk_split(
-                &mut document,
-                &mut navigation,
-                address,
-                after,
-                output,
-                errors,
-            )?,
-            Ok(AuditionCommand::SplitParagraph { marker }) => {
-                apply_paragraph_split(&mut document, &mut navigation, marker, output, errors)?
-            }
-            Ok(AuditionCommand::MergeParagraph(paragraph)) => {
-                apply_paragraph_merge(&mut document, &mut navigation, paragraph, output, errors)?
-            }
-            Ok(AuditionCommand::MergeChunks { paragraph, marker }) => apply_chunk_merge(
-                &mut document,
-                &mut navigation,
-                paragraph,
-                marker,
-                output,
-                errors,
-            )?,
-            Ok(AuditionCommand::Undo(count)) => {
-                apply_history(&mut document, &mut navigation, count, false, output)?
-            }
-            Ok(AuditionCommand::Redo(count)) => {
-                apply_history(&mut document, &mut navigation, count, true, output)?
-            }
-            Ok(AuditionCommand::Save(path)) => {
-                let path = path.or_else(|| document_path.clone());
-                let Some(path) = path else {
-                    writeln!(
-                        errors,
-                        "save requires a document path in an audition session"
-                    )?;
-                    continue;
-                };
-                match save_document(&path, &document) {
-                    Ok(()) => {
-                        document_path = Some(path.clone());
-                        writeln!(output, "saved {}", path.display())?;
-                    }
-                    Err(error) => writeln!(errors, "{error}")?,
-                }
-            }
-            Ok(AuditionCommand::Load(path)) => match load_document(&path) {
-                Ok(loaded) => {
-                    document = loaded;
-                    document_path = Some(path.clone());
-                    loaded_document = true;
-                    navigation = NavigationState::new(&document);
-                    writeln!(output, "loaded {}", path.display())?;
-                    render_document_with_navigation(&document, Some(&navigation), output)?;
-                }
-                Err(error) => writeln!(errors, "{error}")?,
-            },
-            Ok(AuditionCommand::Help) => render_help(output)?,
-
-            Ok(AuditionCommand::Quit) => return Ok(()),
-            Ok(AuditionCommand::Empty) => {}
-            Err(error) => writeln!(errors, "{error}")?,
-        }
-    }
+    crate::editor::run_session(
+        &document,
+        None,
+        Some(run),
+        false,
+        false,
+        input,
+        output,
+        errors,
+        player,
+        replay_context_samples,
+        model,
+    )
 }
-
 pub fn render_recognition_chunks(
     run: &RecognitionRun,
     source: &Path,
@@ -1291,7 +1110,7 @@ pub(crate) fn render_tokens(
     Ok(())
 }
 
-fn render_chunk_info(
+pub(crate) fn render_chunk_info(
     run: &RecognitionRun,
     chunk: &crate::recognition::RecognitionChunk,
     paragraph: usize,
@@ -1327,113 +1146,6 @@ fn chunk_boundary_label(
         || reason.to_owned(),
         |samples| format!("{reason} ({})", Duration::new(samples, sample_rate_hz)),
     )
-}
-
-fn render_help(output: &mut impl Write) -> io::Result<()> {
-    writeln!(output)?;
-    writeln!(output, "Session commands:")?;
-    writeln!(output, "  print, p       show the whole document")?;
-    writeln!(output, "  Mprint, Mp     show paragraph M; for example, 2p")?;
-    writeln!(
-        output,
-        "  M.N, M@N        move the caret to a token or marker"
-    )?;
-    writeln!(
-        output,
-        "  Aselect, Asel, As select token/marker range, paragraph, or marker A"
-    )?;
-    writeln!(
-        output,
-        "  Mtokens         list paragraph M tokens and markers"
-    )?;
-    writeln!(
-        output,
-        "  [M.N]alternatives, alts list alternatives for one token/current token"
-    )?;
-    writeln!(
-        output,
-        "  [M.N]choose N   replace one token with alternative N"
-    )?;
-    writeln!(
-        output,
-        "  M.Ninsert TEXT insert one pseudo-token before M.N"
-    )?;
-    writeln!(output, "  M.Nappend TEXT insert one pseudo-token after M.N")?;
-    writeln!(
-        output,
-        "  [M.N,M.U]replace TEXT replace range or current token selection"
-    )?;
-    writeln!(
-        output,
-        "                    unquoted keeps selected boundary whitespace"
-    )?;
-    writeln!(
-        output,
-        "                    quoted \"TEXT\" controls boundaries exactly"
-    )?;
-    writeln!(
-        output,
-        "  [M.N,M.U]delete delete range or current token selection"
-    )?;
-    writeln!(
-        output,
-        "  [M.N]split/isplit split chunk before token/current caret"
-    )?;
-    writeln!(
-        output,
-        "  [M.N]asplit split chunk after token/current caret"
-    )?;
-    writeln!(
-        output,
-        "  [M@N]parasplit split paragraph after marker/current marker"
-    )?;
-    writeln!(
-        output,
-        "  Mmerge         merge paragraph M with M+1 exactly"
-    )?;
-    writeln!(
-        output,
-        "  M@Nmerge       merge chunks around marker M@N when legal"
-    )?;
-    writeln!(output, "  [N]undo        undo up to N edits; default 1")?;
-    writeln!(output, "  [N]redo        redo up to N edits; default 1")?;
-    writeln!(
-        output,
-        "  [A]play        play current/addressed token range, paragraph, or chunk"
-    )?;
-    writeln!(
-        output,
-        "  M@N,M@Uplay   play marker interval; left included, right excluded"
-    )?;
-    writeln!(
-        output,
-        "  [A]slowplay    play the same target at 0.75 speed"
-    )?;
-    writeln!(
-        output,
-        "  replay         play the last resolved range again"
-    )?;
-    writeln!(
-        output,
-        "  slowreplay     play the last range again at 0.75 speed"
-    )?;
-    writeln!(output, "  stop           stop active playback")?;
-    writeln!(
-        output,
-        "  M@Ninfo, M@Ni show details for marker M@N; for example, 2@3info"
-    )?;
-    writeln!(output, "  list, l        aliases for print")?;
-    writeln!(
-        output,
-        "  save [PATH]    save the visible document; for example, save draft.rde.json"
-    )?;
-    writeln!(
-        output,
-        "  load PATH      replace the document and reset navigation"
-    )?;
-    writeln!(output, "  edit PATH      alias for load PATH")?;
-    writeln!(output, "  help, h    show this help")?;
-    writeln!(output, "  quit, q    exit")
 }
 
 struct Timestamp {
@@ -1790,33 +1502,31 @@ mod tests {
     fn help_explains_each_session_command_with_examples() {
         let mut output = Vec::new();
 
-        render_help(&mut output).unwrap();
+        crate::editor::render_editor_help(&mut output).unwrap();
 
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("print, p"));
-        assert!(output.contains("Mprint, Mp"));
-        assert!(output.contains("M.N, M@N        move the caret"));
-        assert!(output.contains("Aselect, Asel, As"));
+        assert!(output.contains("p | print"));
+        assert!(output.contains("Mp"));
+        assert!(output.contains("M.N"));
+        assert!(output.contains("Aselect | Asel | As"));
         assert!(output.contains("Mtokens"));
         assert!(output.contains("[M.N,M.U]replace TEXT"));
         assert!(output.contains("unquoted keeps selected boundary whitespace"));
         assert!(output.contains("quoted \"TEXT\" controls boundaries exactly"));
-        assert!(output.contains("split/isplit split chunk before"));
-        assert!(output.contains("parasplit split paragraph"));
+        assert!(output.contains("split | [M.N]isplit"));
+        assert!(output.contains("parasplit"));
         assert!(output.contains("M@Nmerge"));
-        assert!(output.contains("[A]play        play current/addressed"));
-        assert!(output.contains("M@N,M@Uplay   play marker interval"));
+        assert!(output.contains("[A]play | [A]slowplay"));
+        assert!(output.contains("M@N,M@Uplay"));
         assert!(output.contains("[A]slowplay"));
         assert!(output.contains("replay"));
         assert!(output.contains("stop"));
-        assert!(output.contains("M@Ninfo, M@Ni"));
-        assert!(output.contains("list, l"));
-        assert!(output.contains("save [PATH]    save the visible document"));
-        assert!(output.contains("save draft.rde.json"));
+        assert!(output.contains("M@Ninfo"));
+        assert!(output.contains("save [PATH]"));
         assert!(output.contains("load PATH"));
         assert!(output.contains("edit PATH"));
-        assert!(output.contains("help, h"));
-        assert!(output.contains("quit, q"));
+        assert!(output.contains("h | help"));
+        assert!(output.contains("q | quit"));
     }
 
     #[test]
