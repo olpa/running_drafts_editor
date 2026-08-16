@@ -10,7 +10,7 @@ use running_drafts_editor::{
         recognize, AdvanceReason, ChunkBoundaryReason, PostChunkConfig, RecognitionConfig,
         RecognitionStatus, RecognitionToken, RecognizerIdentity, WindowDecoder, WindowSegment,
     },
-    session::{run_open_audio_session, AudioPlayer, PlaybackError},
+    session::{open_audio, AudioPlayer, PlaybackError},
 };
 
 #[derive(Default)]
@@ -494,7 +494,7 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
 
-    run_open_audio_session(
+    open_audio(
         &run,
         Path::new("audio.wav"),
         &mut input,
@@ -542,7 +542,7 @@ fn open_audio_reports_token_fallback_and_keeps_chunk_text_selectable() {
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
 
-    run_open_audio_session(
+    open_audio(
         &run,
         Path::new("audio.wav"),
         &mut input,
@@ -584,7 +584,7 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
 
-    run_open_audio_session(
+    open_audio(
         &run,
         Path::new("audio.wav"),
         &mut input,

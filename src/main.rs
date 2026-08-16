@@ -3,12 +3,12 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::{Args, Parser, Subcommand};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
 use running_drafts_editor::document::Document;
-use running_drafts_editor::editor::run_editor_session_with_model;
+use running_drafts_editor::editor::run_session;
 use running_drafts_editor::persistence::{load_document, save_document};
 use running_drafts_editor::recognition::{
     recognize, PostChunkConfig, RecognitionConfig, WhisperDecoder,
 };
-use running_drafts_editor::session::{run_open_audio_session_with_model, Ffplay};
+use running_drafts_editor::session::{open_audio_with_model, Ffplay};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -136,7 +136,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Cli { command } = Cli::parse();
     match command {
         Command::Transcribe(args) => run_transcribe(args),
-        Command::OpenAudio(args) => run_open_audio(args),
+        Command::OpenAudio(args) => run_open_audio_command(args),
         Command::Edit(args) => run_edit(args),
     }
 }
@@ -173,9 +173,12 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    run_editor_session_with_model(
+    run_session(
         &document,
-        &args.document,
+        Some(&args.document),
+        None,
+        true,
+        true,
         &mut input,
         &mut output,
         &mut errors,
@@ -186,7 +189,7 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_open_audio(args: OpenAudioArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = &args.output {
         validate_output_target(path)?;
     }
@@ -204,7 +207,7 @@ fn run_open_audio(args: OpenAudioArgs) -> Result<(), Box<dyn std::error::Error>>
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    run_open_audio_session_with_model(
+    open_audio_with_model(
         &run,
         &args.input,
         &mut input,

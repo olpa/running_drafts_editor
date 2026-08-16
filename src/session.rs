@@ -837,7 +837,7 @@ fn samples_as_seconds(samples: u64, sample_rate_hz: u32) -> String {
     )
 }
 
-pub fn run_open_audio_session(
+pub fn open_audio(
     run: &RecognitionRun,
     source: &Path,
     input: &mut impl BufRead,
@@ -846,7 +846,7 @@ pub fn run_open_audio_session(
     player: &mut impl AudioPlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    run_open_audio_session_with_model(
+    open_audio_with_model(
         run,
         source,
         input,
@@ -859,7 +859,7 @@ pub fn run_open_audio_session(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn run_open_audio_session_with_model(
+pub fn open_audio_with_model(
     run: &RecognitionRun,
     source: &Path,
     input: &mut impl BufRead,

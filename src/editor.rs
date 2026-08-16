@@ -1,4 +1,4 @@
-//! Line-oriented session for a previously saved visible document.
+//! The shared line-oriented document session.
 
 use std::{
     io::{self, BufRead, Write},
@@ -16,53 +16,6 @@ use crate::{
         start_document_replay, AudioPlayer, ReplayStart, SessionCommand,
     },
 };
-
-pub fn run_editor_session(
-    document: &Document,
-    document_path: &Path,
-    input: &mut impl BufRead,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-    player: &mut impl AudioPlayer,
-    replay_context_samples: u64,
-) -> io::Result<()> {
-    run_editor_session_with_model(
-        document,
-        document_path,
-        input,
-        output,
-        errors,
-        player,
-        replay_context_samples,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn run_editor_session_with_model(
-    document: &Document,
-    document_path: &Path,
-    input: &mut impl BufRead,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-    player: &mut impl AudioPlayer,
-    replay_context_samples: u64,
-    model: Option<&Path>,
-) -> io::Result<()> {
-    run_session(
-        document,
-        Some(document_path),
-        None,
-        true,
-        true,
-        input,
-        output,
-        errors,
-        player,
-        replay_context_samples,
-        model,
-    )
-}
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_session(
