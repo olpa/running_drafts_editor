@@ -72,6 +72,10 @@ Use the same recognition pipeline and open its result interactively:
 
 When recognition finishes, the tool shows the recognized document and opens an
 `rde>` prompt. Type `help` there to see the current session commands.
+Interactive prompts support ordinary readline navigation and keep command
+history across runs in `$XDG_STATE_HOME/rde/history`, or in
+`~/.local/state/rde/history` when `XDG_STATE_HOME` is not set. Redirected input
+continues to read plain command lines without readline behavior.
 
 The listing contains replay chunks built from whole accepted Whisper segments.
 Pause length and normal text-token count choose their boundaries. Marker play

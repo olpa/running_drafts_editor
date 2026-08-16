@@ -124,6 +124,8 @@ large design.
 - The shared shell lives under `src/session`: command parsing, editing,
   playback, rendering, and shell orchestration are separate modules. The shell
   keeps command execution in session state separate from terminal line input.
+  Interactive terminals provide readline editing and share command history
+  across runs; redirected input keeps plain line-oriented behavior.
 - `[A]play` replays the current or addressed token range, paragraph, or marker;
   text replay adds configurable fixed context while marker replay stays exact.
   `[A]slowplay` uses 0.75 speed, `replay`/`slowreplay` repeat the last resolved
