@@ -121,6 +121,9 @@ large design.
 - `edit` and `open-audio` enter the same interactive shell; `open-audio`
   supplies fresh recognition details as optional session context
   instead of maintaining a separate command loop.
+- The shared shell lives under `src/session`: command parsing, editing,
+  playback, rendering, and shell orchestration are separate modules. The shell
+  keeps command execution in session state separate from terminal line input.
 - `[A]play` replays the current or addressed token range, paragraph, or marker;
   text replay adds configurable fixed context while marker replay stays exact.
   `[A]slowplay` uses 0.75 speed, `replay`/`slowreplay` repeat the last resolved
