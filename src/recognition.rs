@@ -841,7 +841,7 @@ impl WhisperDecoder {
             .context
             .create_state()
             .map_err(|error| error.to_string())?;
-        let mut params = self.params();
+        let mut params = self.params_with_sampling(SamplingStrategy::Greedy { best_of: 1 });
         params.set_single_segment(true);
         params.set_forced_tokens_owned(forced_tokens);
         state
@@ -851,10 +851,14 @@ impl WhisperDecoder {
     }
 
     fn params(&self) -> FullParams<'_, '_> {
-        let mut params = FullParams::new(SamplingStrategy::BeamSearch {
+        self.params_with_sampling(SamplingStrategy::BeamSearch {
             beam_size: 5,
             patience: -1.0,
-        });
+        })
+    }
+
+    fn params_with_sampling(&self, sampling: SamplingStrategy) -> FullParams<'_, '_> {
+        let mut params = FullParams::new(sampling);
         params.set_n_threads(i32::try_from(self.threads).unwrap_or(i32::MAX));
         params.set_language(Some(&self.language));
         params.set_translate(false);

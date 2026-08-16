@@ -96,6 +96,8 @@ large design.
 
 - Async or refreshed recognition must not overwrite newer user edits.
 - Visible-token corrections synchronously re-recognize their one complete replay chunk with a forced decoder prefix; `refresh` does the same without a prefix. The operation keeps chunk structure, appends an immutable run, and installs new recognition truth atomically. Session model and language settings are not persisted, and `delete` is disabled pending audio-backed deletion semantics.
+- Forced-prefix correction uses one greedy decoder; normal transcription keeps
+  five-beam search. Development builds retain verbose Whisper decode traces.
 - Canonical audio and recognition positions use mono 16 kHz sample offsets;
   recognition identities exclude local paths and nondeterministic diagnostics.
 - WAV input accepts common 8/16/24/32-bit integer PCM and 32-bit float formats;
