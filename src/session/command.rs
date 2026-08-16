@@ -5,7 +5,7 @@ use crate::navigation::{parse_line, Address, CommandLine, SyntaxError, TokenAddr
 use super::playback::PlaybackSpeed;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionCommand {
+pub(crate) enum SessionCommand {
     Play {
         address: Option<Address>,
         speed: PlaybackSpeed,
@@ -71,13 +71,13 @@ pub enum SessionCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplacementText {
-    pub text: String,
-    pub exact_boundaries: bool,
+pub(crate) struct ReplacementText {
+    pub(crate) text: String,
+    pub(crate) exact_boundaries: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum CommandParseError {
+pub(crate) enum CommandParseError {
     #[error(transparent)]
     Syntax(#[from] SyntaxError),
     #[error("unknown command '{0}'; type 'help' for available commands")]
@@ -109,7 +109,7 @@ pub enum CommandParseError {
     HistoryCountRequired(String),
 }
 
-pub fn parse_command(input: &str) -> Result<SessionCommand, CommandParseError> {
+pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseError> {
     let compact = input.trim();
     for (suffix, command) in [
         ("undo", SessionCommand::Undo as fn(usize) -> SessionCommand),

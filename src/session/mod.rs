@@ -5,12 +5,14 @@ mod playback;
 mod render;
 mod shell;
 
-pub use command::{parse_command, CommandParseError, ReplacementText, SessionCommand};
 pub use playback::{AudioPlayer, Ffplay, PlaybackError, PlaybackSpeed};
 pub use render::render_recognition_chunks;
 pub use shell::{run_session, SessionContext};
 
 pub(crate) use render::render_paragraph;
+
+#[cfg(test)]
+pub(crate) use command::{parse_command, CommandParseError, ReplacementText, SessionCommand};
 
 #[cfg(test)]
 pub(crate) use playback::samples_as_seconds;

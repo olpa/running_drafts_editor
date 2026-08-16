@@ -60,115 +60,151 @@ impl<'a> SessionContext<'a> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn run_session(
-    document: &Document,
-    context: SessionContext<'_>,
-    input: &mut impl BufRead,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-    player: &mut impl AudioPlayer,
-    replay_context_samples: u64,
-) -> io::Result<()> {
-    let SessionContext {
-        document_path,
-        recognition_run,
-        mut start,
-        model,
-    } = context;
-    let mut document = document.clone();
-    let mut document_path = document_path.map(Path::to_path_buf);
-    let mut recognition_run = recognition_run;
-    match start {
-        SessionStart::SavedDocument => {
-            render_document(&document, output)?;
-            for source in document.audio_sources() {
-                match source.path() {
-                    None => writeln!(
+struct SessionState<'a> {
+    document: Document,
+    document_path: Option<std::path::PathBuf>,
+    recognition_run: Option<&'a RecognitionRun>,
+    start: SessionStart<'a>,
+    navigation: NavigationState,
+    last_playback: Option<super::playback::LastPlayback>,
+    language: String,
+    recognizer: Option<RecognizerSession>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SessionControl {
+    Continue,
+    Exit,
+}
+
+impl<'a> SessionState<'a> {
+    fn new(
+        document: &Document,
+        context: SessionContext<'a>,
+        output: &mut impl Write,
+        errors: &mut impl Write,
+    ) -> io::Result<Option<Self>> {
+        let SessionContext {
+            document_path,
+            recognition_run,
+            start,
+            model,
+        } = context;
+        let document = document.clone();
+        let document_path = document_path.map(Path::to_path_buf);
+        match start {
+            SessionStart::SavedDocument => {
+                render_document(&document, output)?;
+                for source in document.audio_sources() {
+                    match source.path() {
+                        None => writeln!(
+                            errors,
+                            "audio source '{}' has no local path; replay is unavailable",
+                            source.id()
+                        )?,
+                        Some(path) if !path.is_file() => writeln!(
+                            errors,
+                            "audio source '{}' is unavailable at {}; text remains editable",
+                            source.id(),
+                            path.display()
+                        )?,
+                        Some(_) => {}
+                    }
+                }
+            }
+            SessionStart::RecognizedAudio { source } => {
+                let run = recognition_run.expect("recognized-audio context has a recognition run");
+                render_recognition_document(run, &document, source, output)?;
+                for fallback in document.token_fallbacks() {
+                    let address = document
+                        .marker_address_for_chunk(fallback.chunk_id())
+                        .map_or_else(
+                            || fallback.chunk_id().to_owned(),
+                            |(paragraph, marker)| format!("{paragraph}@{marker}"),
+                        );
+                    writeln!(
                         errors,
-                        "audio source '{}' has no local path; replay is unavailable",
-                        source.id()
-                    )?,
-                    Some(path) if !path.is_file() => writeln!(
-                        errors,
-                        "audio source '{}' is unavailable at {}; text remains editable",
-                        source.id(),
-                        path.display()
-                    )?,
-                    Some(_) => {}
+                        "token alignment unavailable for marker {address}: {}; using chunk text as one pseudo-token",
+                        fallback.reason()
+                    )?;
+                }
+                if run.chunks.is_empty() {
+                    return Ok(None);
                 }
             }
         }
-        SessionStart::RecognizedAudio { source } => {
-            let run = recognition_run.expect("recognized-audio context has a recognition run");
-            render_recognition_document(run, &document, source, output)?;
-            for fallback in document.token_fallbacks() {
-                let address = document
-                    .marker_address_for_chunk(fallback.chunk_id())
-                    .map_or_else(
-                        || fallback.chunk_id().to_owned(),
-                        |(paragraph, marker)| format!("{paragraph}@{marker}"),
-                    );
-                writeln!(
-                    errors,
-                    "token alignment unavailable for marker {address}: {}; using chunk text as one pseudo-token",
-                    fallback.reason()
-                )?;
-            }
-            if run.chunks.is_empty() {
-                return Ok(());
-            }
-        }
+        writeln!(output, "Type 'help' for session commands.")?;
+        let navigation = NavigationState::new(&document);
+        let recognizer = match model {
+            Some(path) => match RecognizerSession::load(path, &RecognitionConfig::default()) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    return Err(io::Error::other(format!("could not load model: {error}")));
+                }
+            },
+            None => None,
+        };
+        Ok(Some(Self {
+            document,
+            document_path,
+            recognition_run,
+            start,
+            navigation,
+            last_playback: None,
+            language: "auto".to_string(),
+            recognizer,
+        }))
     }
-    writeln!(output, "Type 'help' for session commands.")?;
-    let mut navigation = NavigationState::new(&document);
-    let mut last_playback = None;
-    let mut language = "auto".to_string();
-    let mut recognizer = match model {
-        Some(path) => match RecognizerSession::load(path, &RecognitionConfig::default()) {
-            Ok(value) => Some(value),
-            Err(error) => {
-                return Err(io::Error::other(format!("could not load model: {error}")));
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute(
+        &mut self,
+        command: SessionCommand,
+        output: &mut impl Write,
+        errors: &mut impl Write,
+        player: &mut impl AudioPlayer,
+        replay_context_samples: u64,
+    ) -> io::Result<SessionControl> {
+        let Self {
+            document,
+            document_path,
+            recognition_run,
+            start,
+            navigation,
+            last_playback,
+            language,
+            recognizer,
+        } = self;
+        let append = matches!(&command, SessionCommand::Append { .. });
+        match command {
+            SessionCommand::Print(None) => {
+                render_document_with_navigation(document, Some(navigation), output)?
             }
-        },
-        None => None,
-    };
-    loop {
-        write!(output, "rde> ")?;
-        output.flush()?;
-        let mut line = String::new();
-        if input.read_line(&mut line)? == 0 {
-            return Ok(());
-        }
-        match parse_command(&line) {
-            Ok(SessionCommand::Print(None)) => {
-                render_document_with_navigation(&document, Some(&navigation), output)?
-            }
-            Ok(SessionCommand::Print(Some(number))) => match document.paragraph(number) {
-                Some(paragraph) => render_paragraph(paragraph, number, Some(&navigation), output)?,
+            SessionCommand::Print(Some(number)) => match document.paragraph(number) {
+                Some(paragraph) => render_paragraph(paragraph, number, Some(navigation), output)?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
-            Ok(SessionCommand::Move(address)) => match navigation.move_to(&document, &address) {
+            SessionCommand::Move(address) => match navigation.move_to(document, &address) {
                 Ok(()) => writeln!(output, "caret {address}")?,
                 Err(error) => writeln!(errors, "{error}")?,
             },
-            Ok(SessionCommand::Select(address)) => match navigation.select(&document, &address) {
+            SessionCommand::Select(address) => match navigation.select(document, &address) {
                 Ok(()) => writeln!(output, "selected {address}")?,
                 Err(error) => writeln!(errors, "{error}")?,
             },
-            Ok(SessionCommand::Tokens(number)) => match document.paragraph(number) {
+            SessionCommand::Tokens(number) => match document.paragraph(number) {
                 Some(paragraph) => render_tokens(paragraph, number, output)?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
-            Ok(SessionCommand::Alternatives { address }) => {
-                render_alternatives(&document, &navigation, address, output, errors)?
+            SessionCommand::Alternatives { address } => {
+                render_alternatives(document, navigation, address, output, errors)?
             }
-            Ok(SessionCommand::ChooseAlternative { address, candidate }) => {
-                let address = match alternative_address(&document, &navigation, address) {
+            SessionCommand::ChooseAlternative { address, candidate } => {
+                let address = match alternative_address(document, navigation, address) {
                     Ok(v) => v,
                     Err(e) => {
                         writeln!(errors, "alternative failed: {e}")?;
-                        continue;
+                        return Ok(SessionControl::Continue);
                     }
                 };
                 let Some(token_id) =
@@ -178,14 +214,14 @@ pub fn run_session(
                         errors,
                         "alternative failed: unknown alternative {candidate}"
                     )?;
-                    continue;
+                    return Ok(SessionControl::Continue);
                 };
-                let prefix = chunk_prefix(&document, address, address.token - 1).unwrap();
+                let prefix = chunk_prefix(document, address, address.token - 1).unwrap();
                 run_corrected_refresh(
-                    &mut document,
-                    &mut navigation,
-                    &mut recognizer,
-                    &language,
+                    document,
+                    navigation,
+                    recognizer,
+                    language,
                     address.paragraph,
                     address.token,
                     prefix,
@@ -194,9 +230,8 @@ pub fn run_session(
                     errors,
                 )?;
             }
-            Ok(SessionCommand::Insert { address, text })
-            | Ok(SessionCommand::Append { address, text }) => {
-                let after = matches!(parse_command(&line), Ok(SessionCommand::Append { .. }));
+            SessionCommand::Insert { address, text } | SessionCommand::Append { address, text } => {
+                let after = append;
                 let through = if after {
                     address.token
                 } else {
@@ -204,14 +239,14 @@ pub fn run_session(
                 };
                 let intended = format!(
                     "{}{}",
-                    chunk_prefix(&document, address, through).unwrap_or_default(),
+                    chunk_prefix(document, address, through).unwrap_or_default(),
                     text
                 );
                 run_corrected_refresh(
-                    &mut document,
-                    &mut navigation,
-                    &mut recognizer,
-                    &language,
+                    document,
+                    navigation,
+                    recognizer,
+                    language,
                     address.paragraph,
                     address.token,
                     intended,
@@ -220,12 +255,12 @@ pub fn run_session(
                     errors,
                 )?;
             }
-            Ok(SessionCommand::Replace { range, replacement }) => {
-                let (start, end) = match edit_range(&document, &navigation, range) {
+            SessionCommand::Replace { range, replacement } => {
+                let (start, end) = match edit_range(document, navigation, range) {
                     Ok(v) => v,
                     Err(e) => {
                         writeln!(errors, "edit failed: {e}")?;
-                        continue;
+                        return Ok(SessionControl::Continue);
                     }
                 };
                 if document
@@ -239,23 +274,23 @@ pub fn run_session(
                         errors,
                         "edit failed: text-changing ranges cannot cross chunk boundaries"
                     )?;
-                    continue;
+                    return Ok(SessionControl::Continue);
                 }
                 let text = if replacement.exact_boundaries {
                     replacement.text
                 } else {
-                    preserve_boundary_whitespace(&document, start, end, replacement.text)
+                    preserve_boundary_whitespace(document, start, end, replacement.text)
                 };
                 let intended = format!(
                     "{}{}",
-                    chunk_prefix(&document, start, start.token - 1).unwrap_or_default(),
+                    chunk_prefix(document, start, start.token - 1).unwrap_or_default(),
                     text
                 );
                 run_corrected_refresh(
-                    &mut document,
-                    &mut navigation,
-                    &mut recognizer,
-                    &language,
+                    document,
+                    navigation,
+                    recognizer,
+                    language,
                     start.paragraph,
                     start.token,
                     intended,
@@ -264,27 +299,27 @@ pub fn run_session(
                     errors,
                 )?;
             }
-            Ok(SessionCommand::Delete { range }) => {
+            SessionCommand::Delete { range } => {
                 let _ = range;
                 writeln!(
                     errors,
                     "delete is disabled; deletion of audio-backed text is not implemented"
                 )?
             }
-            Ok(SessionCommand::Refresh { marker }) => {
-                let resolved = marker.or_else(|| resolve_current_chunk(&document, &navigation));
+            SessionCommand::Refresh { marker } => {
+                let resolved = marker.or_else(|| resolve_current_chunk(document, navigation));
                 let Some((paragraph, marker)) = resolved else {
                     writeln!(
                         errors,
                         "refresh requires a token caret or token selection in one chunk"
                     )?;
-                    continue;
+                    return Ok(SessionControl::Continue);
                 };
                 run_refresh(
-                    &mut document,
-                    &mut navigation,
-                    &mut recognizer,
-                    &language,
+                    document,
+                    navigation,
+                    recognizer,
+                    language,
                     paragraph,
                     marker,
                     Vec::new(),
@@ -292,7 +327,7 @@ pub fn run_session(
                     errors,
                 )?;
             }
-            Ok(SessionCommand::Model(path)) => match path {
+            SessionCommand::Model(path) => match path {
                 None => writeln!(
                     output,
                     "model {}",
@@ -309,84 +344,74 @@ pub fn run_session(
                     },
                 ) {
                     Ok(value) => {
-                        recognizer = Some(value);
+                        *recognizer = Some(value);
                         writeln!(output, "model {}", path.display())?;
                     }
                     Err(error) => writeln!(errors, "could not load model: {error}")?,
                 },
             },
-            Ok(SessionCommand::Language(value)) => match value {
+            SessionCommand::Language(value) => match value {
                 None => writeln!(output, "language {language}")?,
                 Some(value) => {
-                    language = value;
-                    if let Some(r) = &mut recognizer {
+                    *language = value;
+                    if let Some(r) = recognizer {
                         r.set_language(language.clone());
                     }
                     writeln!(output, "language {language}")?;
                 }
             },
-            Ok(SessionCommand::SplitChunk { address, after }) => apply_chunk_split(
-                &mut document,
-                &mut navigation,
-                address,
-                after,
-                output,
-                errors,
-            )?,
-            Ok(SessionCommand::SplitParagraph { marker }) => {
-                apply_paragraph_split(&mut document, &mut navigation, marker, output, errors)?
+            SessionCommand::SplitChunk { address, after } => {
+                apply_chunk_split(document, navigation, address, after, output, errors)?
             }
-            Ok(SessionCommand::MergeParagraph(paragraph)) => {
-                apply_paragraph_merge(&mut document, &mut navigation, paragraph, output, errors)?
+            SessionCommand::SplitParagraph { marker } => {
+                apply_paragraph_split(document, navigation, marker, output, errors)?
             }
-            Ok(SessionCommand::MergeChunks { paragraph, marker }) => apply_chunk_merge(
-                &mut document,
-                &mut navigation,
-                paragraph,
-                marker,
-                output,
-                errors,
-            )?,
-            Ok(SessionCommand::Undo(count)) => {
-                apply_history(&mut document, &mut navigation, count, false, output)?
+            SessionCommand::MergeParagraph(paragraph) => {
+                apply_paragraph_merge(document, navigation, paragraph, output, errors)?
             }
-            Ok(SessionCommand::Redo(count)) => {
-                apply_history(&mut document, &mut navigation, count, true, output)?
+            SessionCommand::MergeChunks { paragraph, marker } => {
+                apply_chunk_merge(document, navigation, paragraph, marker, output, errors)?
             }
-            Ok(SessionCommand::Play { address, speed }) => {
+            SessionCommand::Undo(count) => {
+                apply_history(document, navigation, count, false, output)?
+            }
+            SessionCommand::Redo(count) => {
+                apply_history(document, navigation, count, true, output)?
+            }
+            SessionCommand::Play { address, speed } => {
                 if let Some(value) = start_document_replay(
-                    &document,
-                    &navigation,
+                    document,
+                    navigation,
                     address.as_ref(),
                     ReplayStart {
                         context_samples: replay_context_samples,
                         speed,
-                        require_file: matches!(start, SessionStart::SavedDocument),
+                        require_file: matches!(*start, SessionStart::SavedDocument),
                     },
                     player,
                     output,
                     errors,
                 )? {
-                    last_playback = Some(value);
+                    *last_playback = Some(value);
                 }
             }
-            Ok(SessionCommand::Replay { speed }) => repeat_document_replay(
-                &document,
+            SessionCommand::Replay { speed } => repeat_document_replay(
+                document,
                 last_playback.as_ref(),
                 speed,
                 player,
                 output,
                 errors,
             )?,
-            Ok(SessionCommand::Stop) => match player.stop() {
+            SessionCommand::Stop => match player.stop() {
                 Ok(true) => writeln!(output, "playback stopped")?,
                 Ok(false) => writeln!(errors, "nothing is playing")?,
                 Err(error) => writeln!(errors, "could not stop playback: {error}")?,
             },
-            Ok(SessionCommand::Info { paragraph, chunk }) => {
+            SessionCommand::Info { paragraph, chunk } => {
                 let Some(marker) = document.chunk_marker(paragraph, chunk) else {
                     writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
-                    continue;
+                    return Ok(SessionControl::Continue);
                 };
                 if let Some(run) = recognition_run {
                     match run
@@ -409,42 +434,77 @@ pub fn run_session(
                     )?;
                 }
             }
-            Ok(SessionCommand::Save(path)) => {
+            SessionCommand::Save(path) => {
                 let path = path.or_else(|| document_path.clone());
                 let Some(path) = path else {
                     writeln!(errors, "save requires a document path")?;
-                    continue;
+                    return Ok(SessionControl::Continue);
                 };
-                match save_document(&path, &document) {
+                match save_document(&path, document) {
                     Ok(()) => {
-                        document_path = Some(path.clone());
+                        *document_path = Some(path.clone());
                         writeln!(output, "saved {}", path.display())?;
                     }
 
                     Err(error) => writeln!(errors, "{error}")?,
                 }
             }
-            Ok(SessionCommand::Load(path)) => match load_document(&path) {
+            SessionCommand::Load(path) => match load_document(&path) {
                 Ok(loaded) => {
-                    document = loaded;
-                    document_path = Some(path);
-                    recognition_run = None;
-                    start = SessionStart::SavedDocument;
-                    navigation = NavigationState::new(&document);
-                    last_playback = None;
+                    *document = loaded;
+                    *document_path = Some(path);
+                    *recognition_run = None;
+                    *start = SessionStart::SavedDocument;
+                    *navigation = NavigationState::new(document);
+                    *last_playback = None;
                     writeln!(
                         output,
                         "loaded {}",
                         document_path.as_ref().unwrap().display()
                     )?;
-                    render_document_with_navigation(&document, Some(&navigation), output)?;
+                    render_document_with_navigation(document, Some(navigation), output)?;
                 }
                 Err(error) => writeln!(errors, "{error}")?,
             },
-            Ok(SessionCommand::Help) => render_help(output)?,
-            Ok(SessionCommand::Quit) => return Ok(()),
-            Ok(SessionCommand::Empty) => {}
-            Err(error) => writeln!(errors, "{error}")?,
+            SessionCommand::Help => render_help(output)?,
+            SessionCommand::Quit => return Ok(SessionControl::Exit),
+            SessionCommand::Empty => {}
+        }
+        Ok(SessionControl::Continue)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_session(
+    document: &Document,
+    context: SessionContext<'_>,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+    player: &mut impl AudioPlayer,
+    replay_context_samples: u64,
+) -> io::Result<()> {
+    let Some(mut state) = SessionState::new(document, context, output, errors)? else {
+        return Ok(());
+    };
+    loop {
+        write!(output, "rde> ")?;
+        output.flush()?;
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0 {
+            return Ok(());
+        }
+        let command = match parse_command(&line) {
+            Ok(command) => command,
+            Err(error) => {
+                writeln!(errors, "{error}")?;
+                continue;
+            }
+        };
+        if state.execute(command, output, errors, player, replay_context_samples)?
+            == SessionControl::Exit
+        {
+            return Ok(());
         }
     }
 }
