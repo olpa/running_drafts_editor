@@ -91,8 +91,8 @@ large design.
   PATH` replace the current document and reset navigation. `rde transcribe
   AUDIO --model MODEL --output DOCUMENT` recognizes, atomically saves the
   baseline, and exits without a prompt. It shares recognition settings with the
-  developer `audition` command, whose optional `--output PATH` saves before the
-  prompt.
+  `open-audio` command, whose optional `--output PATH` saves before the prompt
+  and becomes the default path for session `save`.
 
 - Async or refreshed recognition must not overwrite newer user edits.
 - Visible-token corrections synchronously re-recognize their one complete replay chunk with a forced decoder prefix; `refresh` does the same without a prefix. The operation keeps chunk structure, appends an immutable run, and installs new recognition truth atomically. Session model and language settings are not persisted, and `delete` is disabled pending audio-backed deletion semantics.
@@ -106,10 +106,10 @@ large design.
 - Chunk boundaries are derived during Whisper recognition from timestamped
   decoded segments; there is no separate pre-recognition planner.
 - A missing or unreadable CLI model is a preflight error.
-- `rde audition --input <audio.wav> --model <whisper.bin>` is a
-  developer-only dumb-terminal harness: it runs Whisper, lists accepted decoded
-  segments with text and timestamp-derived sample ranges, and plays them through
-  a replaceable, ffplay-compatible subprocess selected with `--player`.
+- `rde open-audio <audio.wav> --model <whisper.bin>` runs Whisper,
+  lists accepted decoded segments with text and timestamp-derived sample ranges,
+  and plays them through a replaceable, ffplay-compatible subprocess selected
+  with `--player`.
 - The dumb-terminal shell uses an `ed`-inspired address-first grammar at the
   `rde>` prompt. `M.N` addresses a visible token, `M@N` a chunk marker, and
   `M.N,M.U` an inclusive displayed token range. Commands may attach to an
@@ -118,6 +118,12 @@ large design.
   marker `M@N`; `M@Ninfo` inspects that chunk. A bare token or marker address
   moves the caret, `Aselect` selects a token, token range, paragraph, or marker,
   and `Mtokens` lists the individually addressable tokens in a paragraph.
+- `edit` and `open-audio` enter the same interactive shell; `open-audio`
+  supplies fresh recognition details as optional session context
+  instead of maintaining a separate command loop.
+- The shared shell lives under `src/session`: command parsing, editing,
+  playback, rendering, and shell orchestration are separate modules. The shell
+  keeps command execution in session state separate from terminal line input.
 - `[A]play` replays the current or addressed token range, paragraph, or marker;
   text replay adds configurable fixed context while marker replay stays exact.
   `[A]slowplay` uses 0.75 speed, `replay`/`slowreplay` repeat the last resolved

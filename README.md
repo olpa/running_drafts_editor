@@ -3,7 +3,7 @@
 Running Drafts Editor (`rde`) is an experimental line-oriented tool for turning
 existing recordings and imperfect recognition into usable text. It can
 transcribe a recording to a saved JSON document and open that document in a
-line-oriented editor. A developer audition command exposes recognition details.
+line-oriented editor. The `open-audio` command exposes fresh recognition details.
 
 ## Build and test
 
@@ -59,13 +59,13 @@ For all recognition and chunking options, run `rde transcribe --help`.
 Recognition may take some time. On success, `transcribe` saves the document
 atomically and exits. It does not start playback or read an interactive prompt.
 
-## Experimental decoded-audition command
+## Open audio after transcription
 
-Developers can inspect the same recognition pipeline interactively:
+Use the same recognition pipeline and open its result interactively:
 
 ```console
-./target/debug/rde audition \
-  --input recording.wav \
+./target/debug/rde open-audio \
+  recording.wav \
   --model ggml-tiny.bin \
   --language de
 ```

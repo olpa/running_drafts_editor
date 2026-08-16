@@ -1,31 +1,61 @@
 use std::path::Path;
 
 use running_drafts_editor::{
-    audition::{AudioPlayer, Ffplay, PlaybackSpeed},
     chunking::SampleRange,
+    session::{AudioPlayer, Ffplay, PlaybackError, PlaybackSpeed},
 };
+
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    use std::{
+        fs::{self, File},
+        io::Write,
+        os::unix::fs::PermissionsExt,
+    };
+
+    let mut file = File::create(path).unwrap();
+    file.write_all(contents.as_bytes()).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+fn retry_text_file_busy<T>(
+    mut operation: impl FnMut() -> Result<T, PlaybackError>,
+) -> Result<T, PlaybackError> {
+    use std::time::Duration;
+
+    for _ in 0..20 {
+        match operation() {
+            Err(PlaybackError::Start { source, .. }) if source.raw_os_error() == Some(26) => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            result => return result,
+        }
+    }
+    operation()
+}
 
 #[cfg(unix)]
 #[test]
 fn ffplay_backend_passes_precise_times_to_fake_executable() {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::fs;
 
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("fake-ffplay");
     let arguments = directory.path().join("arguments");
-    fs::write(
+    write_executable(
         &executable,
-        format!(
+        &format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
             arguments.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    );
 
     let mut player = Ffplay::new(&executable);
-    player
-        .play(
+    retry_text_file_busy(|| {
+        player.play(
             Path::new("recording.wav"),
             16_000,
             SampleRange {
@@ -33,7 +63,8 @@ fn ffplay_backend_passes_precise_times_to_fake_executable() {
                 end_sample: 480_002,
             },
         )
-        .unwrap();
+    })
+    .unwrap();
 
     let arguments = fs::read_to_string(arguments).unwrap();
     assert!(arguments.contains("-ss\n0.000062500\n"));
@@ -44,23 +75,21 @@ fn ffplay_backend_passes_precise_times_to_fake_executable() {
 #[cfg(unix)]
 #[test]
 fn ffplay_backend_starts_slow_playback_and_can_stop_it() {
-    use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+    use std::{fs, time::Duration};
 
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("fake-ffplay");
     let arguments = directory.path().join("arguments");
-    fs::write(
+    write_executable(
         &executable,
-        format!(
+        &format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexec sleep 30\n",
             arguments.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let mut player = Ffplay::new(&executable);
-    player
-        .start(
+    retry_text_file_busy(|| {
+        player.start(
             Path::new("recording.wav"),
             16_000,
             SampleRange {
@@ -69,7 +98,8 @@ fn ffplay_backend_starts_slow_playback_and_can_stop_it() {
             },
             PlaybackSpeed::Slow,
         )
-        .unwrap();
+    })
+    .unwrap();
     for _ in 0..100 {
         if arguments.is_file() {
             break;

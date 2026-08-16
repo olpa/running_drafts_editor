@@ -1,17 +1,42 @@
 use std::{
     collections::VecDeque,
-    io::Cursor,
+    io::{self, Cursor},
     path::{Path, PathBuf},
 };
 
 use running_drafts_editor::{
-    audition::{run_recognition_session, AudioPlayer, PlaybackError},
     chunking::{SampleRange, SourceFacts},
+    document::Document,
+    persistence::load_document,
     recognition::{
         recognize, AdvanceReason, ChunkBoundaryReason, PostChunkConfig, RecognitionConfig,
         RecognitionStatus, RecognitionToken, RecognizerIdentity, WindowDecoder, WindowSegment,
     },
+    session::{run_session, AudioPlayer, PlaybackError, SessionContext},
 };
+
+#[allow(clippy::too_many_arguments)]
+fn open_audio(
+    run: &running_drafts_editor::recognition::RecognitionRun,
+    source: &Path,
+    document_path: Option<&Path>,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+    errors: &mut impl io::Write,
+    player: &mut FakePlayer,
+    replay_context_samples: u64,
+) -> io::Result<()> {
+    let document = Document::from_run_with_source(run, Some(source));
+    run_session(
+        &document,
+        SessionContext::recognized_audio(run, source, document_path, None),
+        input,
+        output,
+        errors,
+        player,
+        replay_context_samples,
+    )
+}
 
 #[derive(Default)]
 struct FakeDecoder {
@@ -466,7 +491,7 @@ impl AudioPlayer for FakePlayer {
 }
 
 #[test]
-fn decoded_audition_shows_text_and_replays_exact_timestamp_range() {
+fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
     let mut decoder = FakeDecoder {
         results: VecDeque::from([Ok(vec![segment_with_tokens(
             160,
@@ -494,9 +519,10 @@ fn decoded_audition_shows_text_and_replays_exact_timestamp_range() {
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
 
-    run_recognition_session(
+    open_audio(
         &run,
         Path::new("audio.wav"),
+        None,
         &mut input,
         &mut output,
         &mut errors,
@@ -526,7 +552,7 @@ fn decoded_audition_shows_text_and_replays_exact_timestamp_range() {
 }
 
 #[test]
-fn audition_reports_token_fallback_and_keeps_chunk_text_selectable() {
+fn open_audio_reports_token_fallback_and_keeps_chunk_text_selectable() {
     let run = recognize_post_chunks(
         vec![segment_with_token_kinds(
             0,
@@ -542,9 +568,10 @@ fn audition_reports_token_fallback_and_keeps_chunk_text_selectable() {
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
 
-    run_recognition_session(
+    open_audio(
         &run,
         Path::new("audio.wav"),
+        None,
         &mut input,
         &mut output,
         &mut errors,
@@ -563,7 +590,44 @@ fn audition_reports_token_fallback_and_keeps_chunk_text_selectable() {
 }
 
 #[test]
-fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
+fn open_audio_output_becomes_the_default_session_save_path() {
+    let run = recognize_post_chunks(
+        vec![segment_with_tokens(0, 16_000, "visible text", &[1])],
+        16_000,
+        PostChunkConfig::default(),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let document_path = directory.path().join("draft.rde.json");
+    let mut input = Cursor::new(b"save\nquit\n");
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let mut player = FakePlayer::default();
+
+    open_audio(
+        &run,
+        Path::new("audio.wav"),
+        Some(&document_path),
+        &mut input,
+        &mut output,
+        &mut errors,
+        &mut player,
+        12_000,
+    )
+    .unwrap();
+
+    let saved = load_document(&document_path).unwrap();
+    assert_eq!(
+        saved.paragraph(1).unwrap().tokens()[0].text(),
+        "visible text"
+    );
+    assert!(String::from_utf8(output)
+        .unwrap()
+        .contains(&format!("saved {}", document_path.display())));
+    assert!(errors.is_empty(), "{}", String::from_utf8_lossy(&errors));
+}
+
+#[test]
+fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     let one = token_ids(1, 10);
     let four_a = token_ids(4, 20);
     let four_b = token_ids(4, 30);
@@ -584,9 +648,10 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
 
-    run_recognition_session(
+    open_audio(
         &run,
         Path::new("audio.wav"),
+        None,
         &mut input,
         &mut output,
         &mut errors,
@@ -619,7 +684,7 @@ fn audition_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     assert!(output.contains("source end"));
     assert_eq!(
         String::from_utf8(errors).unwrap(),
-        "unknown paragraph 3; expected 1..=2\nunknown chunk marker 3@1\n"
+        "unknown paragraph 3\nunknown chunk marker 3@1\n"
     );
     assert_eq!(
         player.calls,

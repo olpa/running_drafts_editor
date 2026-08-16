@@ -1,21 +1,20 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
-use running_drafts_editor::audition::{run_recognition_session, Ffplay};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
 use running_drafts_editor::document::Document;
-use running_drafts_editor::editor::run_editor_session_with_model;
 use running_drafts_editor::persistence::{load_document, save_document};
 use running_drafts_editor::recognition::{
     recognize, PostChunkConfig, RecognitionConfig, WhisperDecoder,
 };
+use running_drafts_editor::session::{run_session, Ffplay, SessionContext};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "rde",
     version,
     about = "Running Drafts Editor (experimental)",
-    after_help = "Get started:\n  rde transcribe recording.wav --model ggml-tiny.bin --output draft.rde.json\n  rde edit draft.rde.json\n\nDeveloper recognition inspection:\n  rde audition --input recording.wav --model ggml-tiny.bin\n\nRun a command with '--help' for its options."
+    after_help = "Get started:\n  rde transcribe recording.wav --model ggml-tiny.bin --output draft.rde.json\n  rde edit draft.rde.json\n\nTranscribe and open audio:\n  rde open-audio recording.wav --model ggml-tiny.bin\n\nRun a command with '--help' for its options."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -26,8 +25,8 @@ struct Cli {
 enum Command {
     /// Transcribe audio to a saved document and exit.
     Transcribe(TranscribeArgs),
-    /// Decode, list, and interactively replay recognition chunks.
-    Audition(AuditionArgs),
+    /// Transcribe audio and open the resulting document for editing.
+    OpenAudio(OpenAudioArgs),
     /// Open a saved visible document without running recognition.
     Edit(EditArgs),
 }
@@ -63,11 +62,10 @@ struct EditArgs {
 
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Example:\n  rde audition --input recording.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'rde>' prompt to see session commands."
+    after_help = "Example:\n  rde open-audio recording.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'rde>' prompt to see session commands."
 )]
-struct AuditionArgs {
+struct OpenAudioArgs {
     /// PCM WAV audio; channels and sample rate are converted automatically.
-    #[arg(long)]
     input: PathBuf,
     #[command(flatten)]
     recognition: RecognitionArgs,
@@ -136,7 +134,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Cli { command } = Cli::parse();
     match command {
         Command::Transcribe(args) => run_transcribe(args),
-        Command::Audition(args) => run_audition(args),
+        Command::OpenAudio(args) => run_open_audio_command(args),
         Command::Edit(args) => run_edit(args),
     }
 }
@@ -173,26 +171,25 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    run_editor_session_with_model(
+    run_session(
         &document,
-        &args.document,
+        SessionContext::saved_document(&args.document, args.model.as_deref()),
         &mut input,
         &mut output,
         &mut errors,
         &mut player,
         args.replay_context_ms.saturating_mul(16),
-        args.model.as_deref(),
     )?;
     Ok(())
 }
 
-fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = &args.output {
         validate_output_target(path)?;
     }
     let run = recognize_audio(&args.input, &args.recognition)?;
+    let document = Document::from_run_with_source(&run, Some(&args.input));
     if let Some(path) = &args.output {
-        let document = Document::from_run_with_source(&run, Some(&args.input));
         save_document(path, &document)?;
         println!("saved {}", path.display());
     }
@@ -204,9 +201,14 @@ fn run_audition(args: AuditionArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    run_recognition_session(
-        &run,
-        &args.input,
+    run_session(
+        &document,
+        SessionContext::recognized_audio(
+            &run,
+            &args.input,
+            args.output.as_deref(),
+            Some(&args.recognition.model),
+        ),
         &mut input,
         &mut output,
         &mut errors,
@@ -256,18 +258,11 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn audition_has_inspectable_whisper_window_defaults() {
-        let cli = Cli::try_parse_from([
-            "rde",
-            "audition",
-            "--input",
-            "audio.wav",
-            "--model",
-            "whisper.bin",
-        ])
-        .unwrap();
-        let Command::Audition(args) = cli.command else {
-            panic!("expected audition")
+    fn open_audio_has_inspectable_whisper_window_defaults() {
+        let cli = Cli::try_parse_from(["rde", "open-audio", "audio.wav", "--model", "whisper.bin"])
+            .unwrap();
+        let Command::OpenAudio(args) = cli.command else {
+            panic!("expected open-audio")
         };
 
         assert_eq!(args.input, PathBuf::from("audio.wav"));
@@ -328,11 +323,10 @@ mod tests {
     }
 
     #[test]
-    fn audition_accepts_a_document_output_path() {
+    fn open_audio_accepts_a_document_output_path() {
         let cli = Cli::try_parse_from([
             "rde",
-            "audition",
-            "--input",
+            "open-audio",
             "audio.wav",
             "--model",
             "whisper.bin",
@@ -340,8 +334,8 @@ mod tests {
             "draft.rde.json",
         ])
         .unwrap();
-        let Command::Audition(args) = cli.command else {
-            panic!("expected audition");
+        let Command::OpenAudio(args) = cli.command else {
+            panic!("expected open-audio");
         };
         assert_eq!(args.output, Some(PathBuf::from("draft.rde.json")));
     }
@@ -364,7 +358,7 @@ mod tests {
         assert!(help.contains(
             "rde transcribe recording.wav --model ggml-tiny.bin --output draft.rde.json"
         ));
-        assert!(help.contains("rde audition --input recording.wav --model ggml-tiny.bin"));
+        assert!(help.contains("rde open-audio recording.wav --model ggml-tiny.bin"));
         assert!(help.contains("rde edit draft.rde.json"));
         assert!(help.contains("Run a command with '--help'"));
     }

@@ -19,7 +19,7 @@ output. Retrying creates another run.
 
 `rde transcribe AUDIO --model MODEL --output DOCUMENT` runs this pipeline,
 saves the recognized baseline atomically, and exits without entering a session.
-The developer-only `audition` command shares its recognition settings.
+The `open-audio` command shares its recognition settings.
 
 ## Reconcile overlapping chunk text
 
@@ -58,7 +58,7 @@ as visually distinct terminal output.
 
 Persist exact visible tokens, paragraphs, stable IDs, chunk markers, and optional
 canonical audio mappings in a versioned JSON baseline. Create it with `rde
-transcribe`, optionally create it with audition `--output`, open it with `rde
+transcribe`, optionally create it with `open-audio --output`, open it with `rde
 edit`, or replace the current session document with
 `load PATH`/`edit PATH`. Missing audio or recognition metadata must not prevent
 reading and navigation.
