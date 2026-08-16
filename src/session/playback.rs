@@ -332,11 +332,22 @@ impl Drop for Ffplay {
     }
 }
 
-pub(crate) fn samples_as_seconds(samples: u64, sample_rate_hz: u32) -> String {
+fn samples_as_seconds(samples: u64, sample_rate_hz: u32) -> String {
     let rate = u64::from(sample_rate_hz);
     format!(
         "{}.{:09}",
         samples / rate,
         (samples % rate) * 1_000_000_000 / rate
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::samples_as_seconds;
+
+    #[test]
+    fn ffplay_seconds_preserve_sample_precision() {
+        assert_eq!(samples_as_seconds(1, 16_000), "0.000062500");
+        assert_eq!(samples_as_seconds(480_001, 16_000), "30.000062500");
+    }
 }
