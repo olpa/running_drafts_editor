@@ -1,4 +1,4 @@
-//! Editing and recognition-refresh operations used by the shared session.
+//! Editing and recognition-refresh operations for session command execution.
 
 use std::io::{self, Write};
 

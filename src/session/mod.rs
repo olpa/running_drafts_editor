@@ -1,6 +1,7 @@
 //! Shared line-oriented session commands, rendering, and audio playback.
 
 mod command;
+mod editing;
 mod playback;
 mod render;
 mod shell;

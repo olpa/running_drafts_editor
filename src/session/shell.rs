@@ -5,12 +5,6 @@ use std::{
 
 use crate::{
     document::Document,
-    editor::{
-        alternative_address, apply_chunk_merge, apply_chunk_split, apply_history,
-        apply_paragraph_merge, apply_paragraph_split, chunk_prefix, edit_range,
-        preserve_boundary_whitespace, render_alternatives, render_document,
-        render_document_with_navigation, resolve_current_chunk, run_corrected_refresh, run_refresh,
-    },
     navigation::NavigationState,
     persistence::{load_document, save_document},
     recognition::{RecognitionConfig, RecognitionRun, RecognizerSession},
@@ -18,6 +12,12 @@ use crate::{
 
 use super::{
     command::{parse_command, SessionCommand},
+    editing::{
+        alternative_address, apply_chunk_merge, apply_chunk_split, apply_history,
+        apply_paragraph_merge, apply_paragraph_split, chunk_prefix, edit_range,
+        preserve_boundary_whitespace, render_alternatives, render_document,
+        render_document_with_navigation, resolve_current_chunk, run_corrected_refresh, run_refresh,
+    },
     playback::{repeat_document_replay, start_document_replay, AudioPlayer, ReplayStart},
     render::{render_chunk_info, render_paragraph, render_recognition_document, render_tokens},
 };
