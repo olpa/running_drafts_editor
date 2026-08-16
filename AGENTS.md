@@ -41,6 +41,11 @@ large design.
   Derived chunk identity, token membership, parents, and mapping alignment are
   persisted. Chunk merges require one audio source and at most 480,000 samples.
 - Recognition runs are immutable; retries and boundary changes create revisions.
+- Successful text, structural, and installed recognition edits persist
+  restorable history with the document. `undo`/`redo` apply one edit and
+  `Nundo`/`Nredo` apply up to N available edits. A new edit clears redo history.
+  History restores visible structure and current mappings without removing or
+  duplicating immutable recognition evidence.
 - Selection and text editing use ranges of complete visible tokens; a token
   cannot be selected or edited in part. Initial tokens refer to accepted normal
   Whisper tokens. Edits may replace or add them with indivisible pseudo-tokens
@@ -91,6 +96,8 @@ large design.
 
 - Async or refreshed recognition must not overwrite newer user edits.
 - Visible-token corrections synchronously re-recognize their one complete replay chunk with a forced decoder prefix; `refresh` does the same without a prefix. The operation keeps chunk structure, appends an immutable run, and installs new recognition truth atomically. Session model and language settings are not persisted, and `delete` is disabled pending audio-backed deletion semantics.
+- Forced-prefix correction uses one greedy decoder; normal transcription keeps
+  five-beam search. Development builds retain verbose Whisper decode traces.
 - Canonical audio and recognition positions use mono 16 kHz sample offsets;
   recognition identities exclude local paths and nondeterministic diagnostics.
 - WAV input accepts common 8/16/24/32-bit integer PCM and 32-bit float formats;

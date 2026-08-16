@@ -271,6 +271,16 @@ with its successor, preserves their chunks, and concatenates token text exactly
 without adding a separator. `M@Nmerge` joins the chunks around an internal
 marker when their same-source union is at most 480,000 canonical samples.
 
+## Undo and redo
+
+`undo` and `redo` restore one complete edit together with its visible tokens,
+paragraph and chunk structure, stable identities, revisions, and current audio
+mappings. An attached positive count, such as `3undo` or `3redo`, restores as
+many edits as are available up to that count. If none are available, the
+document is unchanged. A successful new edit after undo clears redo history.
+Undo and redo history is saved with the document; immutable recognition
+evidence remains append-only.
+
 Chunk split and merge create persistent derived chunk identities with parent
 provenance and current token membership. Original recognition chunks remain
 immutable. Paragraph split creates two new paragraph identities; paragraph

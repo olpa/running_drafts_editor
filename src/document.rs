@@ -113,8 +113,26 @@ pub struct Document {
     recognition_runs: Vec<RecognitionRun>,
     #[serde(default, skip_serializing_if = "is_zero")]
     next_structure_id: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    edit_history: Vec<EditHistoryEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    redo_history: Vec<EditableDocumentState>,
     #[serde(skip)]
     token_fallbacks: Vec<TokenFallback>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EditHistoryEntry {
+    before: EditableDocumentState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EditableDocumentState {
+    paragraphs: Vec<Paragraph>,
+    chunk_audio_mappings: Vec<ChunkAudioMapping>,
+    token_audio_mappings: Vec<TokenAudioMapping>,
+    replay_chunks: Vec<ReplayChunk>,
+    next_structure_id: u64,
 }
 
 impl Document {
@@ -252,6 +270,8 @@ impl Document {
             recognition_token_evidence: Vec::new(),
             recognition_runs: Vec::new(),
             next_structure_id: 0,
+            edit_history: Vec::new(),
+            redo_history: Vec::new(),
             token_fallbacks,
         }
     }
@@ -307,6 +327,67 @@ impl Document {
         &self.recognition_runs
     }
 
+    pub fn edit_history_len(&self) -> usize {
+        self.edit_history.len()
+    }
+
+    pub fn redo_history_len(&self) -> usize {
+        self.redo_history.len()
+    }
+
+    fn editable_state(&self) -> EditableDocumentState {
+        EditableDocumentState {
+            paragraphs: self.paragraphs.clone(),
+            chunk_audio_mappings: self.chunk_audio_mappings.clone(),
+            token_audio_mappings: self.token_audio_mappings.clone(),
+            replay_chunks: self.replay_chunks.clone(),
+            next_structure_id: self.next_structure_id,
+        }
+    }
+
+    fn restore_editable_state(&mut self, state: EditableDocumentState) {
+        self.paragraphs = state.paragraphs;
+        self.chunk_audio_mappings = state.chunk_audio_mappings;
+        self.token_audio_mappings = state.token_audio_mappings;
+        self.replay_chunks = state.replay_chunks;
+        self.next_structure_id = state.next_structure_id;
+    }
+
+    fn remember_editable_state(&mut self) {
+        self.edit_history.push(EditHistoryEntry {
+            before: self.editable_state(),
+        });
+        self.redo_history.clear();
+    }
+
+    pub fn undo(&mut self, count: usize) -> usize {
+        let applied = count.min(self.edit_history.len());
+        for _ in 0..applied {
+            let before = self
+                .edit_history
+                .pop()
+                .expect("the available undo count was checked");
+            self.redo_history.push(self.editable_state());
+            self.restore_editable_state(before.before);
+        }
+        applied
+    }
+
+    pub fn redo(&mut self, count: usize) -> usize {
+        let applied = count.min(self.redo_history.len());
+        for _ in 0..applied {
+            let after = self
+                .redo_history
+                .pop()
+                .expect("the available redo count was checked");
+            self.edit_history.push(EditHistoryEntry {
+                before: self.editable_state(),
+            });
+            self.restore_editable_state(after);
+        }
+        applied
+    }
+
     pub fn chunk_for_token(&self, paragraph: usize, token: usize) -> Option<(usize, &str)> {
         let paragraph = self.paragraph(paragraph)?;
         if token == 0 || token > paragraph.tokens.len() {
@@ -327,6 +408,7 @@ impl Document {
         run: RecognitionRun,
     ) -> Result<(), String> {
         let mut next = self.clone();
+        next.remember_editable_state();
         next.install_chunk_recognition_inner(paragraph_number, marker_number, run)?;
         crate::persistence::validate(&next).map_err(|error| error.to_string())?;
         *self = next;
@@ -409,8 +491,6 @@ impl Document {
             .find(|c| c.id == chunk_id)
             .ok_or("chunk has no replay record")?;
         replay.token_ids = new_ids.clone();
-        self.recognition_token_evidence
-            .retain(|e| !removed.contains(&e.token_id));
         self.token_audio_mappings
             .retain(|m| !removed.contains(&m.token_id));
         for mapping in &mut self.token_audio_mappings {
@@ -619,6 +699,7 @@ impl Document {
         let right_edge = paragraph.tokens[boundary].id.clone();
         let paragraph_id = paragraph.id.clone();
         let paragraph_revision = paragraph.revision;
+        self.remember_editable_state();
         self.ensure_replay_chunks();
         let (left_id, right_id) = (
             self.new_structure_id("chunk"),
@@ -808,6 +889,7 @@ impl Document {
             return Err(StructureEditError::FinalMarker);
         }
         let boundary = paragraph.chunk_boundaries[marker_index].after_tokens;
+        self.remember_editable_state();
         let left_id = self.new_structure_id("paragraph");
         let right_id = self.new_structure_id("paragraph");
         let left = Paragraph {
@@ -856,6 +938,7 @@ impl Document {
             .get(index + 1)
             .ok_or(StructureEditError::NoFollowingParagraph(paragraph_number))?
             .clone();
+        self.remember_editable_state();
         let new_id = self.new_structure_id("paragraph");
         let left_count = left.tokens.len();
         let mut tokens = left.tokens.clone();
@@ -946,6 +1029,7 @@ impl Document {
         if range.len() > 480_000 {
             return Err(StructureEditError::ChunkTooLong);
         }
+        self.remember_editable_state();
         self.ensure_replay_chunks();
         let left_tokens = self
             .replay_chunks
@@ -1119,14 +1203,19 @@ impl Document {
         shift_marker_at_start: bool,
         reason: &str,
     ) -> Result<(), DocumentEditError> {
+        let old_revision = self
+            .paragraphs
+            .get(paragraph_number.checked_sub(1).unwrap_or(usize::MAX))
+            .ok_or(DocumentEditError::UnknownParagraph(paragraph_number))?
+            .revision;
+        let new_revision = old_revision
+            .checked_add(1)
+            .ok_or(DocumentEditError::RevisionOverflow)?;
+        self.remember_editable_state();
         let paragraph = self
             .paragraphs
             .get_mut(paragraph_number.checked_sub(1).unwrap_or(usize::MAX))
             .ok_or(DocumentEditError::UnknownParagraph(paragraph_number))?;
-        let old_revision = paragraph.revision;
-        let new_revision = old_revision
-            .checked_add(1)
-            .ok_or(DocumentEditError::RevisionOverflow)?;
         let removed = end_exclusive - start;
         let inserted = usize::from(replacement.is_some());
 
@@ -1811,5 +1900,26 @@ mod tests {
             Err(StructureEditError::NoRightChunk)
         );
         assert_eq!(document, original);
+    }
+
+    #[test]
+    fn counted_undo_and_redo_apply_available_steps_and_new_edits_clear_redo() {
+        let segments = vec![segment("s1", "a b", vec![token("a"), token(" b")])];
+        let chunks = vec![chunk("a", "s1", "a b", ChunkBoundaryReason::SourceEnd)];
+        let mut document = Document::from_evidence("run", &segments, &chunks);
+
+        document.insert_text(1, 1, true, " x".into()).unwrap();
+        document.replace_text(1, 1, 1, 1, "first".into()).unwrap();
+        assert_eq!(document.paragraphs()[0].text(), "first x b");
+        assert_eq!(document.undo(5), 2);
+        assert_eq!(document.paragraphs()[0].text(), "a b");
+        assert_eq!(document.edit_history_len(), 0);
+        assert_eq!(document.redo_history_len(), 2);
+
+        assert_eq!(document.redo(1), 1);
+        assert_eq!(document.paragraphs()[0].text(), "a x b");
+        document.insert_text(1, 1, false, "new ".into()).unwrap();
+        assert_eq!(document.redo_history_len(), 0);
+        assert_eq!(document.redo(5), 0);
     }
 }

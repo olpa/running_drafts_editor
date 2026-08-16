@@ -109,6 +109,46 @@ fn missing_audio_does_not_prevent_loading_visible_text() {
 }
 
 #[test]
+fn edit_history_survives_save_and_reopen_without_copying_recognition_backing() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("input.json");
+    let output = directory.path().join("output.json");
+    baseline(&input, "missing.wav");
+    let mut document = load_document(&input).unwrap();
+
+    document
+        .replace_text(1, 1, 1, 1, "corrected".into())
+        .unwrap();
+    assert_eq!(document.edit_history_len(), 1);
+    save_document(&output, &document).unwrap();
+
+    let mut reopened = load_document(&output).unwrap();
+    assert_eq!(reopened.edit_history_len(), 1);
+    assert_eq!(
+        reopened.paragraphs()[0].text(),
+        "corrected exact pseudo text "
+    );
+    let encoded: serde_json::Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+    assert!(encoded["edit_history"][0]["before"]
+        .get("recognition_runs")
+        .is_none());
+    assert!(encoded["edit_history"][0]["before"]
+        .get("recognition_token_evidence")
+        .is_none());
+
+    assert_eq!(reopened.undo(4), 1);
+    assert_eq!(reopened.paragraphs()[0].text(), "hello exact pseudo text ");
+    save_document(&output, &reopened).unwrap();
+    let mut reopened = load_document(&output).unwrap();
+    assert_eq!(reopened.redo_history_len(), 1);
+    assert_eq!(reopened.redo(4), 1);
+    assert_eq!(
+        reopened.paragraphs()[0].text(),
+        "corrected exact pseudo text "
+    );
+}
+
+#[test]
 fn rejects_unsupported_schema_and_invalid_authoritative_structure() {
     let directory = tempfile::tempdir().unwrap();
     let input = directory.path().join("document.json");

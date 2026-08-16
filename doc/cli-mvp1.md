@@ -91,10 +91,11 @@ existing chunk markers, and merge adjacent paragraphs or compatible chunks.
 Paragraph merge preserves exact text and keeps separate chunks. A paragraph
 longer than 30 seconds remains backed by multiple internal chunks.
 
-## Add undo for text and paragraph operations
+## [x] Add undo for text and paragraph operations
 
 Undo insertion, replacement, deletion, split, and merge together with their
-mapping changes.
+mapping changes. `undo` and `redo` apply one edit; attached positive counts such
+as `3undo` and `3redo` apply as many edits as are available, up to the count.
 
 ## [x] Inspect and choose recognition alternatives
 

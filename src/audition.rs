@@ -10,8 +10,8 @@ use std::{
 use crate::chunking::SampleRange;
 use crate::document::Document;
 use crate::editor::{
-    apply_alternative, apply_chunk_merge, apply_chunk_split, apply_delete, apply_insert,
-    apply_paragraph_merge, apply_paragraph_split, apply_replace, render_alternatives,
+    apply_alternative, apply_chunk_merge, apply_chunk_split, apply_delete, apply_history,
+    apply_insert, apply_paragraph_merge, apply_paragraph_split, apply_replace, render_alternatives,
     render_document_with_navigation,
 };
 use crate::navigation::{
@@ -78,6 +78,8 @@ pub enum AuditionCommand {
         paragraph: usize,
         marker: usize,
     },
+    Undo(usize),
+    Redo(usize),
     Save(Option<PathBuf>),
     Load(PathBuf),
     Help,
@@ -264,9 +266,36 @@ pub enum CommandParseError {
     InvalidQuotedReplacement(String),
     #[error("{0} requires a positive alternative number")]
     AlternativeNumberRequired(String),
+    #[error("{0} requires a positive count")]
+    HistoryCountRequired(String),
 }
 
 pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> {
+    let compact = input.trim();
+    for (suffix, command) in [
+        (
+            "undo",
+            AuditionCommand::Undo as fn(usize) -> AuditionCommand,
+        ),
+        (
+            "redo",
+            AuditionCommand::Redo as fn(usize) -> AuditionCommand,
+        ),
+    ] {
+        if let Some(count) = compact
+            .strip_suffix(suffix)
+            .filter(|value| !value.is_empty())
+        {
+            if count.chars().all(|character| character.is_ascii_digit()) {
+                let count = count
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| CommandParseError::HistoryCountRequired(suffix.into()))?;
+                return Ok(command(count));
+            }
+        }
+    }
     let (address, name, arguments) = match parse_line(input)? {
         CommandLine::Empty => return Ok(AuditionCommand::Empty),
         CommandLine::Address(address) => return Ok(AuditionCommand::Move(address)),
@@ -484,6 +513,18 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                     expected: "a paragraph M or chunk-marker M@N address",
                 }),
             }
+        }
+        "undo" | "redo" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(
+                address,
+                name.clone(),
+                if name == "undo" {
+                    AuditionCommand::Undo(1)
+                } else {
+                    AuditionCommand::Redo(1)
+                },
+            )
         }
         "info" | "i" => {
             reject_arguments(&name, &arguments)?;
@@ -1004,6 +1045,12 @@ pub fn run_recognition_session(
                 output,
                 errors,
             )?,
+            Ok(AuditionCommand::Undo(count)) => {
+                apply_history(&mut document, &mut navigation, count, false, output)?
+            }
+            Ok(AuditionCommand::Redo(count)) => {
+                apply_history(&mut document, &mut navigation, count, true, output)?
+            }
             Ok(AuditionCommand::Save(path)) => {
                 let path = path.or_else(|| document_path.clone());
                 let Some(path) = path else {
@@ -1348,6 +1395,8 @@ fn render_help(output: &mut impl Write) -> io::Result<()> {
         output,
         "  M@Nmerge       merge chunks around marker M@N when legal"
     )?;
+    writeln!(output, "  [N]undo        undo up to N edits; default 1")?;
+    writeln!(output, "  [N]redo        redo up to N edits; default 1")?;
     writeln!(
         output,
         "  [A]play        play current/addressed token range, paragraph, or chunk"
@@ -1483,6 +1532,13 @@ mod tests {
             }
         );
         assert_eq!(parse_command("stop").unwrap(), AuditionCommand::Stop);
+        assert_eq!(parse_command("undo").unwrap(), AuditionCommand::Undo(1));
+        assert_eq!(
+            parse_command(" 12undo ").unwrap(),
+            AuditionCommand::Undo(12)
+        );
+        assert_eq!(parse_command("redo").unwrap(), AuditionCommand::Redo(1));
+        assert_eq!(parse_command("3redo").unwrap(), AuditionCommand::Redo(3));
         assert_eq!(
             parse_command("1.2split").unwrap(),
             AuditionCommand::SplitChunk {
@@ -1698,6 +1754,10 @@ mod tests {
             parse_command("1.2delete"),
             Err(CommandParseError::InvalidAddress { .. })
         ));
+        assert_eq!(
+            parse_command("0undo"),
+            Err(CommandParseError::HistoryCountRequired("undo".into()))
+        );
     }
 
     #[test]

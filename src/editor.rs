@@ -296,6 +296,12 @@ pub fn run_editor_session_with_model(
                 output,
                 errors,
             )?,
+            Ok(AuditionCommand::Undo(count)) => {
+                apply_history(&mut document, &mut navigation, count, false, output)?
+            }
+            Ok(AuditionCommand::Redo(count)) => {
+                apply_history(&mut document, &mut navigation, count, true, output)?
+            }
             Ok(AuditionCommand::Play { address, speed }) => {
                 if let Some(value) = start_document_replay(
                     &document,
@@ -470,6 +476,31 @@ pub(crate) fn apply_delete(
             writeln!(output, "deleted {start},{end}")
         }
         Err(error) => writeln!(errors, "edit failed: {error}"),
+    }
+}
+
+pub(crate) fn apply_history(
+    document: &mut Document,
+    navigation: &mut NavigationState,
+    count: usize,
+    redo: bool,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    let applied = if redo {
+        document.redo(count)
+    } else {
+        document.undo(count)
+    };
+    if applied == 0 {
+        writeln!(output, "nothing to {}", if redo { "redo" } else { "undo" })
+    } else {
+        *navigation = NavigationState::new(document);
+        writeln!(
+            output,
+            "{} {applied} edit{}",
+            if redo { "redid" } else { "undid" },
+            if applied == 1 { "" } else { "s" }
+        )
     }
 }
 
@@ -934,6 +965,10 @@ pub(crate) fn render_document_with_navigation(
 }
 
 fn render_editor_help(output: &mut impl Write) -> io::Result<()> {
+    writeln!(
+        output,
+        "History: undo | Nundo | redo | Nredo (N is a positive maximum count)"
+    )?;
     writeln!(
         output,
         "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  [M.N]alternatives | alts   list alternatives for one token/current token\n  [M.N]choose N              correct one token and refresh its chunk\n  M.Ninsert TEXT             correct before M.N and refresh its chunk\n  M.Nappend TEXT             correct after M.N and refresh its chunk\n  [M.N,M.U]replace TEXT      replace a one-chunk range and refresh\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            disabled pending audio-backed deletion\n  [M@N]refresh               re-recognize one complete replay chunk\n  model [PATH]               show or load the session model\n  language [CODE]            show or set the session language\n  [M.N]split | [M.N]isplit   split chunk before token/current caret\n  [M.N]asplit                split chunk after token/current caret\n  [M@N]parasplit             split paragraph after marker/current marker\n  Mmerge                     merge paragraph M with M+1 exactly\n  M@Nmerge                   merge chunks around marker M@N when legal\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
