@@ -91,7 +91,7 @@ large design.
   PATH` replace the current document and reset navigation. `rde transcribe
   AUDIO --model MODEL --output DOCUMENT` recognizes, atomically saves the
   baseline, and exits without a prompt. It shares recognition settings with the
-  developer `audition` command, whose optional `--output PATH` saves before the
+  `open-audio` command, whose optional `--output PATH` saves before the
   prompt.
 
 - Async or refreshed recognition must not overwrite newer user edits.
@@ -106,10 +106,10 @@ large design.
 - Chunk boundaries are derived during Whisper recognition from timestamped
   decoded segments; there is no separate pre-recognition planner.
 - A missing or unreadable CLI model is a preflight error.
-- `rde audition --input <audio.wav> --model <whisper.bin>` is a
-  developer-only dumb-terminal harness: it runs Whisper, lists accepted decoded
-  segments with text and timestamp-derived sample ranges, and plays them through
-  a replaceable, ffplay-compatible subprocess selected with `--player`.
+- `rde open-audio --input <audio.wav> --model <whisper.bin>` runs Whisper,
+  lists accepted decoded segments with text and timestamp-derived sample ranges,
+  and plays them through a replaceable, ffplay-compatible subprocess selected
+  with `--player`.
 - The dumb-terminal shell uses an `ed`-inspired address-first grammar at the
   `rde>` prompt. `M.N` addresses a visible token, `M@N` a chunk marker, and
   `M.N,M.U` an inclusive displayed token range. Commands may attach to an
@@ -118,8 +118,8 @@ large design.
   marker `M@N`; `M@Ninfo` inspects that chunk. A bare token or marker address
   moves the caret, `Aselect` selects a token, token range, paragraph, or marker,
   and `Mtokens` lists the individually addressable tokens in a paragraph.
-- `edit` and the developer `audition` command enter the same interactive shell;
-  audition supplies fresh recognition details as optional session context
+- `edit` and `open-audio` enter the same interactive shell; `open-audio`
+  supplies fresh recognition details as optional session context
   instead of maintaining a separate command loop.
 - `[A]play` replays the current or addressed token range, paragraph, or marker;
   text replay adds configurable fixed context while marker replay stays exact.

@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use running_drafts_editor::{
-    audition::{AudioPlayer, Ffplay, PlaybackSpeed},
     chunking::SampleRange,
+    session::{AudioPlayer, Ffplay, PlaybackSpeed},
 };
 
 #[cfg(unix)]

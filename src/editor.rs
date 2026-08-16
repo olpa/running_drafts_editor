@@ -6,15 +6,15 @@ use std::{
 };
 
 use crate::{
-    audition::{
-        parse_command, render_chunk_info, render_paragraph, render_tokens, repeat_document_replay,
-        start_document_replay, AudioPlayer, AuditionCommand, ReplayStart,
-    },
     chunking::{read_canonical_wav, SourceFacts},
     document::Document,
     navigation::{Address, NavigationState, TokenAddress},
     persistence::{load_document, save_document},
     recognition::{ChunkRefreshRequest, RecognitionConfig, RecognitionRun, RecognizerSession},
+    session::{
+        parse_command, render_chunk_info, render_paragraph, render_tokens, repeat_document_replay,
+        start_document_replay, AudioPlayer, ReplayStart, SessionCommand,
+    },
 };
 
 pub fn run_editor_session(
@@ -125,29 +125,29 @@ pub fn run_session(
             return Ok(());
         }
         match parse_command(&line) {
-            Ok(AuditionCommand::Print(None)) => {
+            Ok(SessionCommand::Print(None)) => {
                 render_document_with_navigation(&document, Some(&navigation), output)?
             }
-            Ok(AuditionCommand::Print(Some(number))) => match document.paragraph(number) {
+            Ok(SessionCommand::Print(Some(number))) => match document.paragraph(number) {
                 Some(paragraph) => render_paragraph(paragraph, number, Some(&navigation), output)?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
-            Ok(AuditionCommand::Move(address)) => match navigation.move_to(&document, &address) {
+            Ok(SessionCommand::Move(address)) => match navigation.move_to(&document, &address) {
                 Ok(()) => writeln!(output, "caret {address}")?,
                 Err(error) => writeln!(errors, "{error}")?,
             },
-            Ok(AuditionCommand::Select(address)) => match navigation.select(&document, &address) {
+            Ok(SessionCommand::Select(address)) => match navigation.select(&document, &address) {
                 Ok(()) => writeln!(output, "selected {address}")?,
                 Err(error) => writeln!(errors, "{error}")?,
             },
-            Ok(AuditionCommand::Tokens(number)) => match document.paragraph(number) {
+            Ok(SessionCommand::Tokens(number)) => match document.paragraph(number) {
                 Some(paragraph) => render_tokens(paragraph, number, output)?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
-            Ok(AuditionCommand::Alternatives { address }) => {
+            Ok(SessionCommand::Alternatives { address }) => {
                 render_alternatives(&document, &navigation, address, output, errors)?
             }
-            Ok(AuditionCommand::ChooseAlternative { address, candidate }) => {
+            Ok(SessionCommand::ChooseAlternative { address, candidate }) => {
                 let address = match alternative_address(&document, &navigation, address) {
                     Ok(v) => v,
                     Err(e) => {
@@ -178,9 +178,9 @@ pub fn run_session(
                     errors,
                 )?;
             }
-            Ok(AuditionCommand::Insert { address, text })
-            | Ok(AuditionCommand::Append { address, text }) => {
-                let after = matches!(parse_command(&line), Ok(AuditionCommand::Append { .. }));
+            Ok(SessionCommand::Insert { address, text })
+            | Ok(SessionCommand::Append { address, text }) => {
+                let after = matches!(parse_command(&line), Ok(SessionCommand::Append { .. }));
                 let through = if after {
                     address.token
                 } else {
@@ -204,7 +204,7 @@ pub fn run_session(
                     errors,
                 )?;
             }
-            Ok(AuditionCommand::Replace { range, replacement }) => {
+            Ok(SessionCommand::Replace { range, replacement }) => {
                 let (start, end) = match edit_range(&document, &navigation, range) {
                     Ok(v) => v,
                     Err(e) => {
@@ -248,14 +248,14 @@ pub fn run_session(
                     errors,
                 )?;
             }
-            Ok(AuditionCommand::Delete { range }) => {
+            Ok(SessionCommand::Delete { range }) => {
                 let _ = range;
                 writeln!(
                     errors,
                     "delete is disabled; deletion of audio-backed text is not implemented"
                 )?
             }
-            Ok(AuditionCommand::Refresh { marker }) => {
+            Ok(SessionCommand::Refresh { marker }) => {
                 let resolved = marker.or_else(|| resolve_current_chunk(&document, &navigation));
                 let Some((paragraph, marker)) = resolved else {
                     writeln!(
@@ -276,7 +276,7 @@ pub fn run_session(
                     errors,
                 )?;
             }
-            Ok(AuditionCommand::Model(path)) => match path {
+            Ok(SessionCommand::Model(path)) => match path {
                 None => writeln!(
                     output,
                     "model {}",
@@ -299,7 +299,7 @@ pub fn run_session(
                     Err(error) => writeln!(errors, "could not load model: {error}")?,
                 },
             },
-            Ok(AuditionCommand::Language(value)) => match value {
+            Ok(SessionCommand::Language(value)) => match value {
                 None => writeln!(output, "language {language}")?,
                 Some(value) => {
                     language = value;
@@ -309,7 +309,7 @@ pub fn run_session(
                     writeln!(output, "language {language}")?;
                 }
             },
-            Ok(AuditionCommand::SplitChunk { address, after }) => apply_chunk_split(
+            Ok(SessionCommand::SplitChunk { address, after }) => apply_chunk_split(
                 &mut document,
                 &mut navigation,
                 address,
@@ -317,13 +317,13 @@ pub fn run_session(
                 output,
                 errors,
             )?,
-            Ok(AuditionCommand::SplitParagraph { marker }) => {
+            Ok(SessionCommand::SplitParagraph { marker }) => {
                 apply_paragraph_split(&mut document, &mut navigation, marker, output, errors)?
             }
-            Ok(AuditionCommand::MergeParagraph(paragraph)) => {
+            Ok(SessionCommand::MergeParagraph(paragraph)) => {
                 apply_paragraph_merge(&mut document, &mut navigation, paragraph, output, errors)?
             }
-            Ok(AuditionCommand::MergeChunks { paragraph, marker }) => apply_chunk_merge(
+            Ok(SessionCommand::MergeChunks { paragraph, marker }) => apply_chunk_merge(
                 &mut document,
                 &mut navigation,
                 paragraph,
@@ -331,13 +331,13 @@ pub fn run_session(
                 output,
                 errors,
             )?,
-            Ok(AuditionCommand::Undo(count)) => {
+            Ok(SessionCommand::Undo(count)) => {
                 apply_history(&mut document, &mut navigation, count, false, output)?
             }
-            Ok(AuditionCommand::Redo(count)) => {
+            Ok(SessionCommand::Redo(count)) => {
                 apply_history(&mut document, &mut navigation, count, true, output)?
             }
-            Ok(AuditionCommand::Play { address, speed }) => {
+            Ok(SessionCommand::Play { address, speed }) => {
                 if let Some(value) = start_document_replay(
                     &document,
                     &navigation,
@@ -354,7 +354,7 @@ pub fn run_session(
                     last_playback = Some(value);
                 }
             }
-            Ok(AuditionCommand::Replay { speed }) => repeat_document_replay(
+            Ok(SessionCommand::Replay { speed }) => repeat_document_replay(
                 &document,
                 last_playback.as_ref(),
                 speed,
@@ -362,12 +362,12 @@ pub fn run_session(
                 output,
                 errors,
             )?,
-            Ok(AuditionCommand::Stop) => match player.stop() {
+            Ok(SessionCommand::Stop) => match player.stop() {
                 Ok(true) => writeln!(output, "playback stopped")?,
                 Ok(false) => writeln!(errors, "nothing is playing")?,
                 Err(error) => writeln!(errors, "could not stop playback: {error}")?,
             },
-            Ok(AuditionCommand::Info { paragraph, chunk }) => {
+            Ok(SessionCommand::Info { paragraph, chunk }) => {
                 let Some(marker) = document.chunk_marker(paragraph, chunk) else {
                     writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
                     continue;
@@ -393,7 +393,7 @@ pub fn run_session(
                     )?;
                 }
             }
-            Ok(AuditionCommand::Save(path)) => {
+            Ok(SessionCommand::Save(path)) => {
                 let path = path.or_else(|| document_path.clone());
                 let Some(path) = path else {
                     writeln!(errors, "save requires a document path")?;
@@ -408,7 +408,7 @@ pub fn run_session(
                     Err(error) => writeln!(errors, "{error}")?,
                 }
             }
-            Ok(AuditionCommand::Load(path)) => match load_document(&path) {
+            Ok(SessionCommand::Load(path)) => match load_document(&path) {
                 Ok(loaded) => {
                     document = loaded;
                     document_path = Some(path);
@@ -425,9 +425,9 @@ pub fn run_session(
                 }
                 Err(error) => writeln!(errors, "{error}")?,
             },
-            Ok(AuditionCommand::Help) => render_editor_help(output)?,
-            Ok(AuditionCommand::Quit) => return Ok(()),
-            Ok(AuditionCommand::Empty) => {}
+            Ok(SessionCommand::Help) => render_editor_help(output)?,
+            Ok(SessionCommand::Quit) => return Ok(()),
+            Ok(SessionCommand::Empty) => {}
             Err(error) => writeln!(errors, "{error}")?,
         }
     }

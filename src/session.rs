@@ -1,4 +1,4 @@
-//! Line-oriented developer tooling for listening to recognition chunks.
+//! Shared line-oriented session commands, rendering, and audio playback.
 
 use std::{
     fmt,
@@ -16,7 +16,7 @@ use crate::recognition::{ChunkBoundaryReason, RecognitionRun};
 use crate::replay::{resolve as resolve_replay, ResolvedReplay};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AuditionCommand {
+pub enum SessionCommand {
     Play {
         address: Option<Address>,
         speed: PlaybackSpeed,
@@ -264,17 +264,11 @@ pub enum CommandParseError {
     HistoryCountRequired(String),
 }
 
-pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> {
+pub fn parse_command(input: &str) -> Result<SessionCommand, CommandParseError> {
     let compact = input.trim();
     for (suffix, command) in [
-        (
-            "undo",
-            AuditionCommand::Undo as fn(usize) -> AuditionCommand,
-        ),
-        (
-            "redo",
-            AuditionCommand::Redo as fn(usize) -> AuditionCommand,
-        ),
+        ("undo", SessionCommand::Undo as fn(usize) -> SessionCommand),
+        ("redo", SessionCommand::Redo as fn(usize) -> SessionCommand),
     ] {
         if let Some(count) = compact
             .strip_suffix(suffix)
@@ -291,8 +285,8 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         }
     }
     let (address, name, arguments) = match parse_line(input)? {
-        CommandLine::Empty => return Ok(AuditionCommand::Empty),
-        CommandLine::Address(address) => return Ok(AuditionCommand::Move(address)),
+        CommandLine::Empty => return Ok(SessionCommand::Empty),
+        CommandLine::Address(address) => return Ok(SessionCommand::Move(address)),
         CommandLine::Command {
             address,
             name,
@@ -304,12 +298,12 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         "model" => no_address(
             address,
             name,
-            AuditionCommand::Model((!arguments.is_empty()).then(|| PathBuf::from(arguments))),
+            SessionCommand::Model((!arguments.is_empty()).then(|| PathBuf::from(arguments))),
         ),
         "language" => no_address(
             address,
             name,
-            AuditionCommand::Language((!arguments.is_empty()).then_some(arguments)),
+            SessionCommand::Language((!arguments.is_empty()).then_some(arguments)),
         ),
         "refresh" => {
             reject_arguments(&name, &arguments)?;
@@ -324,12 +318,12 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                     })
                 }
             };
-            Ok(AuditionCommand::Refresh { marker })
+            Ok(SessionCommand::Refresh { marker })
         }
         "save" => no_address(
             address,
             name,
-            AuditionCommand::Save((!arguments.is_empty()).then(|| PathBuf::from(arguments))),
+            SessionCommand::Save((!arguments.is_empty()).then(|| PathBuf::from(arguments))),
         ),
         "load" | "edit" => {
             if arguments.is_empty() {
@@ -338,14 +332,14 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
             no_address(
                 address,
                 name,
-                AuditionCommand::Load(PathBuf::from(arguments)),
+                SessionCommand::Load(PathBuf::from(arguments)),
             )
         }
         "print" | "p" | "list" | "l" => {
             reject_arguments(&name, &arguments)?;
             match address {
-                None => Ok(AuditionCommand::Print(None)),
-                Some(Address::Paragraph(paragraph)) => Ok(AuditionCommand::Print(Some(paragraph))),
+                None => Ok(SessionCommand::Print(None)),
+                Some(Address::Paragraph(paragraph)) => Ok(SessionCommand::Print(Some(paragraph))),
                 Some(address) => Err(CommandParseError::InvalidAddress {
                     command: name,
                     address,
@@ -355,7 +349,7 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         }
         "play" | "slowplay" => {
             reject_arguments(&name, &arguments)?;
-            Ok(AuditionCommand::Play {
+            Ok(SessionCommand::Play {
                 address,
                 speed: if name == "slowplay" {
                     PlaybackSpeed::Slow
@@ -369,7 +363,7 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
             no_address(
                 address,
                 name.clone(),
-                AuditionCommand::Replay {
+                SessionCommand::Replay {
                     speed: if name == "slowreplay" {
                         PlaybackSpeed::Slow
                     } else {
@@ -380,12 +374,12 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         }
         "stop" => {
             reject_arguments(&name, &arguments)?;
-            no_address(address, name, AuditionCommand::Stop)
+            no_address(address, name, SessionCommand::Stop)
         }
         "select" | "sel" | "s" => {
             reject_arguments(&name, &arguments)?;
             address
-                .map(AuditionCommand::Select)
+                .map(SessionCommand::Select)
                 .ok_or(CommandParseError::AddressRequired {
                     command: name,
                     expected: "an address M, M.N, M.N,M.U, M@N, M@N,M@U, or .",
@@ -394,7 +388,7 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         "tokens" => {
             reject_arguments(&name, &arguments)?;
             match address {
-                Some(Address::Paragraph(paragraph)) => Ok(AuditionCommand::Tokens(paragraph)),
+                Some(Address::Paragraph(paragraph)) => Ok(SessionCommand::Tokens(paragraph)),
                 Some(address) => Err(CommandParseError::InvalidAddress {
                     command: name,
                     address,
@@ -408,7 +402,7 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
         }
         "alternatives" | "alts" => {
             reject_arguments(&name, &arguments)?;
-            optional_token(address, name).map(|address| AuditionCommand::Alternatives { address })
+            optional_token(address, name).map(|address| SessionCommand::Alternatives { address })
         }
         "choose" => {
             let candidate = arguments
@@ -417,18 +411,18 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                 .filter(|value| *value > 0)
                 .ok_or_else(|| CommandParseError::AlternativeNumberRequired(name.clone()))?;
             optional_token(address, name)
-                .map(|address| AuditionCommand::ChooseAlternative { address, candidate })
+                .map(|address| SessionCommand::ChooseAlternative { address, candidate })
         }
         "insert" | "append" => {
             if arguments.is_empty() {
                 return Err(CommandParseError::TextRequired(name));
             }
             match address {
-                Some(Address::Token(address)) if name == "insert" => Ok(AuditionCommand::Insert {
+                Some(Address::Token(address)) if name == "insert" => Ok(SessionCommand::Insert {
                     address,
                     text: arguments,
                 }),
-                Some(Address::Token(address)) => Ok(AuditionCommand::Append {
+                Some(Address::Token(address)) => Ok(SessionCommand::Append {
                     address,
                     text: arguments,
                 }),
@@ -449,11 +443,11 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
             }
             let replacement = parse_replacement(&arguments)?;
             optional_token_range(address, name)
-                .map(|range| AuditionCommand::Replace { range, replacement })
+                .map(|range| SessionCommand::Replace { range, replacement })
         }
         "delete" => {
             reject_arguments(&name, &arguments)?;
-            optional_token_range(address, name).map(|range| AuditionCommand::Delete { range })
+            optional_token_range(address, name).map(|range| SessionCommand::Delete { range })
         }
         "split" | "isplit" | "asplit" => {
             reject_arguments(&name, &arguments)?;
@@ -468,7 +462,7 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                     })
                 }
             };
-            Ok(AuditionCommand::SplitChunk {
+            Ok(SessionCommand::SplitChunk {
                 address: token,
                 after: name == "asplit",
             })
@@ -486,16 +480,16 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                     })
                 }
             };
-            Ok(AuditionCommand::SplitParagraph { marker })
+            Ok(SessionCommand::SplitParagraph { marker })
         }
         "merge" => {
             reject_arguments(&name, &arguments)?;
             match address {
                 Some(Address::Paragraph(paragraph)) => {
-                    Ok(AuditionCommand::MergeParagraph(paragraph))
+                    Ok(SessionCommand::MergeParagraph(paragraph))
                 }
                 Some(Address::Marker { paragraph, marker }) => {
-                    Ok(AuditionCommand::MergeChunks { paragraph, marker })
+                    Ok(SessionCommand::MergeChunks { paragraph, marker })
                 }
                 Some(address) => Err(CommandParseError::InvalidAddress {
                     command: name,
@@ -514,26 +508,26 @@ pub fn parse_command(input: &str) -> Result<AuditionCommand, CommandParseError> 
                 address,
                 name.clone(),
                 if name == "undo" {
-                    AuditionCommand::Undo(1)
+                    SessionCommand::Undo(1)
                 } else {
-                    AuditionCommand::Redo(1)
+                    SessionCommand::Redo(1)
                 },
             )
         }
         "info" | "i" => {
             reject_arguments(&name, &arguments)?;
-            marker_command(address, name, |paragraph, chunk| AuditionCommand::Info {
+            marker_command(address, name, |paragraph, chunk| SessionCommand::Info {
                 paragraph,
                 chunk,
             })
         }
         "help" | "h" => {
             reject_arguments(&name, &arguments)?;
-            no_address(address, name, AuditionCommand::Help)
+            no_address(address, name, SessionCommand::Help)
         }
         "quit" | "q" => {
             reject_arguments(&name, &arguments)?;
-            no_address(address, name, AuditionCommand::Quit)
+            no_address(address, name, SessionCommand::Quit)
         }
         _ => Err(CommandParseError::Unknown(name)),
     }
@@ -599,8 +593,8 @@ fn reject_arguments(command: &str, arguments: &str) -> Result<(), CommandParseEr
 fn marker_command(
     address: Option<Address>,
     command: String,
-    build: impl FnOnce(usize, usize) -> AuditionCommand,
-) -> Result<AuditionCommand, CommandParseError> {
+    build: impl FnOnce(usize, usize) -> SessionCommand,
+) -> Result<SessionCommand, CommandParseError> {
     match address {
         Some(Address::Marker { paragraph, marker }) => Ok(build(paragraph, marker)),
         Some(address) => Err(CommandParseError::InvalidAddress {
@@ -648,8 +642,8 @@ fn optional_token(
 fn no_address(
     address: Option<Address>,
     command: String,
-    result: AuditionCommand,
-) -> Result<AuditionCommand, CommandParseError> {
+    result: SessionCommand,
+) -> Result<SessionCommand, CommandParseError> {
     if address.is_some() {
         Err(CommandParseError::UnexpectedAddress(command))
     } else {
@@ -843,7 +837,7 @@ fn samples_as_seconds(samples: u64, sample_rate_hz: u32) -> String {
     )
 }
 
-pub fn run_recognition_session(
+pub fn run_open_audio_session(
     run: &RecognitionRun,
     source: &Path,
     input: &mut impl BufRead,
@@ -852,7 +846,7 @@ pub fn run_recognition_session(
     player: &mut impl AudioPlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    run_recognition_session_with_model(
+    run_open_audio_session_with_model(
         run,
         source,
         input,
@@ -865,7 +859,7 @@ pub fn run_recognition_session(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn run_recognition_session_with_model(
+pub fn run_open_audio_session_with_model(
     run: &RecognitionRun,
     source: &Path,
     input: &mut impl BufRead,
@@ -1208,14 +1202,14 @@ mod tests {
 
     #[test]
     fn parser_accepts_addressed_commands_and_aliases() {
-        assert_eq!(parse_command(" p ").unwrap(), AuditionCommand::Print(None));
+        assert_eq!(parse_command(" p ").unwrap(), SessionCommand::Print(None));
         assert_eq!(
             parse_command("2print").unwrap(),
-            AuditionCommand::Print(Some(2))
+            SessionCommand::Print(Some(2))
         );
         assert_eq!(
             parse_command(" 2@3play ").unwrap(),
-            AuditionCommand::Play {
+            SessionCommand::Play {
                 address: Some(Address::Marker {
                     paragraph: 2,
                     marker: 3
@@ -1225,35 +1219,32 @@ mod tests {
         );
         assert_eq!(
             parse_command("play").unwrap(),
-            AuditionCommand::Play {
+            SessionCommand::Play {
                 address: None,
                 speed: PlaybackSpeed::Normal
             }
         );
         assert_eq!(
             parse_command("2slowplay").unwrap(),
-            AuditionCommand::Play {
+            SessionCommand::Play {
                 address: Some(Address::Paragraph(2)),
                 speed: PlaybackSpeed::Slow
             }
         );
         assert_eq!(
             parse_command("replay").unwrap(),
-            AuditionCommand::Replay {
+            SessionCommand::Replay {
                 speed: PlaybackSpeed::Normal
             }
         );
-        assert_eq!(parse_command("stop").unwrap(), AuditionCommand::Stop);
-        assert_eq!(parse_command("undo").unwrap(), AuditionCommand::Undo(1));
-        assert_eq!(
-            parse_command(" 12undo ").unwrap(),
-            AuditionCommand::Undo(12)
-        );
-        assert_eq!(parse_command("redo").unwrap(), AuditionCommand::Redo(1));
-        assert_eq!(parse_command("3redo").unwrap(), AuditionCommand::Redo(3));
+        assert_eq!(parse_command("stop").unwrap(), SessionCommand::Stop);
+        assert_eq!(parse_command("undo").unwrap(), SessionCommand::Undo(1));
+        assert_eq!(parse_command(" 12undo ").unwrap(), SessionCommand::Undo(12));
+        assert_eq!(parse_command("redo").unwrap(), SessionCommand::Redo(1));
+        assert_eq!(parse_command("3redo").unwrap(), SessionCommand::Redo(3));
         assert_eq!(
             parse_command("1.2split").unwrap(),
-            AuditionCommand::SplitChunk {
+            SessionCommand::SplitChunk {
                 address: Some(TokenAddress {
                     paragraph: 1,
                     token: 2,
@@ -1263,31 +1254,31 @@ mod tests {
         );
         assert_eq!(
             parse_command("asplit").unwrap(),
-            AuditionCommand::SplitChunk {
+            SessionCommand::SplitChunk {
                 address: None,
                 after: true,
             }
         );
         assert_eq!(
             parse_command("1@2parasplit").unwrap(),
-            AuditionCommand::SplitParagraph {
+            SessionCommand::SplitParagraph {
                 marker: Some((1, 2)),
             }
         );
         assert_eq!(
             parse_command("1merge").unwrap(),
-            AuditionCommand::MergeParagraph(1)
+            SessionCommand::MergeParagraph(1)
         );
         assert_eq!(
             parse_command("1@2merge").unwrap(),
-            AuditionCommand::MergeChunks {
+            SessionCommand::MergeChunks {
                 paragraph: 1,
                 marker: 2,
             }
         );
         assert_eq!(
             parse_command("1.2insert  typed text  ").unwrap(),
-            AuditionCommand::Insert {
+            SessionCommand::Insert {
                 address: TokenAddress {
                     paragraph: 1,
                     token: 2,
@@ -1297,7 +1288,7 @@ mod tests {
         );
         assert_eq!(
             parse_command("1.2 append text").unwrap(),
-            AuditionCommand::Append {
+            SessionCommand::Append {
                 address: TokenAddress {
                     paragraph: 1,
                     token: 2,
@@ -1307,7 +1298,7 @@ mod tests {
         );
         assert_eq!(
             parse_command("1.2,1.4replace new text").unwrap(),
-            AuditionCommand::Replace {
+            SessionCommand::Replace {
                 range: Some((
                     TokenAddress {
                         paragraph: 1,
@@ -1326,7 +1317,7 @@ mod tests {
         );
         assert_eq!(
             parse_command("1.2,1.4delete").unwrap(),
-            AuditionCommand::Delete {
+            SessionCommand::Delete {
                 range: Some((
                     TokenAddress {
                         paragraph: 1,
@@ -1341,7 +1332,7 @@ mod tests {
         );
         assert_eq!(
             parse_command("1@1,1@2sel").unwrap(),
-            AuditionCommand::Select(Address::MarkerRange {
+            SessionCommand::Select(Address::MarkerRange {
                 start_paragraph: 1,
                 start_marker: 1,
                 end_paragraph: 1,
@@ -1350,43 +1341,43 @@ mod tests {
         );
         assert_eq!(
             parse_command("2@3 i").unwrap(),
-            AuditionCommand::Info {
+            SessionCommand::Info {
                 paragraph: 2,
                 chunk: 3
             }
         );
-        assert_eq!(parse_command("list").unwrap(), AuditionCommand::Print(None));
-        assert_eq!(parse_command("h").unwrap(), AuditionCommand::Help);
+        assert_eq!(parse_command("list").unwrap(), SessionCommand::Print(None));
+        assert_eq!(parse_command("h").unwrap(), SessionCommand::Help);
         assert_eq!(
             parse_command("save document.rde.json").unwrap(),
-            AuditionCommand::Save(Some(PathBuf::from("document.rde.json")))
+            SessionCommand::Save(Some(PathBuf::from("document.rde.json")))
         );
-        assert_eq!(parse_command("save").unwrap(), AuditionCommand::Save(None));
+        assert_eq!(parse_command("save").unwrap(), SessionCommand::Save(None));
         assert_eq!(
             parse_command("load document.rde.json").unwrap(),
-            AuditionCommand::Load(PathBuf::from("document.rde.json"))
+            SessionCommand::Load(PathBuf::from("document.rde.json"))
         );
         assert_eq!(
             parse_command("edit other document.json").unwrap(),
-            AuditionCommand::Load(PathBuf::from("other document.json"))
+            SessionCommand::Load(PathBuf::from("other document.json"))
         );
-        assert_eq!(parse_command(" q ").unwrap(), AuditionCommand::Quit);
+        assert_eq!(parse_command(" q ").unwrap(), SessionCommand::Quit);
 
-        assert_eq!(parse_command("  ").unwrap(), AuditionCommand::Empty);
+        assert_eq!(parse_command("  ").unwrap(), SessionCommand::Empty);
     }
 
     #[test]
     fn parser_reports_command_specific_address_errors() {
         assert_eq!(
             parse_command("1play").unwrap(),
-            AuditionCommand::Play {
+            SessionCommand::Play {
                 address: Some(Address::Paragraph(1)),
                 speed: PlaybackSpeed::Normal
             }
         );
         assert_eq!(
             parse_command("7").unwrap(),
-            AuditionCommand::Move(Address::Paragraph(7))
+            SessionCommand::Move(Address::Paragraph(7))
         );
         assert_eq!(
             parse_command("1@1play now").unwrap_err(),
@@ -1421,7 +1412,7 @@ mod tests {
         );
         assert_eq!(
             parse_command("2.4,3.2select").unwrap(),
-            AuditionCommand::Select(Address::TokenRange {
+            SessionCommand::Select(Address::TokenRange {
                 start: crate::navigation::TokenAddress {
                     paragraph: 2,
                     token: 4
@@ -1432,10 +1423,7 @@ mod tests {
                 },
             })
         );
-        assert_eq!(
-            parse_command("2tokens").unwrap(),
-            AuditionCommand::Tokens(2)
-        );
+        assert_eq!(parse_command("2tokens").unwrap(), SessionCommand::Tokens(2));
         assert_eq!(
             parse_command("2help").unwrap_err(),
             CommandParseError::UnexpectedAddress("help".into())
@@ -1446,7 +1434,7 @@ mod tests {
         );
         assert_eq!(
             parse_command("replace text").unwrap(),
-            AuditionCommand::Replace {
+            SessionCommand::Replace {
                 range: None,
                 replacement: ReplacementText {
                     text: "text".into(),
@@ -1456,7 +1444,7 @@ mod tests {
         );
         assert_eq!(
             parse_command("delete").unwrap(),
-            AuditionCommand::Delete { range: None }
+            SessionCommand::Delete { range: None }
         );
         assert!(matches!(
             parse_command("1.2replace text"),
@@ -1476,7 +1464,7 @@ mod tests {
     fn quoted_replacement_controls_boundaries_and_escapes_quotes_and_backslashes() {
         assert_eq!(
             parse_command(r#"replace " exact \"text\"\\ ""#).unwrap(),
-            AuditionCommand::Replace {
+            SessionCommand::Replace {
                 range: None,
                 replacement: ReplacementText {
                     text: " exact \"text\"\\ ".into(),
