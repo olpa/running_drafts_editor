@@ -581,7 +581,7 @@ fn open_audio_reports_token_fallback_and_keeps_chunk_text_selectable() {
     .unwrap();
 
     let output = String::from_utf8(output).unwrap();
-    assert!(output.contains("1.1  pseudo  \"visible text\""));
+    assert!(output.contains("1.1      -  \"visible text\""));
     assert!(output.contains("selected 1.1"));
     assert_eq!(
         String::from_utf8(errors).unwrap(),
@@ -676,7 +676,7 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     assert!(output.contains("⟪four-afour-b ⟦2@1⟧tail ⟦2@2⟧⟫"));
     assert!(output.contains("selected 2@1,2@2"));
     assert!(output.contains("four-afour-b ⟪⟦2@1⟧tail⟫ ⟦2@2⟧"));
-    assert!(output.contains("2.1  rec"));
+    assert!(output.contains("2.1  0.900"));
     assert!(output.contains("2@1  marker  chunk boundary"));
     assert!(output.contains("1@1  00:00:00.000 – 00:00:01.000"));
     assert!(output.contains("long pause (2.000 s)"));

@@ -224,11 +224,13 @@ fn token_selection_edge(
 }
 
 pub(crate) fn render_tokens(
+    document: &Document,
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     output: &mut impl Write,
 ) -> io::Result<()> {
     render_token_range(
+        document,
         paragraph,
         paragraph_number,
         0,
@@ -238,6 +240,7 @@ pub(crate) fn render_tokens(
 }
 
 pub(crate) fn render_token_range(
+    document: &Document,
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     start: usize,
@@ -263,12 +266,18 @@ pub(crate) fn render_token_range(
         }
         if (start..end_exclusive).contains(&token_index) {
             if let Some(token) = paragraph.tokens().get(token_index) {
+                let probability = document
+                    .recognition_token_evidence()
+                    .iter()
+                    .find(|evidence| evidence.token_id() == token.id())
+                    .map(|evidence| format!("{:.3}", evidence.probability()))
+                    .unwrap_or_else(|| "-".into());
                 writeln!(
                     output,
-                    "{}.{}  {:<6}  {:?}",
+                    "{}.{}  {:>5}  {:?}",
                     paragraph_number,
                     token_index + 1,
-                    token.kind_label(),
+                    probability,
                     token.text()
                 )?;
             }

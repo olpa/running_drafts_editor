@@ -210,10 +210,10 @@ fn bare_tokens_lists_the_selection_with_five_tokens_of_numbered_context() {
     let output = String::from_utf8(result.stdout).unwrap();
     let errors = String::from_utf8(result.stderr).unwrap();
     assert!(errors.contains("tokens requires an active token selection or a paragraph address M"));
-    assert!(output.contains("1.2  pseudo"));
-    assert!(output.contains("2.7  pseudo"));
-    assert!(!output.contains("1.1  pseudo"));
-    assert!(!output.contains("2.8  pseudo"));
+    assert!(output.contains("1.2      -"));
+    assert!(output.contains("2.7      -"));
+    assert!(!output.contains("1.1      -"));
+    assert!(!output.contains("2.8      -"));
 }
 
 #[test]

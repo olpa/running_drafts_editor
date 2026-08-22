@@ -128,7 +128,8 @@ large design.
   moves the caret, `Aselect` selects a token, token range, paragraph, or marker,
   and `Mtokens` lists the individually addressable tokens in a paragraph. Bare
   `tokens` lists the active token selection with five surrounding tokens on
-  each side, retaining paragraph-based token addresses.
+  each side, retaining paragraph-based token addresses. Token rows show accepted
+  recognition probability to three decimal places, or `-` when unavailable.
 - `edit` and `open-audio` enter the same interactive shell; `open-audio`
   supplies fresh recognition details as optional session context
   instead of maintaining a separate command loop.

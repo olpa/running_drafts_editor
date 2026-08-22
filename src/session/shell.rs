@@ -371,7 +371,7 @@ impl<'a> SessionState<'a> {
                 Err(error) => writeln!(errors, "{error}")?,
             },
             SessionCommand::Tokens(Some(number)) => match document.paragraph(number) {
-                Some(paragraph) => render_tokens(paragraph, number, output)?,
+                Some(paragraph) => render_tokens(document, paragraph, number, output)?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
             SessionCommand::Tokens(None) => match navigation.selected_token_endpoints(document) {
@@ -720,6 +720,7 @@ fn render_selected_tokens(
         let visible_end = context_end.min(paragraph_end);
         if visible_start < visible_end {
             render_token_range(
+                document,
                 paragraph,
                 index + 1,
                 visible_start - paragraph_start,
