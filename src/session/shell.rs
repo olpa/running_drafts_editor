@@ -19,11 +19,14 @@ use super::{
     editing::{
         alternative_address, apply_chunk_merge, apply_chunk_split, apply_history,
         apply_paragraph_merge, apply_paragraph_split, chunk_prefix, edit_range,
-        preserve_boundary_whitespace, render_alternatives, render_document,
-        render_document_with_navigation, resolve_current_chunk, run_corrected_refresh, run_refresh,
+        preserve_boundary_whitespace, render_alternatives, resolve_current_chunk,
+        run_corrected_refresh, run_refresh,
     },
+    issues::{self, IssueThresholds},
     playback::{repeat_document_replay, start_document_replay, AudioPlayer, ReplayStart},
-    render::{render_chunk_info, render_paragraph, render_recognition_document, render_tokens},
+    render::{
+        render_chunk_info, render_issue_paragraph, render_recognition_document, render_tokens,
+    },
 };
 
 pub struct SessionContext<'a> {
@@ -73,6 +76,8 @@ struct SessionState<'a> {
     last_playback: Option<super::playback::LastPlayback>,
     language: String,
     recognizer: Option<RecognizerSession>,
+    issue_thresholds: IssueThresholds,
+    color: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,6 +92,7 @@ impl<'a> SessionState<'a> {
         context: SessionContext<'a>,
         output: &mut impl Write,
         errors: &mut impl Write,
+        color: bool,
     ) -> io::Result<Option<Self>> {
         let SessionContext {
             document_path,
@@ -98,7 +104,13 @@ impl<'a> SessionState<'a> {
         let document_path = document_path.map(Path::to_path_buf);
         match start {
             SessionStart::SavedDocument => {
-                render_document(&document, output)?;
+                render_session_document(
+                    &document,
+                    None,
+                    IssueThresholds::default(),
+                    color,
+                    output,
+                )?;
                 for source in document.audio_sources() {
                     match source.path() {
                         None => writeln!(
@@ -118,7 +130,26 @@ impl<'a> SessionState<'a> {
             }
             SessionStart::RecognizedAudio { source } => {
                 let run = recognition_run.expect("recognized-audio context has a recognition run");
-                render_recognition_document(run, &document, source, output)?;
+                if color {
+                    writeln!(
+                        output,
+                        "Built {} chunks from {}",
+                        run.chunks.len(),
+                        source.display()
+                    )?;
+                    if !run.chunks.is_empty() {
+                        writeln!(output)?;
+                        render_session_document(
+                            &document,
+                            None,
+                            IssueThresholds::default(),
+                            true,
+                            output,
+                        )?;
+                    }
+                } else {
+                    render_recognition_document(run, &document, source, output)?;
+                }
                 for fallback in document.token_fallbacks() {
                     let address = document
                         .marker_address_for_chunk(fallback.chunk_id())
@@ -157,6 +188,8 @@ impl<'a> SessionState<'a> {
             last_playback: None,
             language: "auto".to_string(),
             recognizer,
+            issue_thresholds: IssueThresholds::default(),
+            color,
         }))
     }
 
@@ -178,14 +211,153 @@ impl<'a> SessionState<'a> {
             last_playback,
             language,
             recognizer,
+            issue_thresholds,
+            color,
         } = self;
         let append = matches!(&command, SessionCommand::Append { .. });
         match command {
-            SessionCommand::Print(None) => {
-                render_document_with_navigation(document, Some(navigation), output)?
+            SessionCommand::NextIssue => {
+                issues::navigate(document, navigation, *issue_thresholds, true, output)?
             }
+            SessionCommand::PreviousIssue => {
+                issues::navigate(document, navigation, *issue_thresholds, false, output)?
+            }
+            SessionCommand::Issues => issues::list(document, *issue_thresholds, output)?,
+            SessionCommand::IssueProbability { level, value } => match (level, value) {
+                (None, None) => writeln!(
+                    output,
+                    "issue-prob red {} orange {}",
+                    issue_thresholds.red, issue_thresholds.orange
+                )?,
+                (Some(level), Some(value)) => {
+                    let parsed = value
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|v| (0.0..=1.0).contains(v));
+                    let Some(parsed) = parsed else {
+                        writeln!(
+                            errors,
+                            "issue-prob value must be a probability from 0.0 through 1.0"
+                        )?;
+                        return Ok(SessionControl::Continue);
+                    };
+                    let mut changed = *issue_thresholds;
+                    match level.as_str() {
+                        "red" => changed.red = parsed,
+                        "orange" => changed.orange = parsed,
+                        _ => {
+                            writeln!(errors, "issue-prob level must be red or orange")?;
+                            return Ok(SessionControl::Continue);
+                        }
+                    }
+                    if changed.red >= changed.orange {
+                        writeln!(errors, "issue-prob red must be less than orange")?;
+                        return Ok(SessionControl::Continue);
+                    }
+                    *issue_thresholds = changed;
+                    writeln!(
+                        output,
+                        "issue-prob red {} orange {}",
+                        changed.red, changed.orange
+                    )?;
+                }
+                _ => unreachable!(),
+            },
+            SessionCommand::Ignore(number) => {
+                let values = issues::entries(document, *issue_thresholds);
+                let selected = if let Some(number) = number {
+                    let Some(issue) = values.get(number - 1) else {
+                        writeln!(
+                            errors,
+                            "unknown issue {number}; run issues for current numbers"
+                        )?;
+                        return Ok(SessionControl::Continue);
+                    };
+                    if !issue.is_open() {
+                        writeln!(errors, "issue {number} is already resolved")?;
+                        return Ok(SessionControl::Continue);
+                    }
+                    navigation
+                        .select(
+                            document,
+                            &crate::navigation::Address::TokenRange {
+                                start: issue.start,
+                                end: issue.end,
+                            },
+                        )
+                        .unwrap();
+                    issue.clone()
+                } else {
+                    let Ok((start, end)) = navigation.selected_token_range(document) else {
+                        writeln!(errors,"ignore requires the current selection to equal one complete open issue")?;
+                        return Ok(SessionControl::Continue);
+                    };
+                    let Some(issue) = values
+                        .into_iter()
+                        .find(|i| i.is_open() && i.start == start && i.end == end)
+                    else {
+                        writeln!(errors,"ignore requires the current selection to equal one complete open issue")?;
+                        return Ok(SessionControl::Continue);
+                    };
+                    issue
+                };
+                document.resolve_issue(selected.token_ids);
+                writeln!(
+                    output,
+                    "resolved {}.{},{}.{}",
+                    selected.start.paragraph,
+                    selected.start.token,
+                    selected.end.paragraph,
+                    selected.end.token
+                )?;
+            }
+            SessionCommand::Unignore(number) => {
+                let values = issues::entries(document, *issue_thresholds);
+                let Some(issue) = values.get(number - 1) else {
+                    writeln!(
+                        errors,
+                        "unknown issue {number}; run issues for current numbers"
+                    )?;
+                    return Ok(SessionControl::Continue);
+                };
+                let Some(index) = issue.resolved_index else {
+                    writeln!(errors, "issue {number} is open")?;
+                    return Ok(SessionControl::Continue);
+                };
+                let issue = issue.clone();
+                navigation
+                    .select(
+                        document,
+                        &crate::navigation::Address::TokenRange {
+                            start: issue.start,
+                            end: issue.end,
+                        },
+                    )
+                    .unwrap();
+                document.reopen_issue(index);
+                writeln!(
+                    output,
+                    "reopened {}.{},{}.{}",
+                    issue.start.paragraph, issue.start.token, issue.end.paragraph, issue.end.token
+                )?;
+            }
+            SessionCommand::Print(None) => render_session_document(
+                document,
+                Some(navigation),
+                *issue_thresholds,
+                *color,
+                output,
+            )?,
             SessionCommand::Print(Some(number)) => match document.paragraph(number) {
-                Some(paragraph) => render_paragraph(paragraph, number, Some(navigation), output)?,
+                Some(paragraph) => render_issue_paragraph(
+                    document,
+                    paragraph,
+                    number,
+                    Some(navigation),
+                    *issue_thresholds,
+                    *color,
+                    output,
+                )?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
             SessionCommand::Move(address) => match navigation.move_to(document, &address) {
@@ -466,7 +638,13 @@ impl<'a> SessionState<'a> {
                         "loaded {}",
                         document_path.as_ref().unwrap().display()
                     )?;
-                    render_document_with_navigation(document, Some(navigation), output)?;
+                    render_session_document(
+                        document,
+                        Some(navigation),
+                        *issue_thresholds,
+                        *color,
+                        output,
+                    )?;
                 }
                 Err(error) => writeln!(errors, "{error}")?,
             },
@@ -476,6 +654,30 @@ impl<'a> SessionState<'a> {
         }
         Ok(SessionControl::Continue)
     }
+}
+
+fn render_session_document(
+    document: &Document,
+    navigation: Option<&NavigationState>,
+    settings: IssueThresholds,
+    color: bool,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    for (index, paragraph) in document.paragraphs().iter().enumerate() {
+        render_issue_paragraph(
+            document,
+            paragraph,
+            index + 1,
+            navigation,
+            settings,
+            color,
+            output,
+        )?;
+        if index + 1 < document.paragraphs().len() {
+            writeln!(output)?;
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -488,7 +690,7 @@ pub fn run_session(
     player: &mut impl AudioPlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    let Some(mut state) = SessionState::new(document, context, output, errors)? else {
+    let Some(mut state) = SessionState::new(document, context, output, errors, false)? else {
         return Ok(());
     };
     loop {
@@ -523,7 +725,7 @@ pub fn run_readline_session(
     player: &mut impl AudioPlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    let Some(mut state) = SessionState::new(document, context, output, errors)? else {
+    let Some(mut state) = SessionState::new(document, context, output, errors, true)? else {
         return Ok(());
     };
     let mut editor = DefaultEditor::new().map_err(readline_io_error)?;
@@ -596,6 +798,7 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
         output,
         "History: undo | Nundo | redo | Nredo (N is a positive maximum count)"
     )?;
+    writeln!(output, "Issues: next | prev | issues | ignore | Nignore | Nunignore | issue-prob [red|orange VALUE]")?;
     writeln!(
         output,
         "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  [M.N]alternatives | alts   list alternatives for one token/current token\n  [M.N]choose N              correct one token and refresh its chunk\n  M.Ninsert TEXT             correct before M.N and refresh its chunk\n  M.Nappend TEXT             correct after M.N and refresh its chunk\n  [M.N,M.U]replace TEXT      replace a one-chunk range and refresh\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            disabled pending audio-backed deletion\n  [M@N]refresh               re-recognize one complete replay chunk\n  model [PATH]               show or load the session model\n  language [CODE]            show or set the session language\n  [M.N]split | [M.N]isplit   split chunk before token/current caret\n  [M.N]asplit                split chunk after token/current caret\n  [M@N]parasplit             split paragraph after marker/current marker\n  Mmerge                     merge paragraph M with M+1 exactly\n  M@Nmerge                   merge chunks around marker M@N when legal\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"

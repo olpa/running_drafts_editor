@@ -63,6 +63,15 @@ pub(crate) enum SessionCommand {
     },
     Undo(usize),
     Redo(usize),
+    NextIssue,
+    PreviousIssue,
+    Issues,
+    Ignore(Option<usize>),
+    Unignore(usize),
+    IssueProbability {
+        level: Option<String>,
+        value: Option<String>,
+    },
     Save(Option<PathBuf>),
     Load(PathBuf),
     Help,
@@ -111,6 +120,39 @@ pub(crate) enum CommandParseError {
 
 pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseError> {
     let compact = input.trim();
+    if compact == "issue-prob" {
+        return Ok(SessionCommand::IssueProbability {
+            level: None,
+            value: None,
+        });
+    }
+    if let Some(arguments) = compact.strip_prefix("issue-prob ") {
+        let mut parts = arguments.split_whitespace();
+        let level = parts.next().map(str::to_owned);
+        let value = parts.next().map(str::to_owned);
+        if level.is_none() || value.is_none() || parts.next().is_some() {
+            return Err(CommandParseError::ExtraArguments(
+                "issue-prob requires red VALUE or orange VALUE".into(),
+            ));
+        }
+        return Ok(SessionCommand::IssueProbability { level, value });
+    }
+    for (suffix, unignore) in [("unignore", true), ("ignore", false)] {
+        if let Some(number) = compact.strip_suffix(suffix).filter(|v| !v.is_empty()) {
+            if number.chars().all(|c| c.is_ascii_digit()) {
+                let number = number
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| CommandParseError::HistoryCountRequired(suffix.into()))?;
+                return Ok(if unignore {
+                    SessionCommand::Unignore(number)
+                } else {
+                    SessionCommand::Ignore(Some(number))
+                });
+            }
+        }
+    }
     for (suffix, command) in [
         ("undo", SessionCommand::Undo as fn(usize) -> SessionCommand),
         ("redo", SessionCommand::Redo as fn(usize) -> SessionCommand),
@@ -140,6 +182,23 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
     };
 
     match name.as_str() {
+        "next" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, SessionCommand::NextIssue)
+        }
+        "prev" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, SessionCommand::PreviousIssue)
+        }
+        "issues" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, SessionCommand::Issues)
+        }
+        "ignore" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, SessionCommand::Ignore(None))
+        }
+        "unignore" => Err(CommandParseError::AlternativeNumberRequired(name)),
         "model" => no_address(
             address,
             name,

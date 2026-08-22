@@ -95,6 +95,12 @@ large design.
   and becomes the default path for session `save`.
 
 - Async or refreshed recognition must not overwrite newer user edits.
+- Recognition tokens below the live red threshold form confidence issues, split
+  at paragraph and replay-chunk boundaries. `next`/`prev` navigate open issues;
+  `issues`, `ignore`, `Nignore`, and `Nunignore` list, resolve, and reopen them.
+  Resolutions persist as stable token ranges, are undoable, and are invalidated
+  when a member token is edited. Thresholds are session-only; resolved tokens
+  suppress red and orange confidence color.
 - Visible-token corrections synchronously re-recognize their one complete replay chunk with a forced decoder prefix; `refresh` does the same without a prefix. The operation keeps chunk structure, appends an immutable run, and installs new recognition truth atomically. Session model and language settings are not persisted, and `delete` is disabled pending audio-backed deletion semantics.
 - Forced-prefix correction uses one greedy decoder; normal transcription keeps
   five-beam search. Development builds retain verbose Whisper decode traces.

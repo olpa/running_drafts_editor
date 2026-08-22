@@ -9,6 +9,54 @@ use std::{
 use serde_json::json;
 
 #[test]
+fn confidence_issues_navigate_resolve_persist_and_undo_without_color_on_redirect() {
+    let directory = tempfile::tempdir().unwrap();
+    let document = directory.path().join("issues.rde.json");
+    let rid = |segment: &str, token: usize| json!({"kind":"recognition","run_id":"run","segment_id":segment,"token_index":token});
+    let token = |id: serde_json::Value, text: &str| json!({"id":id,"text":text,"origin":{"kind":"recognition"}});
+    let value = json!({
+        "schema":"rde-document/v1-experimental", "id":"document:issues",
+        "paragraphs":[
+          {"id":"p1","revision":1,"tokens":[token(rid("s",0),"bad\n"),token(rid("s",1),"two"),token(rid("s",2)," orange"),token(rid("s",3)," other")],"chunk_boundaries":[{"chunk_id":"c1","after_tokens":3},{"chunk_id":"c2","after_tokens":4}]},
+          {"id":"p2","revision":1,"tokens":[token(rid("t",0)," last")],"chunk_boundaries":[{"chunk_id":"c3","after_tokens":1}]}
+        ],
+        "recognition_token_evidence":[
+          {"token_id":rid("s",0),"recognition_token_id":1,"probability":0.149,"alternatives":[]},
+          {"token_id":rid("s",1),"recognition_token_id":2,"probability":0.10,"alternatives":[]},
+          {"token_id":rid("s",2),"recognition_token_id":3,"probability":0.15,"alternatives":[]},
+          {"token_id":rid("s",3),"recognition_token_id":4,"probability":0.01,"alternatives":[]},
+          {"token_id":rid("t",0),"recognition_token_id":5,"probability":0.01,"alternatives":[]}
+        ]
+    });
+    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
+        .args(["edit", document.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"issues\nnext\nnext\nnext\nprev\n1.1,1.2select\nignore\nissues\nundo\nissues\nredo\nissues\n1unignore\nissue-prob red 0.1\nissues\nissue-prob orange 0.1\nissue-prob\n1ignore\nsave\nq\n").unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(result.status.success());
+    let output = String::from_utf8(result.stdout).unwrap();
+    let errors = String::from_utf8(result.stderr).unwrap();
+    assert!(output.contains("1  open  \"bad\\ntwo\""));
+    assert!(output.contains("selected 1.4,1.4"));
+    assert!(output.contains("selected 1.1,1.2"));
+    assert!(output.contains("selected 1.1,1.2 (wrapped)"));
+    assert!(output.contains("selected 2.1,2.1 (wrapped)"));
+    assert!(output.contains("1  resolved  \"bad\\ntwo\""));
+    assert!(output.contains("reopened 1.1,1.2"));
+    assert!(output.contains("issue-prob red 0.1 orange 0.5"));
+    assert!(!output.contains("\u{1b}["));
+    assert!(errors.contains("issue-prob red must be less than orange"));
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(document).unwrap()).unwrap();
+    assert_eq!(saved["resolved_issues"].as_array().unwrap().len(), 1);
+    assert!(!saved.to_string().contains("issue-prob"));
+}
+
+#[test]
 fn lists_every_alternative_but_requires_a_model_before_choose() {
     let directory = tempfile::tempdir().unwrap();
     let document = directory.path().join("alternatives.rde.json");

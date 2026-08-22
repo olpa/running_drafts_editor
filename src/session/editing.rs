@@ -7,7 +7,6 @@ use crate::{
     document::Document,
     navigation::{Address, NavigationState, TokenAddress},
     recognition::{ChunkRefreshRequest, RecognizerSession},
-    session::render_paragraph,
 };
 
 pub(crate) fn preserve_boundary_whitespace(
@@ -466,24 +465,6 @@ pub(crate) fn apply_chunk_merge(
         }
         Err(error) => writeln!(errors, "chunk merge failed: {error}"),
     }
-}
-
-pub(crate) fn render_document(document: &Document, output: &mut impl Write) -> io::Result<()> {
-    render_document_with_navigation(document, None, output)
-}
-
-pub(crate) fn render_document_with_navigation(
-    document: &Document,
-    navigation: Option<&NavigationState>,
-    output: &mut impl Write,
-) -> io::Result<()> {
-    for (index, paragraph) in document.paragraphs().iter().enumerate() {
-        render_paragraph(paragraph, index + 1, navigation, output)?;
-        if index + 1 < document.paragraphs().len() {
-            writeln!(output)?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

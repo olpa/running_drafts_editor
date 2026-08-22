@@ -111,6 +111,8 @@ pub struct Document {
     recognition_token_evidence: Vec<RecognitionTokenEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recognition_runs: Vec<RecognitionRun>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    resolved_issues: Vec<ResolvedIssue>,
     #[serde(default, skip_serializing_if = "is_zero")]
     next_structure_id: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -133,6 +135,19 @@ struct EditableDocumentState {
     token_audio_mappings: Vec<TokenAudioMapping>,
     replay_chunks: Vec<ReplayChunk>,
     next_structure_id: u64,
+    #[serde(default)]
+    resolved_issues: Vec<ResolvedIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedIssue {
+    token_ids: Vec<VisibleTokenId>,
+}
+
+impl ResolvedIssue {
+    pub fn token_ids(&self) -> &[VisibleTokenId] {
+        &self.token_ids
+    }
 }
 
 impl Document {
@@ -269,6 +284,7 @@ impl Document {
             replay_chunks: Vec::new(),
             recognition_token_evidence: Vec::new(),
             recognition_runs: Vec::new(),
+            resolved_issues: Vec::new(),
             next_structure_id: 0,
             edit_history: Vec::new(),
             redo_history: Vec::new(),
@@ -326,6 +342,23 @@ impl Document {
     pub fn recognition_runs(&self) -> &[RecognitionRun] {
         &self.recognition_runs
     }
+    pub fn resolved_issues(&self) -> &[ResolvedIssue] {
+        &self.resolved_issues
+    }
+
+    pub fn resolve_issue(&mut self, token_ids: Vec<VisibleTokenId>) {
+        self.remember_editable_state();
+        self.resolved_issues.push(ResolvedIssue { token_ids });
+    }
+
+    pub fn reopen_issue(&mut self, index: usize) -> bool {
+        if index >= self.resolved_issues.len() {
+            return false;
+        }
+        self.remember_editable_state();
+        self.resolved_issues.remove(index);
+        true
+    }
 
     pub fn edit_history_len(&self) -> usize {
         self.edit_history.len()
@@ -342,6 +375,7 @@ impl Document {
             token_audio_mappings: self.token_audio_mappings.clone(),
             replay_chunks: self.replay_chunks.clone(),
             next_structure_id: self.next_structure_id,
+            resolved_issues: self.resolved_issues.clone(),
         }
     }
 
@@ -351,6 +385,7 @@ impl Document {
         self.token_audio_mappings = state.token_audio_mappings;
         self.replay_chunks = state.replay_chunks;
         self.next_structure_id = state.next_structure_id;
+        self.resolved_issues = state.resolved_issues;
     }
 
     fn remember_editable_state(&mut self) {
@@ -473,6 +508,8 @@ impl Document {
             .iter()
             .map(|t| t.id.clone())
             .collect::<Vec<_>>();
+        self.resolved_issues
+            .retain(|issue| !issue.token_ids.iter().any(|id| removed.contains(id)));
         let new_ids = tokens.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
         let delta = tokens.len() as isize - (end - start) as isize;
         let paragraph = &mut self.paragraphs[paragraph_number - 1];
@@ -1241,6 +1278,8 @@ impl Document {
             .iter()
             .map(|token| token.id.clone())
             .collect::<std::collections::HashSet<_>>();
+        self.resolved_issues
+            .retain(|issue| !issue.token_ids.iter().any(|id| removed_ids.contains(id)));
         let replacement = replacement.map(|text| VisibleToken {
             id: VisibleTokenId::Pseudo {
                 id: format!("edit:{}:{new_revision}", paragraph.id),
@@ -1461,6 +1500,9 @@ impl Eq for RecognitionTokenEvidence {}
 impl RecognitionTokenEvidence {
     pub fn token_id(&self) -> &VisibleTokenId {
         &self.token_id
+    }
+    pub fn probability(&self) -> f32 {
+        self.probability
     }
 }
 

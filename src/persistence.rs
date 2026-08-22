@@ -236,6 +236,22 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentIoError> {
             )));
         }
     }
+    for issue in document.resolved_issues() {
+        if issue.token_ids().is_empty() {
+            return Err(DocumentIoError::Invalid(
+                "resolved issue has no tokens".into(),
+            ));
+        }
+        if issue
+            .token_ids()
+            .iter()
+            .any(|id| !token_ids.contains(&token_id_key(id)))
+        {
+            return Err(DocumentIoError::Invalid(
+                "resolved issue refers to an unknown visible token".into(),
+            ));
+        }
+    }
     if !document.replay_chunks().is_empty() {
         let mut replay_chunk_ids = HashSet::new();
         for chunk in document.replay_chunks() {

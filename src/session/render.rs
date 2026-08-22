@@ -60,6 +60,34 @@ pub(crate) fn render_paragraph(
     navigation: Option<&NavigationState>,
     output: &mut impl Write,
 ) -> io::Result<()> {
+    render_paragraph_inner(paragraph, paragraph_number, navigation, None, output)
+}
+
+pub(crate) fn render_issue_paragraph(
+    document: &Document,
+    paragraph: &crate::document::Paragraph,
+    paragraph_number: usize,
+    navigation: Option<&NavigationState>,
+    settings: super::issues::IssueThresholds,
+    color: bool,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    render_paragraph_inner(
+        paragraph,
+        paragraph_number,
+        navigation,
+        color.then_some((document, settings)),
+        output,
+    )
+}
+
+fn render_paragraph_inner(
+    paragraph: &crate::document::Paragraph,
+    paragraph_number: usize,
+    navigation: Option<&NavigationState>,
+    issues: Option<(&Document, super::issues::IssueThresholds)>,
+    output: &mut impl Write,
+) -> io::Result<()> {
     let paragraph_selected = navigation.is_some_and(|state| {
         matches!(state.selection(), Some(Selection::Paragraph { paragraph_id, paragraph_revision })
             if paragraph_id == paragraph.id() && *paragraph_revision == paragraph.revision())
@@ -145,7 +173,23 @@ pub(crate) fn render_paragraph(
             } else if token_caret {
                 write!(output, "‹")?;
             }
+            let confidence = issues.and_then(|(document, settings)| {
+                super::issues::confidence(document, token.id(), settings)
+            });
+            if let Some(confidence) = confidence {
+                write!(
+                    output,
+                    "{}",
+                    match confidence {
+                        super::issues::Confidence::Red => "\x1b[31m",
+                        super::issues::Confidence::Orange => "\x1b[38;5;208m",
+                    }
+                )?;
+            }
             write!(output, "{}", token.text())?;
+            if confidence.is_some() {
+                write!(output, "\x1b[0m")?;
+            }
             if selection_end {
                 write!(output, "⟫")?;
             } else if token_caret {
