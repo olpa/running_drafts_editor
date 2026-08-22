@@ -26,7 +26,7 @@ pub(crate) enum SessionCommand {
     Print(Option<usize>),
     Move(Address),
     Select(Address),
-    Tokens(usize),
+    Tokens(Option<usize>),
     Alternatives {
         address: Option<TokenAddress>,
     },
@@ -63,6 +63,15 @@ pub(crate) enum SessionCommand {
     },
     Undo(usize),
     Redo(usize),
+    NextIssue,
+    PreviousIssue,
+    Issues,
+    Ignore(Option<usize>),
+    Unignore(usize),
+    IssueProbability {
+        level: Option<String>,
+        value: Option<String>,
+    },
     Save(Option<PathBuf>),
     Load(PathBuf),
     Help,
@@ -111,6 +120,39 @@ pub(crate) enum CommandParseError {
 
 pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseError> {
     let compact = input.trim();
+    if compact == "issue-prob" {
+        return Ok(SessionCommand::IssueProbability {
+            level: None,
+            value: None,
+        });
+    }
+    if let Some(arguments) = compact.strip_prefix("issue-prob ") {
+        let mut parts = arguments.split_whitespace();
+        let level = parts.next().map(str::to_owned);
+        let value = parts.next().map(str::to_owned);
+        if level.is_none() || value.is_none() || parts.next().is_some() {
+            return Err(CommandParseError::ExtraArguments(
+                "issue-prob requires red VALUE or orange VALUE".into(),
+            ));
+        }
+        return Ok(SessionCommand::IssueProbability { level, value });
+    }
+    for (suffix, unignore) in [("unignore", true), ("ignore", false), ("resolve", false)] {
+        if let Some(number) = compact.strip_suffix(suffix).filter(|v| !v.is_empty()) {
+            if number.chars().all(|c| c.is_ascii_digit()) {
+                let number = number
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| CommandParseError::HistoryCountRequired(suffix.into()))?;
+                return Ok(if unignore {
+                    SessionCommand::Unignore(number)
+                } else {
+                    SessionCommand::Ignore(Some(number))
+                });
+            }
+        }
+    }
     for (suffix, command) in [
         ("undo", SessionCommand::Undo as fn(usize) -> SessionCommand),
         ("redo", SessionCommand::Redo as fn(usize) -> SessionCommand),
@@ -140,6 +182,23 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
     };
 
     match name.as_str() {
+        "next" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, SessionCommand::NextIssue)
+        }
+        "prev" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, SessionCommand::PreviousIssue)
+        }
+        "issues" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, SessionCommand::Issues)
+        }
+        "ignore" | "resolve" => {
+            reject_arguments(&name, &arguments)?;
+            no_address(address, name, SessionCommand::Ignore(None))
+        }
+        "unignore" => Err(CommandParseError::AlternativeNumberRequired(name)),
         "model" => no_address(
             address,
             name,
@@ -180,7 +239,7 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
                 SessionCommand::Load(PathBuf::from(arguments)),
             )
         }
-        "print" | "p" | "list" | "l" => {
+        "print" | "show" | "p" | "list" | "l" => {
             reject_arguments(&name, &arguments)?;
             match address {
                 None => Ok(SessionCommand::Print(None)),
@@ -233,23 +292,20 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
         "tokens" => {
             reject_arguments(&name, &arguments)?;
             match address {
-                Some(Address::Paragraph(paragraph)) => Ok(SessionCommand::Tokens(paragraph)),
+                Some(Address::Paragraph(paragraph)) => Ok(SessionCommand::Tokens(Some(paragraph))),
                 Some(address) => Err(CommandParseError::InvalidAddress {
                     command: name,
                     address,
                     expected: "a paragraph address M",
                 }),
-                None => Err(CommandParseError::AddressRequired {
-                    command: name,
-                    expected: "a paragraph address M",
-                }),
+                None => Ok(SessionCommand::Tokens(None)),
             }
         }
         "alternatives" | "alts" => {
             reject_arguments(&name, &arguments)?;
             optional_token(address, name).map(|address| SessionCommand::Alternatives { address })
         }
-        "choose" => {
+        "choose" | "set" => {
             let candidate = arguments
                 .parse::<usize>()
                 .ok()
@@ -649,6 +705,37 @@ mod tests {
             }
         );
         assert_eq!(parse_command("list").unwrap(), SessionCommand::Print(None));
+        assert_eq!(parse_command("show").unwrap(), SessionCommand::Print(None));
+        assert_eq!(parse_command("print").unwrap(), SessionCommand::Print(None));
+        assert_eq!(
+            parse_command("2show").unwrap(),
+            SessionCommand::Print(Some(2))
+        );
+        assert_eq!(
+            parse_command("resolve").unwrap(),
+            SessionCommand::Ignore(None)
+        );
+        assert_eq!(
+            parse_command("3resolve").unwrap(),
+            SessionCommand::Ignore(Some(3))
+        );
+        assert_eq!(
+            parse_command("set 4").unwrap(),
+            SessionCommand::ChooseAlternative {
+                address: None,
+                candidate: 4,
+            }
+        );
+        assert_eq!(
+            parse_command("2.3set 5").unwrap(),
+            SessionCommand::ChooseAlternative {
+                address: Some(TokenAddress {
+                    paragraph: 2,
+                    token: 3,
+                }),
+                candidate: 5,
+            }
+        );
         assert_eq!(parse_command("h").unwrap(), SessionCommand::Help);
         assert_eq!(
             parse_command("save document.rde.json").unwrap(),
@@ -725,7 +812,14 @@ mod tests {
                 },
             })
         );
-        assert_eq!(parse_command("2tokens").unwrap(), SessionCommand::Tokens(2));
+        assert_eq!(
+            parse_command("2tokens").unwrap(),
+            SessionCommand::Tokens(Some(2))
+        );
+        assert_eq!(
+            parse_command("tokens").unwrap(),
+            SessionCommand::Tokens(None)
+        );
         assert_eq!(
             parse_command("2help").unwrap_err(),
             CommandParseError::UnexpectedAddress("help".into())

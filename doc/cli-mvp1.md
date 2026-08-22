@@ -110,10 +110,15 @@ immutable evidence.
 Record a short correction, recognize it, and replace the selected text. On
 failure or a stale selection, leave visible text unchanged.
 
-## Navigate and dismiss issues
+## [x] Navigate and dismiss issues
 
 Support next issue, previous issue, and intentional ignore. Start with simple
 confidence and processing-failure signals without fixing a final ranking rule.
+
+The first signal is a maximal run of low-probability recognition tokens, split
+by paragraph and replay-chunk boundaries. Red runs can be navigated, listed,
+resolved, reopened, and restored through undo. Red and orange thresholds are
+live session settings. Processing failures remain future work.
 
 ## Search visible text
 

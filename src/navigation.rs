@@ -361,6 +361,17 @@ impl NavigationState {
         &self,
         document: &Document,
     ) -> Result<(TokenAddress, TokenAddress), NavigationError> {
+        let (start, end) = self.selected_token_endpoints(document)?;
+        if start.paragraph != end.paragraph {
+            return Err(NavigationError::CrossParagraphSelection);
+        }
+        Ok((start, end))
+    }
+
+    pub fn selected_token_endpoints(
+        &self,
+        document: &Document,
+    ) -> Result<(TokenAddress, TokenAddress), NavigationError> {
         let Some(Selection::Tokens {
             start,
             end_inclusive,
@@ -369,42 +380,13 @@ impl NavigationState {
         else {
             return Err(NavigationError::NoTokenSelection);
         };
-        if start.paragraph_id != end_inclusive.paragraph_id {
-            return Err(NavigationError::CrossParagraphSelection);
-        }
-        let paragraph_index = document
-            .paragraphs()
-            .iter()
-            .position(|paragraph| {
-                paragraph.id() == start.paragraph_id
-                    && paragraph.revision() == start.paragraph_revision
-                    && paragraph.revision() == end_inclusive.paragraph_revision
-            })
-            .ok_or(NavigationError::StaleSelection)?;
-        let paragraph = &document.paragraphs()[paragraph_index];
-        let start_index = paragraph
-            .tokens()
-            .iter()
-            .position(|token| token.id() == &start.token_id)
-            .ok_or(NavigationError::StaleSelection)?;
-        let end_index = paragraph
-            .tokens()
-            .iter()
-            .position(|token| token.id() == &end_inclusive.token_id)
-            .ok_or(NavigationError::StaleSelection)?;
-        if start_index > end_index {
+        let start = stable_token_address(document, start).ok_or(NavigationError::StaleSelection)?;
+        let end =
+            stable_token_address(document, end_inclusive).ok_or(NavigationError::StaleSelection)?;
+        if (start.paragraph, start.token) > (end.paragraph, end.token) {
             return Err(NavigationError::StaleSelection);
         }
-        Ok((
-            TokenAddress {
-                paragraph: paragraph_index + 1,
-                token: start_index + 1,
-            },
-            TokenAddress {
-                paragraph: paragraph_index + 1,
-                token: end_index + 1,
-            },
-        ))
+        Ok((start, end))
     }
 
     pub fn current_token_address(

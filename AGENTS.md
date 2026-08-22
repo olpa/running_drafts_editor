@@ -71,7 +71,8 @@ large design.
   any numbered candidate as one indivisible pseudo-token. An empty candidate
   remains an addressable empty pseudo-token. Conflicting edits hide the source
   token's alternatives without deleting their persisted immutable evidence.
-  Recognition captures 20 top candidates per token by default.
+  Recognition captures 20 top candidates per token by default. `[M.N]set U` is
+  an exact synonym of `[M.N]choose U`.
 - Character offsets, character spans, and partial-token positions are not part
   of the document, selection, editing, mapping, replay, or persistence model.
   Token text is opaque to these operations.
@@ -95,6 +96,14 @@ large design.
   and becomes the default path for session `save`.
 
 - Async or refreshed recognition must not overwrite newer user edits.
+- Recognition tokens below the live red threshold form confidence issues, split
+  at paragraph and replay-chunk boundaries. `next`/`prev` navigate open issues;
+  `issues`, `ignore`/`resolve`, `Nignore`/`Nresolve`, and `Nunignore` list,
+  resolve, and reopen them. Resolving automatically selects the next open issue,
+  wrapping in document order when needed.
+  Resolutions persist as stable token ranges, are undoable, and are invalidated
+  when a member token is edited. Thresholds are session-only; resolved tokens
+  suppress red and orange confidence color.
 - Visible-token corrections synchronously re-recognize their one complete replay chunk with a forced decoder prefix; `refresh` does the same without a prefix. The operation keeps chunk structure, appends an immutable run, and installs new recognition truth atomically. Session model and language settings are not persisted, and `delete` is disabled pending audio-backed deletion semantics.
 - Forced-prefix correction uses one greedy decoder; normal transcription keeps
   five-beam search. Development builds retain verbose Whisper decode traces.
@@ -105,19 +114,27 @@ large design.
   16 kHz audio before recognition.
 - Chunk boundaries are derived during Whisper recognition from timestamped
   decoded segments; there is no separate pre-recognition planner.
-- A missing or unreadable CLI model is a preflight error.
+- A missing or unreadable CLI model is a preflight error. `edit --model` and
+  `model PATH` validate and remember the path without loading Whisper; the
+  session loads it lazily on the first correction or refresh that needs it.
 - `rde open-audio <audio.wav> --model <whisper.bin>` runs Whisper,
   lists accepted decoded segments with text and timestamp-derived sample ranges,
   and plays them through a replaceable, ffplay-compatible subprocess selected
   with `--player`.
 - The dumb-terminal shell uses an `ed`-inspired address-first grammar at the
-  `rde>` prompt. `M.N` addresses a visible token, `M@N` a chunk marker, and
+  `rde>` prompt. `print`, `list`, and `show` are synonyms for document display.
+  `M.N` addresses a visible token, `M@N` a chunk marker, and
   `M.N,M.U` an inclusive displayed token range. Commands may attach to an
   address or follow it after whitespace. `p` prints the document, `Mp` prints a
   paragraph, and `M@Nplay` plays the complete chunk immediately to the left of
   marker `M@N`; `M@Ninfo` inspects that chunk. A bare token or marker address
   moves the caret, `Aselect` selects a token, token range, paragraph, or marker,
-  and `Mtokens` lists the individually addressable tokens in a paragraph.
+  and `Mtokens` lists the individually addressable tokens in a paragraph. Bare
+  `tokens` lists the active token selection with five surrounding tokens on
+  each side, retaining paragraph-based token addresses. Token rows show accepted
+  recognition probability to three decimal places, or `-` when unavailable.
+  Interactive token listings apply the same live confidence colors as document
+  rendering; redirected and non-color listings contain no terminal controls.
 - `edit` and `open-audio` enter the same interactive shell; `open-audio`
   supplies fresh recognition details as optional session context
   instead of maintaining a separate command loop.

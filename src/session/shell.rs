@@ -19,11 +19,15 @@ use super::{
     editing::{
         alternative_address, apply_chunk_merge, apply_chunk_split, apply_history,
         apply_paragraph_merge, apply_paragraph_split, chunk_prefix, edit_range,
-        preserve_boundary_whitespace, render_alternatives, render_document,
-        render_document_with_navigation, resolve_current_chunk, run_corrected_refresh, run_refresh,
+        preserve_boundary_whitespace, render_alternatives, resolve_current_chunk,
+        run_corrected_refresh, run_refresh,
     },
+    issues::{self, IssueThresholds},
     playback::{repeat_document_replay, start_document_replay, AudioPlayer, ReplayStart},
-    render::{render_chunk_info, render_paragraph, render_recognition_document, render_tokens},
+    render::{
+        render_chunk_info, render_issue_paragraph, render_recognition_document, render_token_range,
+        render_tokens,
+    },
 };
 
 pub struct SessionContext<'a> {
@@ -73,6 +77,9 @@ struct SessionState<'a> {
     last_playback: Option<super::playback::LastPlayback>,
     language: String,
     recognizer: Option<RecognizerSession>,
+    model_path: Option<PathBuf>,
+    issue_thresholds: IssueThresholds,
+    color: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,6 +94,7 @@ impl<'a> SessionState<'a> {
         context: SessionContext<'a>,
         output: &mut impl Write,
         errors: &mut impl Write,
+        color: bool,
     ) -> io::Result<Option<Self>> {
         let SessionContext {
             document_path,
@@ -98,7 +106,13 @@ impl<'a> SessionState<'a> {
         let document_path = document_path.map(Path::to_path_buf);
         match start {
             SessionStart::SavedDocument => {
-                render_document(&document, output)?;
+                render_session_document(
+                    &document,
+                    None,
+                    IssueThresholds::default(),
+                    color,
+                    output,
+                )?;
                 for source in document.audio_sources() {
                     match source.path() {
                         None => writeln!(
@@ -118,7 +132,26 @@ impl<'a> SessionState<'a> {
             }
             SessionStart::RecognizedAudio { source } => {
                 let run = recognition_run.expect("recognized-audio context has a recognition run");
-                render_recognition_document(run, &document, source, output)?;
+                if color {
+                    writeln!(
+                        output,
+                        "Built {} chunks from {}",
+                        run.chunks.len(),
+                        source.display()
+                    )?;
+                    if !run.chunks.is_empty() {
+                        writeln!(output)?;
+                        render_session_document(
+                            &document,
+                            None,
+                            IssueThresholds::default(),
+                            true,
+                            output,
+                        )?;
+                    }
+                } else {
+                    render_recognition_document(run, &document, source, output)?;
+                }
                 for fallback in document.token_fallbacks() {
                     let address = document
                         .marker_address_for_chunk(fallback.chunk_id())
@@ -139,15 +172,15 @@ impl<'a> SessionState<'a> {
         }
         writeln!(output, "Type 'help' for session commands.")?;
         let navigation = NavigationState::new(&document);
-        let recognizer = match model {
-            Some(path) => match RecognizerSession::load(path, &RecognitionConfig::default()) {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    return Err(io::Error::other(format!("could not load model: {error}")));
-                }
-            },
-            None => None,
-        };
+        let model_path = model.map(Path::to_path_buf);
+        if let Some(path) = &model_path {
+            std::fs::File::open(path).map_err(|error| {
+                io::Error::other(format!(
+                    "could not open model '{}': {error}",
+                    path.display()
+                ))
+            })?;
+        }
         Ok(Some(Self {
             document,
             document_path,
@@ -156,7 +189,10 @@ impl<'a> SessionState<'a> {
             navigation,
             last_playback: None,
             language: "auto".to_string(),
-            recognizer,
+            recognizer: None,
+            model_path,
+            issue_thresholds: IssueThresholds::default(),
+            color,
         }))
     }
 
@@ -178,14 +214,155 @@ impl<'a> SessionState<'a> {
             last_playback,
             language,
             recognizer,
+            model_path,
+            issue_thresholds,
+            color,
         } = self;
         let append = matches!(&command, SessionCommand::Append { .. });
         match command {
-            SessionCommand::Print(None) => {
-                render_document_with_navigation(document, Some(navigation), output)?
+            SessionCommand::NextIssue => {
+                issues::navigate(document, navigation, *issue_thresholds, true, output)?
             }
+            SessionCommand::PreviousIssue => {
+                issues::navigate(document, navigation, *issue_thresholds, false, output)?
+            }
+            SessionCommand::Issues => issues::list(document, *issue_thresholds, output)?,
+            SessionCommand::IssueProbability { level, value } => match (level, value) {
+                (None, None) => writeln!(
+                    output,
+                    "issue-prob red {} orange {}",
+                    issue_thresholds.red, issue_thresholds.orange
+                )?,
+                (Some(level), Some(value)) => {
+                    let parsed = value
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|v| (0.0..=1.0).contains(v));
+                    let Some(parsed) = parsed else {
+                        writeln!(
+                            errors,
+                            "issue-prob value must be a probability from 0.0 through 1.0"
+                        )?;
+                        return Ok(SessionControl::Continue);
+                    };
+                    let mut changed = *issue_thresholds;
+                    match level.as_str() {
+                        "red" => changed.red = parsed,
+                        "orange" => changed.orange = parsed,
+                        _ => {
+                            writeln!(errors, "issue-prob level must be red or orange")?;
+                            return Ok(SessionControl::Continue);
+                        }
+                    }
+                    if changed.red >= changed.orange {
+                        writeln!(errors, "issue-prob red must be less than orange")?;
+                        return Ok(SessionControl::Continue);
+                    }
+                    *issue_thresholds = changed;
+                    writeln!(
+                        output,
+                        "issue-prob red {} orange {}",
+                        changed.red, changed.orange
+                    )?;
+                }
+                _ => unreachable!(),
+            },
+            SessionCommand::Ignore(number) => {
+                let values = issues::entries(document, *issue_thresholds);
+                let selected = if let Some(number) = number {
+                    let Some(issue) = values.get(number - 1) else {
+                        writeln!(
+                            errors,
+                            "unknown issue {number}; run issues for current numbers"
+                        )?;
+                        return Ok(SessionControl::Continue);
+                    };
+                    if !issue.is_open() {
+                        writeln!(errors, "issue {number} is already resolved")?;
+                        return Ok(SessionControl::Continue);
+                    }
+                    navigation
+                        .select(
+                            document,
+                            &crate::navigation::Address::TokenRange {
+                                start: issue.start,
+                                end: issue.end,
+                            },
+                        )
+                        .unwrap();
+                    issue.clone()
+                } else {
+                    let Ok((start, end)) = navigation.selected_token_range(document) else {
+                        writeln!(errors,"ignore requires the current selection to equal one complete open issue")?;
+                        return Ok(SessionControl::Continue);
+                    };
+                    let Some(issue) = values
+                        .into_iter()
+                        .find(|i| i.is_open() && i.start == start && i.end == end)
+                    else {
+                        writeln!(errors,"ignore requires the current selection to equal one complete open issue")?;
+                        return Ok(SessionControl::Continue);
+                    };
+                    issue
+                };
+                document.resolve_issue(selected.token_ids);
+                writeln!(
+                    output,
+                    "resolved {}.{},{}.{}",
+                    selected.start.paragraph,
+                    selected.start.token,
+                    selected.end.paragraph,
+                    selected.end.token
+                )?;
+                issues::navigate(document, navigation, *issue_thresholds, true, output)?;
+            }
+            SessionCommand::Unignore(number) => {
+                let values = issues::entries(document, *issue_thresholds);
+                let Some(issue) = values.get(number - 1) else {
+                    writeln!(
+                        errors,
+                        "unknown issue {number}; run issues for current numbers"
+                    )?;
+                    return Ok(SessionControl::Continue);
+                };
+                let Some(index) = issue.resolved_index else {
+                    writeln!(errors, "issue {number} is open")?;
+                    return Ok(SessionControl::Continue);
+                };
+                let issue = issue.clone();
+                navigation
+                    .select(
+                        document,
+                        &crate::navigation::Address::TokenRange {
+                            start: issue.start,
+                            end: issue.end,
+                        },
+                    )
+                    .unwrap();
+                document.reopen_issue(index);
+                writeln!(
+                    output,
+                    "reopened {}.{},{}.{}",
+                    issue.start.paragraph, issue.start.token, issue.end.paragraph, issue.end.token
+                )?;
+            }
+            SessionCommand::Print(None) => render_session_document(
+                document,
+                Some(navigation),
+                *issue_thresholds,
+                *color,
+                output,
+            )?,
             SessionCommand::Print(Some(number)) => match document.paragraph(number) {
-                Some(paragraph) => render_paragraph(paragraph, number, Some(navigation), output)?,
+                Some(paragraph) => render_issue_paragraph(
+                    document,
+                    paragraph,
+                    number,
+                    Some(navigation),
+                    *issue_thresholds,
+                    *color,
+                    output,
+                )?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
             SessionCommand::Move(address) => match navigation.move_to(document, &address) {
@@ -196,9 +373,25 @@ impl<'a> SessionState<'a> {
                 Ok(()) => writeln!(output, "selected {address}")?,
                 Err(error) => writeln!(errors, "{error}")?,
             },
-            SessionCommand::Tokens(number) => match document.paragraph(number) {
-                Some(paragraph) => render_tokens(paragraph, number, output)?,
+            SessionCommand::Tokens(Some(number)) => match document.paragraph(number) {
+                Some(paragraph) => render_tokens(
+                    document,
+                    paragraph,
+                    number,
+                    *issue_thresholds,
+                    *color,
+                    output,
+                )?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
+            },
+            SessionCommand::Tokens(None) => match navigation.selected_token_endpoints(document) {
+                Ok((start, end)) => {
+                    render_selected_tokens(document, start, end, *issue_thresholds, *color, output)?
+                }
+                Err(_) => writeln!(
+                    errors,
+                    "tokens requires an active token selection or a paragraph address M"
+                )?,
             },
             SessionCommand::Alternatives { address } => {
                 render_alternatives(document, navigation, address, output, errors)?
@@ -221,6 +414,9 @@ impl<'a> SessionState<'a> {
                     return Ok(SessionControl::Continue);
                 };
                 let prefix = chunk_prefix(document, address, address.token - 1).unwrap();
+                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                    return Ok(SessionControl::Continue);
+                }
                 run_corrected_refresh(
                     document,
                     navigation,
@@ -246,6 +442,9 @@ impl<'a> SessionState<'a> {
                     chunk_prefix(document, address, through).unwrap_or_default(),
                     text
                 );
+                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                    return Ok(SessionControl::Continue);
+                }
                 run_corrected_refresh(
                     document,
                     navigation,
@@ -290,6 +489,9 @@ impl<'a> SessionState<'a> {
                     chunk_prefix(document, start, start.token - 1).unwrap_or_default(),
                     text
                 );
+                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                    return Ok(SessionControl::Continue);
+                }
                 run_corrected_refresh(
                     document,
                     navigation,
@@ -319,6 +521,9 @@ impl<'a> SessionState<'a> {
                     )?;
                     return Ok(SessionControl::Continue);
                 };
+                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                    return Ok(SessionControl::Continue);
+                }
                 run_refresh(
                     document,
                     navigation,
@@ -335,23 +540,20 @@ impl<'a> SessionState<'a> {
                 None => writeln!(
                     output,
                     "model {}",
-                    recognizer
+                    model_path
                         .as_ref()
-                        .map(|r| r.model_path().display().to_string())
+                        .map(|path| path.display().to_string())
                         .unwrap_or_else(|| "(none)".into())
                 )?,
-                Some(path) => match RecognizerSession::load(
-                    &path,
-                    &RecognitionConfig {
-                        language: language.clone(),
-                        ..RecognitionConfig::default()
-                    },
-                ) {
-                    Ok(value) => {
-                        *recognizer = Some(value);
-                        writeln!(output, "model {}", path.display())?;
+                Some(path) => match std::fs::File::open(&path) {
+                    Ok(_) => {
+                        *recognizer = None;
+                        *model_path = Some(path.clone());
+                        writeln!(output, "model {} (loads on first use)", path.display())?;
                     }
-                    Err(error) => writeln!(errors, "could not load model: {error}")?,
+                    Err(error) => {
+                        writeln!(errors, "could not open model '{}': {error}", path.display())?
+                    }
                 },
             },
             SessionCommand::Language(value) => match value {
@@ -466,7 +668,13 @@ impl<'a> SessionState<'a> {
                         "loaded {}",
                         document_path.as_ref().unwrap().display()
                     )?;
-                    render_document_with_navigation(document, Some(navigation), output)?;
+                    render_session_document(
+                        document,
+                        Some(navigation),
+                        *issue_thresholds,
+                        *color,
+                        output,
+                    )?;
                 }
                 Err(error) => writeln!(errors, "{error}")?,
             },
@@ -476,6 +684,111 @@ impl<'a> SessionState<'a> {
         }
         Ok(SessionControl::Continue)
     }
+}
+
+fn render_session_document(
+    document: &Document,
+    navigation: Option<&NavigationState>,
+    settings: IssueThresholds,
+    color: bool,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    for (index, paragraph) in document.paragraphs().iter().enumerate() {
+        render_issue_paragraph(
+            document,
+            paragraph,
+            index + 1,
+            navigation,
+            settings,
+            color,
+            output,
+        )?;
+        if index + 1 < document.paragraphs().len() {
+            writeln!(output)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_recognizer(
+    recognizer: &mut Option<RecognizerSession>,
+    model_path: &Option<PathBuf>,
+    language: &str,
+    errors: &mut impl Write,
+) -> io::Result<bool> {
+    if recognizer.is_some() {
+        return Ok(true);
+    }
+    let Some(path) = model_path else {
+        writeln!(
+            errors,
+            "recognition requires a model: start with --model MODEL or use: model PATH"
+        )?;
+        return Ok(false);
+    };
+    match RecognizerSession::load(
+        path,
+        &RecognitionConfig {
+            language: language.into(),
+            ..RecognitionConfig::default()
+        },
+    ) {
+        Ok(session) => {
+            *recognizer = Some(session);
+            Ok(true)
+        }
+        Err(error) => {
+            writeln!(errors, "could not load model: {error}")?;
+            Ok(false)
+        }
+    }
+}
+
+fn render_selected_tokens(
+    document: &Document,
+    start: crate::navigation::TokenAddress,
+    end: crate::navigation::TokenAddress,
+    settings: IssueThresholds,
+    color: bool,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    let offsets = document
+        .paragraphs()
+        .iter()
+        .scan(0usize, |total, paragraph| {
+            let offset = *total;
+            *total += paragraph.tokens().len();
+            Some(offset)
+        })
+        .collect::<Vec<_>>();
+    let total = document
+        .paragraphs()
+        .iter()
+        .map(|p| p.tokens().len())
+        .sum::<usize>();
+    let first = offsets[start.paragraph - 1] + start.token - 1;
+    let last_exclusive = offsets[end.paragraph - 1] + end.token;
+    let context_start = first.saturating_sub(5);
+    let context_end = last_exclusive.saturating_add(5).min(total);
+    for (index, paragraph) in document.paragraphs().iter().enumerate() {
+        let paragraph_start = offsets[index];
+        let paragraph_end = paragraph_start + paragraph.tokens().len();
+        let visible_start = context_start.max(paragraph_start);
+        let visible_end = context_end.min(paragraph_end);
+        if visible_start < visible_end {
+            render_token_range(
+                document,
+                paragraph,
+                index + 1,
+                visible_start - paragraph_start,
+                visible_end - paragraph_start,
+                settings,
+                color,
+                output,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -488,7 +801,7 @@ pub fn run_session(
     player: &mut impl AudioPlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    let Some(mut state) = SessionState::new(document, context, output, errors)? else {
+    let Some(mut state) = SessionState::new(document, context, output, errors, false)? else {
         return Ok(());
     };
     loop {
@@ -523,7 +836,7 @@ pub fn run_readline_session(
     player: &mut impl AudioPlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    let Some(mut state) = SessionState::new(document, context, output, errors)? else {
+    let Some(mut state) = SessionState::new(document, context, output, errors, true)? else {
         return Ok(());
     };
     let mut editor = DefaultEditor::new().map_err(readline_io_error)?;
@@ -595,6 +908,17 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
         "History: undo | Nundo | redo | Nredo (N is a positive maximum count)"
+    )?;
+    writeln!(output, "Issues: next | prev | issues | ignore | resolve | Nignore | Nresolve | Nunignore | issue-prob [red|orange VALUE]")?;
+    writeln!(output, "Token listing: Mtokens lists paragraph M; bare tokens lists the selection plus five tokens on each side")?;
+    writeln!(
+        output,
+        "Document display: print | list | show (short forms: p | l)"
+    )?;
+    writeln!(output, "Model loading: model [PATH] configures the path; loading waits until recognition is first used")?;
+    writeln!(
+        output,
+        "Alternatives: [M.N]choose N and [M.N]set N select the same candidate"
     )?;
     writeln!(
         output,
