@@ -374,11 +374,20 @@ impl<'a> SessionState<'a> {
                 Err(error) => writeln!(errors, "{error}")?,
             },
             SessionCommand::Tokens(Some(number)) => match document.paragraph(number) {
-                Some(paragraph) => render_tokens(document, paragraph, number, output)?,
+                Some(paragraph) => render_tokens(
+                    document,
+                    paragraph,
+                    number,
+                    *issue_thresholds,
+                    *color,
+                    output,
+                )?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
             SessionCommand::Tokens(None) => match navigation.selected_token_endpoints(document) {
-                Ok((start, end)) => render_selected_tokens(document, start, end, output)?,
+                Ok((start, end)) => {
+                    render_selected_tokens(document, start, end, *issue_thresholds, *color, output)?
+                }
                 Err(_) => writeln!(
                     errors,
                     "tokens requires an active token selection or a paragraph address M"
@@ -739,6 +748,8 @@ fn render_selected_tokens(
     document: &Document,
     start: crate::navigation::TokenAddress,
     end: crate::navigation::TokenAddress,
+    settings: IssueThresholds,
+    color: bool,
     output: &mut impl Write,
 ) -> io::Result<()> {
     let offsets = document
@@ -771,6 +782,8 @@ fn render_selected_tokens(
                 index + 1,
                 visible_start - paragraph_start,
                 visible_end - paragraph_start,
+                settings,
+                color,
                 output,
             )?;
         }

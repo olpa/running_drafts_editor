@@ -132,6 +132,8 @@ large design.
   `tokens` lists the active token selection with five surrounding tokens on
   each side, retaining paragraph-based token addresses. Token rows show accepted
   recognition probability to three decimal places, or `-` when unavailable.
+  Interactive token listings apply the same live confidence colors as document
+  rendering; redirected and non-color listings contain no terminal controls.
 - `edit` and `open-audio` enter the same interactive shell; `open-audio`
   supplies fresh recognition details as optional session context
   instead of maintaining a separate command loop.
