@@ -117,7 +117,8 @@ large design.
   and plays them through a replaceable, ffplay-compatible subprocess selected
   with `--player`.
 - The dumb-terminal shell uses an `ed`-inspired address-first grammar at the
-  `rde>` prompt. `M.N` addresses a visible token, `M@N` a chunk marker, and
+  `rde>` prompt. `print`, `list`, and `show` are synonyms for document display.
+  `M.N` addresses a visible token, `M@N` a chunk marker, and
   `M.N,M.U` an inclusive displayed token range. Commands may attach to an
   address or follow it after whitespace. `p` prints the document, `Mp` prints a
   paragraph, and `M@Nplay` plays the complete chunk immediately to the left of

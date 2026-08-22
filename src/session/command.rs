@@ -239,7 +239,7 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
                 SessionCommand::Load(PathBuf::from(arguments)),
             )
         }
-        "print" | "p" | "list" | "l" => {
+        "print" | "show" | "p" | "list" | "l" => {
             reject_arguments(&name, &arguments)?;
             match address {
                 None => Ok(SessionCommand::Print(None)),
@@ -705,6 +705,12 @@ mod tests {
             }
         );
         assert_eq!(parse_command("list").unwrap(), SessionCommand::Print(None));
+        assert_eq!(parse_command("show").unwrap(), SessionCommand::Print(None));
+        assert_eq!(parse_command("print").unwrap(), SessionCommand::Print(None));
+        assert_eq!(
+            parse_command("2show").unwrap(),
+            SessionCommand::Print(Some(2))
+        );
         assert_eq!(parse_command("h").unwrap(), SessionCommand::Help);
         assert_eq!(
             parse_command("save document.rde.json").unwrap(),
