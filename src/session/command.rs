@@ -305,7 +305,7 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
             reject_arguments(&name, &arguments)?;
             optional_token(address, name).map(|address| SessionCommand::Alternatives { address })
         }
-        "choose" => {
+        "choose" | "set" => {
             let candidate = arguments
                 .parse::<usize>()
                 .ok()
@@ -718,6 +718,23 @@ mod tests {
         assert_eq!(
             parse_command("3resolve").unwrap(),
             SessionCommand::Ignore(Some(3))
+        );
+        assert_eq!(
+            parse_command("set 4").unwrap(),
+            SessionCommand::ChooseAlternative {
+                address: None,
+                candidate: 4,
+            }
+        );
+        assert_eq!(
+            parse_command("2.3set 5").unwrap(),
+            SessionCommand::ChooseAlternative {
+                address: Some(TokenAddress {
+                    paragraph: 2,
+                    token: 3,
+                }),
+                candidate: 5,
+            }
         );
         assert_eq!(parse_command("h").unwrap(), SessionCommand::Help);
         assert_eq!(
