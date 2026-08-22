@@ -137,7 +137,7 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
         }
         return Ok(SessionCommand::IssueProbability { level, value });
     }
-    for (suffix, unignore) in [("unignore", true), ("ignore", false)] {
+    for (suffix, unignore) in [("unignore", true), ("ignore", false), ("resolve", false)] {
         if let Some(number) = compact.strip_suffix(suffix).filter(|v| !v.is_empty()) {
             if number.chars().all(|c| c.is_ascii_digit()) {
                 let number = number
@@ -194,7 +194,7 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
             reject_arguments(&name, &arguments)?;
             no_address(address, name, SessionCommand::Issues)
         }
-        "ignore" => {
+        "ignore" | "resolve" => {
             reject_arguments(&name, &arguments)?;
             no_address(address, name, SessionCommand::Ignore(None))
         }
@@ -710,6 +710,14 @@ mod tests {
         assert_eq!(
             parse_command("2show").unwrap(),
             SessionCommand::Print(Some(2))
+        );
+        assert_eq!(
+            parse_command("resolve").unwrap(),
+            SessionCommand::Ignore(None)
+        );
+        assert_eq!(
+            parse_command("3resolve").unwrap(),
+            SessionCommand::Ignore(Some(3))
         );
         assert_eq!(parse_command("h").unwrap(), SessionCommand::Help);
         assert_eq!(

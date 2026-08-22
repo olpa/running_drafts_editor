@@ -97,7 +97,9 @@ large design.
 - Async or refreshed recognition must not overwrite newer user edits.
 - Recognition tokens below the live red threshold form confidence issues, split
   at paragraph and replay-chunk boundaries. `next`/`prev` navigate open issues;
-  `issues`, `ignore`, `Nignore`, and `Nunignore` list, resolve, and reopen them.
+  `issues`, `ignore`/`resolve`, `Nignore`/`Nresolve`, and `Nunignore` list,
+  resolve, and reopen them. Resolving automatically selects the next open issue,
+  wrapping in document order when needed.
   Resolutions persist as stable token ranges, are undoable, and are invalidated
   when a member token is edited. Thresholds are session-only; resolved tokens
   suppress red and orange confidence color.

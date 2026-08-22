@@ -311,6 +311,7 @@ impl<'a> SessionState<'a> {
                     selected.end.paragraph,
                     selected.end.token
                 )?;
+                issues::navigate(document, navigation, *issue_thresholds, true, output)?;
             }
             SessionCommand::Unignore(number) => {
                 let values = issues::entries(document, *issue_thresholds);
@@ -848,7 +849,7 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
         output,
         "History: undo | Nundo | redo | Nredo (N is a positive maximum count)"
     )?;
-    writeln!(output, "Issues: next | prev | issues | ignore | Nignore | Nunignore | issue-prob [red|orange VALUE]")?;
+    writeln!(output, "Issues: next | prev | issues | ignore | resolve | Nignore | Nresolve | Nunignore | issue-prob [red|orange VALUE]")?;
     writeln!(output, "Token listing: Mtokens lists paragraph M; bare tokens lists the selection plus five tokens on each side")?;
     writeln!(
         output,

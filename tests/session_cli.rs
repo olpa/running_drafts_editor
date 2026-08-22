@@ -36,13 +36,14 @@ fn confidence_issues_navigate_resolve_persist_and_undo_without_color_on_redirect
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(b"issues\nnext\nnext\nnext\nprev\n1.1,1.2select\nignore\nissues\nundo\nissues\nredo\nissues\n1unignore\nissue-prob red 0.1\nissues\nissue-prob orange 0.1\nissue-prob\n1ignore\nsave\nq\n").unwrap();
+    child.stdin.take().unwrap().write_all(b"issues\nnext\nnext\nnext\nprev\n1.1,1.2select\nresolve\nissues\nundo\nissues\nredo\nissues\n1unignore\nissue-prob red 0.1\nissues\nissue-prob orange 0.1\nissue-prob\n1resolve\nsave\nq\n").unwrap();
     let result = child.wait_with_output().unwrap();
     assert!(result.status.success());
     let output = String::from_utf8(result.stdout).unwrap();
     let errors = String::from_utf8(result.stderr).unwrap();
     assert!(output.contains("1  open  \"bad\\ntwo\""));
     assert!(output.contains("selected 1.4,1.4"));
+    assert!(output.matches("selected 1.4,1.4").count() >= 2);
     assert!(output.contains("selected 1.1,1.2"));
     assert!(output.contains("selected 1.1,1.2 (wrapped)"));
     assert!(output.contains("selected 2.1,2.1 (wrapped)"));
