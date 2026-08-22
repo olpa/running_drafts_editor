@@ -9,6 +9,51 @@ use std::{
 use serde_json::json;
 
 #[test]
+fn attention_commands_use_addresses_caret_and_selection_start() {
+    let directory = tempfile::tempdir().unwrap();
+    let document = directory.path().join("attention.json");
+    let exported = directory.path().join("attention.txt");
+    let value = json!({"schema":"rde-document/v1-experimental","id":"document:attention","paragraphs":[{
+        "id":"p","revision":1,"tokens":[
+            {"id":{"kind":"pseudo","id":"a"},"text":"one","origin":{"kind":"pseudo","reason":"test"}},
+            {"id":{"kind":"pseudo","id":"b"},"text":" two","origin":{"kind":"pseudo","reason":"test"}},
+            {"id":{"kind":"pseudo","id":"c"},"text":" three","origin":{"kind":"pseudo","reason":"test"}}
+        ],"chunk_boundaries":[{"chunk_id":"chunk","after_tokens":3}]
+    }]});
+    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
+        .args(["edit", document.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let commands = format!(
+        "1.2mark\n1.2mark\n1.1,1.3select\nmark\nundo\nredo\np\n1@1\nmark\n1select\nunmark\n1.1unmark\nexport {}\nsave\nq\n",
+        exported.display()
+    );
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(commands.as_bytes())
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(result.status.success());
+    let output = String::from_utf8(result.stdout).unwrap();
+    let errors = String::from_utf8(result.stderr).unwrap();
+    assert!(output.contains("marked 1.1"));
+    assert!(output.contains("⚑one"));
+    assert!(output.contains("⚑ two"));
+    assert!(errors.contains("token 1.2 is already marked"));
+    assert!(errors.contains("mark requires a current token"));
+    assert!(errors.contains("unmark requires a current token"));
+    assert_eq!(fs::read_to_string(exported).unwrap(), "one⚑ two three");
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(document).unwrap()).unwrap();
+    assert_eq!(saved["attention_marks"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn edit_defers_loading_a_configured_model_until_recognition_is_used() {
     let directory = tempfile::tempdir().unwrap();
     let document = directory.path().join("lazy-model.json");

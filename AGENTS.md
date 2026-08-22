@@ -83,11 +83,16 @@ large design.
   the CLI reports the fallback and retains the recognition evidence.
 - The CLI renders selectable chunk-boundary symbols distinctly from paragraphs.
 - Chunk symbols and recognition metadata are absent from clean text export.
+- Attention marks are stable visible-token metadata rendered and exported as
+  `⚑` immediately before the anchored token. Correcting or replacing that token
+  removes its mark; structure edits retain it.
 - Edits may make alignment stale or unavailable; never claim false precision.
 - Missing audio or optional metadata must not prevent reading and editing text.
 - The baseline `rde-document/v1-experimental` JSON format preserves exact visible
   tokens, paragraph revisions, stable IDs, chunk markers, and optional canonical
-  audio mappings. `rde edit <document.rde.json>` opens it without recognition;
+  audio mappings. Typed attention marks refer to current stable visible-token
+  IDs and are included in saved editable-history states. `rde edit
+  <document.rde.json>` opens it without recognition;
   session `save [PATH]` uses atomic replacement. Session `load PATH` and `edit
   PATH` replace the current document and reset navigation. `rde transcribe
   AUDIO --model MODEL --output DOCUMENT` recognizes, atomically saves the

@@ -60,7 +60,7 @@ pub(crate) fn render_paragraph(
     navigation: Option<&NavigationState>,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    render_paragraph_inner(paragraph, paragraph_number, navigation, None, output)
+    render_paragraph_inner(paragraph, paragraph_number, navigation, None, None, output)
 }
 
 pub(crate) fn render_issue_paragraph(
@@ -77,6 +77,7 @@ pub(crate) fn render_issue_paragraph(
         paragraph_number,
         navigation,
         color.then_some((document, settings)),
+        Some((document, color)),
         output,
     )
 }
@@ -86,6 +87,7 @@ fn render_paragraph_inner(
     paragraph_number: usize,
     navigation: Option<&NavigationState>,
     issues: Option<(&Document, super::issues::IssueThresholds)>,
+    attention: Option<(&Document, bool)>,
     output: &mut impl Write,
 ) -> io::Result<()> {
     let paragraph_selected = navigation.is_some_and(|state| {
@@ -172,6 +174,15 @@ fn render_paragraph_inner(
                 write!(output, "⟪")?;
             } else if token_caret {
                 write!(output, "‹")?;
+            }
+            if let Some((_, color)) =
+                attention.filter(|(document, _)| document.is_attention_marked(token.id()))
+            {
+                if color {
+                    write!(output, "\x1b[31m⚑\x1b[0m")?;
+                } else {
+                    write!(output, "⚑")?;
+                }
             }
             let confidence = issues.and_then(|(document, settings)| {
                 super::issues::confidence(document, token.id(), settings)
@@ -286,6 +297,13 @@ pub(crate) fn render_token_range(
                     token_index + 1,
                     probability
                 )?;
+                if document.is_attention_marked(token.id()) {
+                    if color {
+                        write!(output, "\x1b[31m⚑\x1b[0m")?;
+                    } else {
+                        write!(output, "⚑")?;
+                    }
+                }
                 let confidence = color
                     .then(|| super::issues::confidence(document, token.id(), settings))
                     .flatten();
@@ -436,5 +454,30 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("1.1  0.100  \x1b[31m\"red\"\x1b[0m"));
         assert!(output.contains("1.2  0.200  \x1b[38;5;208m\"orange\"\x1b[0m"));
+    }
+
+    #[test]
+    fn attention_flag_is_literal_without_color_and_red_with_its_own_reset() {
+        let document: Document = serde_json::from_value(json!({
+            "schema":"rde-document/v1-experimental","id":"d","paragraphs":[{
+                "id":"p","revision":1,"tokens":[
+                    {"id":{"kind":"pseudo","id":"t"},"text":" text","origin":{"kind":"pseudo","reason":"test"}}
+                ],"chunk_boundaries":[{"chunk_id":"c","after_tokens":1}]
+            }],"attention_marks":[{"token_id":{"kind":"pseudo","id":"t"}}]
+        })).unwrap();
+        for (color, expected) in [(false, "⚑ text"), (true, "\x1b[31m⚑\x1b[0m text")] {
+            let mut output = Vec::new();
+            render_issue_paragraph(
+                &document,
+                document.paragraph(1).unwrap(),
+                1,
+                None,
+                super::super::issues::IssueThresholds::default(),
+                color,
+                &mut output,
+            )
+            .unwrap();
+            assert!(String::from_utf8(output).unwrap().contains(expected));
+        }
     }
 }

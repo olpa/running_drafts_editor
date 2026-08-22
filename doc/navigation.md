@@ -26,6 +26,16 @@ Paragraph text is the exact concatenation of its visible-token text. Token text
 may contain leading or trailing whitespace. Chunk markers contribute no text
 and are absent from clean export.
 
+An attention mark is metadata anchored before one stable visible-token
+identity. It renders and exports as `⚑` immediately before that token's complete
+text, without changing or inspecting token whitespace. `mark` and `unmark` use
+an addressed token or the first token of the current token selection.
+
+In `rde-document/v1-experimental`, the optional `attention_marks` array contains
+typed objects with a `token_id` matching a current visible token. Duplicate and
+unknown references are invalid. Editable history snapshots carry the same array
+so reopening a document does not weaken undo or redo.
+
 Recognition-token identities use the recognition run ID, accepted segment ID,
 and original token position. Pseudo-tokens have stable identities of their own.
 Displayed addresses follow current paragraph and token order and are not stable
@@ -59,7 +69,7 @@ The general command form is:
 The address and command may be attached (`2@3info`) or separated by whitespace
 (`2@3 info`). Commands include `print`/`p`, `play`, `info`/`i`, `select`/`s`,
 `tokens`, `alternatives`/`alts`, `choose`, `insert`, `append`, `replace`,
-`delete`, `help`/`h`, and `quit`/`q`;
+`delete`, `mark`, `unmark`, `export`, `help`/`h`, and `quit`/`q`;
 `list`/`l` remain print aliases. `play` accepts any address or uses the current
 token or selection; `info` requires a chunk-marker address. `print` accepts no
 address for the whole document or a paragraph address. `tokens` requires a

@@ -118,6 +118,28 @@ pub fn save_document(path: &Path, document: &Document) -> Result<(), DocumentIoE
     result
 }
 
+/// Write disposable plain text, including intentional attention flags but no
+/// recognition or replay metadata.
+pub fn export_text(path: &Path, document: &Document) -> Result<(), DocumentIoError> {
+    validate(document)?;
+    let mut bytes = Vec::new();
+    for (paragraph_index, paragraph) in document.paragraphs().iter().enumerate() {
+        if paragraph_index > 0 {
+            bytes.extend_from_slice(b"\n\n");
+        }
+        for token in paragraph.tokens() {
+            if document.is_attention_marked(token.id()) {
+                bytes.extend_from_slice("⚑".as_bytes());
+            }
+            bytes.extend_from_slice(token.text().as_bytes());
+        }
+    }
+    fs::write(path, bytes).map_err(|source| DocumentIoError::Save {
+        path: path.into(),
+        source,
+    })
+}
+
 pub(crate) fn validate(document: &Document) -> Result<(), DocumentIoError> {
     if document.schema() != DOCUMENT_SCHEMA {
         return Err(DocumentIoError::UnsupportedSchema {
@@ -249,6 +271,20 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentIoError> {
         {
             return Err(DocumentIoError::Invalid(
                 "resolved issue refers to an unknown visible token".into(),
+            ));
+        }
+    }
+    let mut marked_tokens = HashSet::new();
+    for mark in document.attention_marks() {
+        let key = token_id_key(mark.token_id());
+        if !token_ids.contains(&key) {
+            return Err(DocumentIoError::Invalid(
+                "attention mark refers to an unknown visible token".into(),
+            ));
+        }
+        if !marked_tokens.insert(key) {
+            return Err(DocumentIoError::Invalid(
+                "visible token has more than one attention mark".into(),
             ));
         }
     }

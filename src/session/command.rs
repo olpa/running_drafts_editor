@@ -72,7 +72,12 @@ pub(crate) enum SessionCommand {
         level: Option<String>,
         value: Option<String>,
     },
+    Mark {
+        address: Option<TokenAddress>,
+        remove: bool,
+    },
     Save(Option<PathBuf>),
+    Export(PathBuf),
     Load(PathBuf),
     Help,
     Quit,
@@ -229,6 +234,16 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
             name,
             SessionCommand::Save((!arguments.is_empty()).then(|| PathBuf::from(arguments))),
         ),
+        "export" => {
+            if arguments.is_empty() {
+                return Err(CommandParseError::PathRequired(name));
+            }
+            no_address(
+                address,
+                name,
+                SessionCommand::Export(PathBuf::from(arguments)),
+            )
+        }
         "load" | "edit" => {
             if arguments.is_empty() {
                 return Err(CommandParseError::PathRequired(name));
@@ -304,6 +319,13 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
         "alternatives" | "alts" => {
             reject_arguments(&name, &arguments)?;
             optional_token(address, name).map(|address| SessionCommand::Alternatives { address })
+        }
+        "mark" | "unmark" => {
+            reject_arguments(&name, &arguments)?;
+            optional_token(address, name.clone()).map(|address| SessionCommand::Mark {
+                address,
+                remove: name == "unmark",
+            })
         }
         "choose" | "set" => {
             let candidate = arguments
@@ -879,6 +901,39 @@ mod tests {
         assert!(matches!(
             parse_command(r#"replace "bad\n""#),
             Err(CommandParseError::InvalidQuotedReplacement(_))
+        ));
+    }
+
+    #[test]
+    fn attention_and_export_commands_parse_with_their_exact_address_rules() {
+        assert_eq!(
+            parse_command("mark").unwrap(),
+            SessionCommand::Mark {
+                address: None,
+                remove: false
+            }
+        );
+        assert_eq!(
+            parse_command("2.3unmark").unwrap(),
+            SessionCommand::Mark {
+                address: Some(TokenAddress {
+                    paragraph: 2,
+                    token: 3
+                }),
+                remove: true
+            }
+        );
+        assert!(matches!(
+            parse_command("2mark"),
+            Err(CommandParseError::InvalidAddress { .. })
+        ));
+        assert_eq!(
+            parse_command("export out.txt").unwrap(),
+            SessionCommand::Export("out.txt".into())
+        );
+        assert!(matches!(
+            parse_command("export"),
+            Err(CommandParseError::PathRequired(_))
         ));
     }
 }
