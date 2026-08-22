@@ -9,6 +9,50 @@ use std::{
 use serde_json::json;
 
 #[test]
+fn edit_defers_loading_a_configured_model_until_recognition_is_used() {
+    let directory = tempfile::tempdir().unwrap();
+    let document = directory.path().join("lazy-model.json");
+    let model = directory.path().join("fake-model.bin");
+    fs::write(&model, b"readable but not a whisper model").unwrap();
+    let value = json!({"schema":"rde-document/v1-experimental","id":"document:lazy","paragraphs":[{
+        "id":"p","revision":1,"tokens":[{"id":{"kind":"pseudo","id":"t"},"text":"text","origin":{"kind":"pseudo","reason":"test"}}],
+        "chunk_boundaries":[{"chunk_id":"c","after_tokens":1}]
+    }]});
+    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+    let run = |commands: &[u8]| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
+            .args([
+                "edit",
+                document.to_str().unwrap(),
+                "--model",
+                model.to_str().unwrap(),
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(commands).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let idle = run(b"model\nq\n");
+    assert!(idle.status.success());
+    assert!(String::from_utf8(idle.stdout)
+        .unwrap()
+        .contains(&format!("model {}", model.display())));
+    assert!(!String::from_utf8(idle.stderr)
+        .unwrap()
+        .contains("could not load model"));
+
+    let used = run(b"1@1refresh\nq\n");
+    assert!(used.status.success());
+    assert!(String::from_utf8(used.stderr)
+        .unwrap()
+        .contains("could not load model"));
+}
+
+#[test]
 fn confidence_issues_navigate_resolve_persist_and_undo_without_color_on_redirect() {
     let directory = tempfile::tempdir().unwrap();
     let document = directory.path().join("issues.rde.json");

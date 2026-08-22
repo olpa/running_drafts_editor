@@ -113,7 +113,9 @@ large design.
   16 kHz audio before recognition.
 - Chunk boundaries are derived during Whisper recognition from timestamped
   decoded segments; there is no separate pre-recognition planner.
-- A missing or unreadable CLI model is a preflight error.
+- A missing or unreadable CLI model is a preflight error. `edit --model` and
+  `model PATH` validate and remember the path without loading Whisper; the
+  session loads it lazily on the first correction or refresh that needs it.
 - `rde open-audio <audio.wav> --model <whisper.bin>` runs Whisper,
   lists accepted decoded segments with text and timestamp-derived sample ranges,
   and plays them through a replaceable, ffplay-compatible subprocess selected

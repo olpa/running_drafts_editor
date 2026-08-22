@@ -77,6 +77,7 @@ struct SessionState<'a> {
     last_playback: Option<super::playback::LastPlayback>,
     language: String,
     recognizer: Option<RecognizerSession>,
+    model_path: Option<PathBuf>,
     issue_thresholds: IssueThresholds,
     color: bool,
 }
@@ -171,15 +172,15 @@ impl<'a> SessionState<'a> {
         }
         writeln!(output, "Type 'help' for session commands.")?;
         let navigation = NavigationState::new(&document);
-        let recognizer = match model {
-            Some(path) => match RecognizerSession::load(path, &RecognitionConfig::default()) {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    return Err(io::Error::other(format!("could not load model: {error}")));
-                }
-            },
-            None => None,
-        };
+        let model_path = model.map(Path::to_path_buf);
+        if let Some(path) = &model_path {
+            std::fs::File::open(path).map_err(|error| {
+                io::Error::other(format!(
+                    "could not open model '{}': {error}",
+                    path.display()
+                ))
+            })?;
+        }
         Ok(Some(Self {
             document,
             document_path,
@@ -188,7 +189,8 @@ impl<'a> SessionState<'a> {
             navigation,
             last_playback: None,
             language: "auto".to_string(),
-            recognizer,
+            recognizer: None,
+            model_path,
             issue_thresholds: IssueThresholds::default(),
             color,
         }))
@@ -212,6 +214,7 @@ impl<'a> SessionState<'a> {
             last_playback,
             language,
             recognizer,
+            model_path,
             issue_thresholds,
             color,
         } = self;
@@ -402,6 +405,9 @@ impl<'a> SessionState<'a> {
                     return Ok(SessionControl::Continue);
                 };
                 let prefix = chunk_prefix(document, address, address.token - 1).unwrap();
+                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                    return Ok(SessionControl::Continue);
+                }
                 run_corrected_refresh(
                     document,
                     navigation,
@@ -427,6 +433,9 @@ impl<'a> SessionState<'a> {
                     chunk_prefix(document, address, through).unwrap_or_default(),
                     text
                 );
+                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                    return Ok(SessionControl::Continue);
+                }
                 run_corrected_refresh(
                     document,
                     navigation,
@@ -471,6 +480,9 @@ impl<'a> SessionState<'a> {
                     chunk_prefix(document, start, start.token - 1).unwrap_or_default(),
                     text
                 );
+                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                    return Ok(SessionControl::Continue);
+                }
                 run_corrected_refresh(
                     document,
                     navigation,
@@ -500,6 +512,9 @@ impl<'a> SessionState<'a> {
                     )?;
                     return Ok(SessionControl::Continue);
                 };
+                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                    return Ok(SessionControl::Continue);
+                }
                 run_refresh(
                     document,
                     navigation,
@@ -516,23 +531,20 @@ impl<'a> SessionState<'a> {
                 None => writeln!(
                     output,
                     "model {}",
-                    recognizer
+                    model_path
                         .as_ref()
-                        .map(|r| r.model_path().display().to_string())
+                        .map(|path| path.display().to_string())
                         .unwrap_or_else(|| "(none)".into())
                 )?,
-                Some(path) => match RecognizerSession::load(
-                    &path,
-                    &RecognitionConfig {
-                        language: language.clone(),
-                        ..RecognitionConfig::default()
-                    },
-                ) {
-                    Ok(value) => {
-                        *recognizer = Some(value);
-                        writeln!(output, "model {}", path.display())?;
+                Some(path) => match std::fs::File::open(&path) {
+                    Ok(_) => {
+                        *recognizer = None;
+                        *model_path = Some(path.clone());
+                        writeln!(output, "model {} (loads on first use)", path.display())?;
                     }
-                    Err(error) => writeln!(errors, "could not load model: {error}")?,
+                    Err(error) => {
+                        writeln!(errors, "could not open model '{}': {error}", path.display())?
+                    }
                 },
             },
             SessionCommand::Language(value) => match value {
@@ -687,6 +699,40 @@ fn render_session_document(
         }
     }
     Ok(())
+}
+
+fn ensure_recognizer(
+    recognizer: &mut Option<RecognizerSession>,
+    model_path: &Option<PathBuf>,
+    language: &str,
+    errors: &mut impl Write,
+) -> io::Result<bool> {
+    if recognizer.is_some() {
+        return Ok(true);
+    }
+    let Some(path) = model_path else {
+        writeln!(
+            errors,
+            "recognition requires a model: start with --model MODEL or use: model PATH"
+        )?;
+        return Ok(false);
+    };
+    match RecognizerSession::load(
+        path,
+        &RecognitionConfig {
+            language: language.into(),
+            ..RecognitionConfig::default()
+        },
+    ) {
+        Ok(session) => {
+            *recognizer = Some(session);
+            Ok(true)
+        }
+        Err(error) => {
+            writeln!(errors, "could not load model: {error}")?;
+            Ok(false)
+        }
+    }
 }
 
 fn render_selected_tokens(
@@ -856,6 +902,7 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
         output,
         "Document display: print | list | show (short forms: p | l)"
     )?;
+    writeln!(output, "Model loading: model [PATH] configures the path; loading waits until recognition is first used")?;
     writeln!(
         output,
         "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  [M.N]alternatives | alts   list alternatives for one token/current token\n  [M.N]choose N              correct one token and refresh its chunk\n  M.Ninsert TEXT             correct before M.N and refresh its chunk\n  M.Nappend TEXT             correct after M.N and refresh its chunk\n  [M.N,M.U]replace TEXT      replace a one-chunk range and refresh\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            disabled pending audio-backed deletion\n  [M@N]refresh               re-recognize one complete replay chunk\n  model [PATH]               show or load the session model\n  language [CODE]            show or set the session language\n  [M.N]split | [M.N]isplit   split chunk before token/current caret\n  [M.N]asplit                split chunk after token/current caret\n  [M@N]parasplit             split paragraph after marker/current marker\n  Mmerge                     merge paragraph M with M+1 exactly\n  M@Nmerge                   merge chunks around marker M@N when legal\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
