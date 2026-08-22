@@ -1,4 +1,4 @@
-use std::{path::PathBuf, process::ExitCode};
+use std::{io::IsTerminal, path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
@@ -7,7 +7,7 @@ use running_drafts_editor::persistence::{load_document, save_document};
 use running_drafts_editor::recognition::{
     recognize, PostChunkConfig, RecognitionConfig, WhisperDecoder,
 };
-use running_drafts_editor::session::{run_session, Ffplay, SessionContext};
+use running_drafts_editor::session::{run_readline_session, run_session, Ffplay, SessionContext};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -167,19 +167,31 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let stderr = std::io::stderr();
-    let mut input = stdin.lock();
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    run_session(
-        &document,
-        SessionContext::saved_document(&args.document, args.model.as_deref()),
-        &mut input,
-        &mut output,
-        &mut errors,
-        &mut player,
-        args.replay_context_ms.saturating_mul(16),
-    )?;
+    let context = SessionContext::saved_document(&args.document, args.model.as_deref());
+    if stdin.is_terminal() && stdout.is_terminal() {
+        run_readline_session(
+            &document,
+            context,
+            &mut output,
+            &mut errors,
+            &mut player,
+            args.replay_context_ms.saturating_mul(16),
+        )?;
+    } else {
+        let mut input = stdin.lock();
+        run_session(
+            &document,
+            context,
+            &mut input,
+            &mut output,
+            &mut errors,
+            &mut player,
+            args.replay_context_ms.saturating_mul(16),
+        )?;
+    }
     Ok(())
 }
 
@@ -197,24 +209,36 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let stderr = std::io::stderr();
-    let mut input = stdin.lock();
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    run_session(
-        &document,
-        SessionContext::recognized_audio(
-            &run,
-            &args.input,
-            args.output.as_deref(),
-            Some(&args.recognition.model),
-        ),
-        &mut input,
-        &mut output,
-        &mut errors,
-        &mut player,
-        args.replay_context_ms.saturating_mul(16),
-    )?;
+    let context = SessionContext::recognized_audio(
+        &run,
+        &args.input,
+        args.output.as_deref(),
+        Some(&args.recognition.model),
+    );
+    if stdin.is_terminal() && stdout.is_terminal() {
+        run_readline_session(
+            &document,
+            context,
+            &mut output,
+            &mut errors,
+            &mut player,
+            args.replay_context_ms.saturating_mul(16),
+        )?;
+    } else {
+        let mut input = stdin.lock();
+        run_session(
+            &document,
+            context,
+            &mut input,
+            &mut output,
+            &mut errors,
+            &mut player,
+            args.replay_context_ms.saturating_mul(16),
+        )?;
+    }
     Ok(())
 }
 

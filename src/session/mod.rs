@@ -8,6 +8,6 @@ mod shell;
 
 pub use playback::{AudioPlayer, Ffplay, PlaybackError, PlaybackSpeed};
 pub use render::render_recognition_chunks;
-pub use shell::{run_session, SessionContext};
+pub use shell::{run_readline_session, run_session, SessionContext};
 
 pub(crate) use render::render_paragraph;

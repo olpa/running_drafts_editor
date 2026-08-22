@@ -1,7 +1,11 @@
 use std::{
+    env,
+    ffi::OsString,
     io::{self, BufRead, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
+
+use rustyline::{error::ReadlineError, DefaultEditor};
 
 use crate::{
     document::Document,
@@ -509,6 +513,84 @@ pub fn run_session(
     }
 }
 
+/// Runs a terminal session with editable input and persistent command history.
+#[allow(clippy::too_many_arguments)]
+pub fn run_readline_session(
+    document: &Document,
+    context: SessionContext<'_>,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+    player: &mut impl AudioPlayer,
+    replay_context_samples: u64,
+) -> io::Result<()> {
+    let Some(mut state) = SessionState::new(document, context, output, errors)? else {
+        return Ok(());
+    };
+    let mut editor = DefaultEditor::new().map_err(readline_io_error)?;
+    let history_path = history_path();
+    if let Some(path) = &history_path {
+        if let Err(error) = editor.load_history(path) {
+            if !matches!(error, ReadlineError::Io(ref error) if error.kind() == io::ErrorKind::NotFound)
+            {
+                writeln!(errors, "could not load command history: {error}")?;
+            }
+        }
+    }
+
+    loop {
+        let line = match editor.readline("rde> ") {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => break,
+            Err(error) => return Err(readline_io_error(error)),
+        };
+        if !line.trim().is_empty() {
+            let _ = editor.add_history_entry(&line);
+        }
+        let command = match parse_command(&line) {
+            Ok(command) => command,
+            Err(error) => {
+                writeln!(errors, "{error}")?;
+                continue;
+            }
+        };
+        if state.execute(command, output, errors, player, replay_context_samples)?
+            == SessionControl::Exit
+        {
+            break;
+        }
+    }
+
+    if let Some(path) = history_path {
+        let result = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| editor.save_history(&path).map_err(readline_io_error));
+        if let Err(error) = result {
+            writeln!(errors, "could not save command history: {error}")?;
+        }
+    }
+    Ok(())
+}
+
+fn history_path() -> Option<PathBuf> {
+    history_path_from(env::var_os("XDG_STATE_HOME"), env::var_os("HOME"))
+}
+
+fn history_path_from(xdg_state_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    xdg_state_home
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| PathBuf::from(home).join(".local/state")))
+        .map(|state| state.join("rde/history"))
+}
+
+fn readline_io_error(error: ReadlineError) -> io::Error {
+    match error {
+        ReadlineError::Io(error) => error,
+        error => io::Error::other(error),
+    }
+}
+
 pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
@@ -522,7 +604,29 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::render_help;
+    use std::{ffi::OsString, path::PathBuf};
+
+    use super::{history_path_from, render_help};
+
+    #[test]
+    fn command_history_uses_xdg_state_home_when_set() {
+        assert_eq!(
+            history_path_from(
+                Some(OsString::from("/state")),
+                Some(OsString::from("/home/user"))
+            ),
+            Some(PathBuf::from("/state/rde/history"))
+        );
+    }
+
+    #[test]
+    fn command_history_falls_back_to_home_local_state() {
+        assert_eq!(
+            history_path_from(None, Some(OsString::from("/home/user"))),
+            Some(PathBuf::from("/home/user/.local/state/rde/history"))
+        );
+        assert_eq!(history_path_from(None, None), None);
+    }
 
     #[test]
     fn help_explains_each_session_command_with_examples() {
