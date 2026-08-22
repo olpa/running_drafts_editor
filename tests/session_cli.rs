@@ -172,6 +172,50 @@ fn edit_opens_prints_and_navigates_without_audio_or_recognition() {
 }
 
 #[test]
+fn bare_tokens_lists_the_selection_with_five_tokens_of_numbered_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let document = directory.path().join("token-context.json");
+    let make_tokens = |paragraph: usize, count: usize| {
+        (1..=count)
+            .map(|token| {
+                json!({
+                    "id":{"kind":"pseudo","id":format!("p{paragraph}t{token}")},
+                    "text":format!(" {paragraph}:{token}"),
+                    "origin":{"kind":"pseudo","reason":"test"}
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let value = json!({"schema":"rde-document/v1-experimental","id":"document:tokens","paragraphs":[
+        {"id":"p1","revision":1,"tokens":make_tokens(1,8),"chunk_boundaries":[{"chunk_id":"c1","after_tokens":8}]},
+        {"id":"p2","revision":1,"tokens":make_tokens(2,8),"chunk_boundaries":[{"chunk_id":"c2","after_tokens":8}]}
+    ]});
+    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
+        .args(["edit", document.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"tokens\n1.7,2.2select\ntokens\nq\n")
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(result.status.success());
+    let output = String::from_utf8(result.stdout).unwrap();
+    let errors = String::from_utf8(result.stderr).unwrap();
+    assert!(errors.contains("tokens requires an active token selection or a paragraph address M"));
+    assert!(output.contains("1.2  pseudo"));
+    assert!(output.contains("2.7  pseudo"));
+    assert!(!output.contains("1.1  pseudo"));
+    assert!(!output.contains("2.8  pseudo"));
+}
+
+#[test]
 fn session_edit_replaces_document_resets_navigation_and_changes_default_save_path() {
     let directory = tempfile::tempdir().unwrap();
     let first = directory.path().join("first.json");

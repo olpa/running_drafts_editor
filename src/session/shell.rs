@@ -25,7 +25,8 @@ use super::{
     issues::{self, IssueThresholds},
     playback::{repeat_document_replay, start_document_replay, AudioPlayer, ReplayStart},
     render::{
-        render_chunk_info, render_issue_paragraph, render_recognition_document, render_tokens,
+        render_chunk_info, render_issue_paragraph, render_recognition_document, render_token_range,
+        render_tokens,
     },
 };
 
@@ -368,9 +369,16 @@ impl<'a> SessionState<'a> {
                 Ok(()) => writeln!(output, "selected {address}")?,
                 Err(error) => writeln!(errors, "{error}")?,
             },
-            SessionCommand::Tokens(number) => match document.paragraph(number) {
+            SessionCommand::Tokens(Some(number)) => match document.paragraph(number) {
                 Some(paragraph) => render_tokens(paragraph, number, output)?,
                 None => writeln!(errors, "unknown paragraph {number}")?,
+            },
+            SessionCommand::Tokens(None) => match navigation.selected_token_endpoints(document) {
+                Ok((start, end)) => render_selected_tokens(document, start, end, output)?,
+                Err(_) => writeln!(
+                    errors,
+                    "tokens requires an active token selection or a paragraph address M"
+                )?,
             },
             SessionCommand::Alternatives { address } => {
                 render_alternatives(document, navigation, address, output, errors)?
@@ -680,6 +688,48 @@ fn render_session_document(
     Ok(())
 }
 
+fn render_selected_tokens(
+    document: &Document,
+    start: crate::navigation::TokenAddress,
+    end: crate::navigation::TokenAddress,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    let offsets = document
+        .paragraphs()
+        .iter()
+        .scan(0usize, |total, paragraph| {
+            let offset = *total;
+            *total += paragraph.tokens().len();
+            Some(offset)
+        })
+        .collect::<Vec<_>>();
+    let total = document
+        .paragraphs()
+        .iter()
+        .map(|p| p.tokens().len())
+        .sum::<usize>();
+    let first = offsets[start.paragraph - 1] + start.token - 1;
+    let last_exclusive = offsets[end.paragraph - 1] + end.token;
+    let context_start = first.saturating_sub(5);
+    let context_end = last_exclusive.saturating_add(5).min(total);
+    for (index, paragraph) in document.paragraphs().iter().enumerate() {
+        let paragraph_start = offsets[index];
+        let paragraph_end = paragraph_start + paragraph.tokens().len();
+        let visible_start = context_start.max(paragraph_start);
+        let visible_end = context_end.min(paragraph_end);
+        if visible_start < visible_end {
+            render_token_range(
+                paragraph,
+                index + 1,
+                visible_start - paragraph_start,
+                visible_end - paragraph_start,
+                output,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_session(
     document: &Document,
@@ -799,6 +849,7 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
         "History: undo | Nundo | redo | Nredo (N is a positive maximum count)"
     )?;
     writeln!(output, "Issues: next | prev | issues | ignore | Nignore | Nunignore | issue-prob [red|orange VALUE]")?;
+    writeln!(output, "Token listing: Mtokens lists paragraph M; bare tokens lists the selection plus five tokens on each side")?;
     writeln!(
         output,
         "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  [M.N]alternatives | alts   list alternatives for one token/current token\n  [M.N]choose N              correct one token and refresh its chunk\n  M.Ninsert TEXT             correct before M.N and refresh its chunk\n  M.Nappend TEXT             correct after M.N and refresh its chunk\n  [M.N,M.U]replace TEXT      replace a one-chunk range and refresh\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            disabled pending audio-backed deletion\n  [M@N]refresh               re-recognize one complete replay chunk\n  model [PATH]               show or load the session model\n  language [CODE]            show or set the session language\n  [M.N]split | [M.N]isplit   split chunk before token/current caret\n  [M.N]asplit                split chunk after token/current caret\n  [M@N]parasplit             split paragraph after marker/current marker\n  Mmerge                     merge paragraph M with M+1 exactly\n  M@Nmerge                   merge chunks around marker M@N when legal\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"

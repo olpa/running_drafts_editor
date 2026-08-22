@@ -228,6 +228,22 @@ pub(crate) fn render_tokens(
     paragraph_number: usize,
     output: &mut impl Write,
 ) -> io::Result<()> {
+    render_token_range(
+        paragraph,
+        paragraph_number,
+        0,
+        paragraph.tokens().len(),
+        output,
+    )
+}
+
+pub(crate) fn render_token_range(
+    paragraph: &crate::document::Paragraph,
+    paragraph_number: usize,
+    start: usize,
+    end_exclusive: usize,
+    output: &mut impl Write,
+) -> io::Result<()> {
     let mut marker_index = 0;
     for token_index in 0..=paragraph.tokens().len() {
         while paragraph
@@ -235,23 +251,27 @@ pub(crate) fn render_tokens(
             .get(marker_index)
             .is_some_and(|marker| marker.after_tokens() == token_index)
         {
-            writeln!(
-                output,
-                "{}@{}  marker  chunk boundary",
-                paragraph_number,
-                marker_index + 1
-            )?;
+            if (start..=end_exclusive).contains(&token_index) {
+                writeln!(
+                    output,
+                    "{}@{}  marker  chunk boundary",
+                    paragraph_number,
+                    marker_index + 1
+                )?;
+            }
             marker_index += 1;
         }
-        if let Some(token) = paragraph.tokens().get(token_index) {
-            writeln!(
-                output,
-                "{}.{}  {:<6}  {:?}",
-                paragraph_number,
-                token_index + 1,
-                token.kind_label(),
-                token.text()
-            )?;
+        if (start..end_exclusive).contains(&token_index) {
+            if let Some(token) = paragraph.tokens().get(token_index) {
+                writeln!(
+                    output,
+                    "{}.{}  {:<6}  {:?}",
+                    paragraph_number,
+                    token_index + 1,
+                    token.kind_label(),
+                    token.text()
+                )?;
+            }
         }
     }
     Ok(())

@@ -123,7 +123,9 @@ large design.
   paragraph, and `M@Nplay` plays the complete chunk immediately to the left of
   marker `M@N`; `M@Ninfo` inspects that chunk. A bare token or marker address
   moves the caret, `Aselect` selects a token, token range, paragraph, or marker,
-  and `Mtokens` lists the individually addressable tokens in a paragraph.
+  and `Mtokens` lists the individually addressable tokens in a paragraph. Bare
+  `tokens` lists the active token selection with five surrounding tokens on
+  each side, retaining paragraph-based token addresses.
 - `edit` and `open-audio` enter the same interactive shell; `open-audio`
   supplies fresh recognition details as optional session context
   instead of maintaining a separate command loop.

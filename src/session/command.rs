@@ -26,7 +26,7 @@ pub(crate) enum SessionCommand {
     Print(Option<usize>),
     Move(Address),
     Select(Address),
-    Tokens(usize),
+    Tokens(Option<usize>),
     Alternatives {
         address: Option<TokenAddress>,
     },
@@ -292,16 +292,13 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
         "tokens" => {
             reject_arguments(&name, &arguments)?;
             match address {
-                Some(Address::Paragraph(paragraph)) => Ok(SessionCommand::Tokens(paragraph)),
+                Some(Address::Paragraph(paragraph)) => Ok(SessionCommand::Tokens(Some(paragraph))),
                 Some(address) => Err(CommandParseError::InvalidAddress {
                     command: name,
                     address,
                     expected: "a paragraph address M",
                 }),
-                None => Err(CommandParseError::AddressRequired {
-                    command: name,
-                    expected: "a paragraph address M",
-                }),
+                None => Ok(SessionCommand::Tokens(None)),
             }
         }
         "alternatives" | "alts" => {
@@ -784,7 +781,14 @@ mod tests {
                 },
             })
         );
-        assert_eq!(parse_command("2tokens").unwrap(), SessionCommand::Tokens(2));
+        assert_eq!(
+            parse_command("2tokens").unwrap(),
+            SessionCommand::Tokens(Some(2))
+        );
+        assert_eq!(
+            parse_command("tokens").unwrap(),
+            SessionCommand::Tokens(None)
+        );
         assert_eq!(
             parse_command("2help").unwrap_err(),
             CommandParseError::UnexpectedAddress("help".into())
