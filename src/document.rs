@@ -113,6 +113,8 @@ pub struct Document {
     recognition_runs: Vec<RecognitionRun>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     resolved_issues: Vec<ResolvedIssue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    attention_marks: Vec<AttentionMark>,
     #[serde(default, skip_serializing_if = "is_zero")]
     next_structure_id: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -137,6 +139,19 @@ struct EditableDocumentState {
     next_structure_id: u64,
     #[serde(default)]
     resolved_issues: Vec<ResolvedIssue>,
+    #[serde(default)]
+    attention_marks: Vec<AttentionMark>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttentionMark {
+    token_id: VisibleTokenId,
+}
+
+impl AttentionMark {
+    pub fn token_id(&self) -> &VisibleTokenId {
+        &self.token_id
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +300,7 @@ impl Document {
             recognition_token_evidence: Vec::new(),
             recognition_runs: Vec::new(),
             resolved_issues: Vec::new(),
+            attention_marks: Vec::new(),
             next_structure_id: 0,
             edit_history: Vec::new(),
             redo_history: Vec::new(),
@@ -345,6 +361,47 @@ impl Document {
     pub fn resolved_issues(&self) -> &[ResolvedIssue] {
         &self.resolved_issues
     }
+    pub fn attention_marks(&self) -> &[AttentionMark] {
+        &self.attention_marks
+    }
+
+    pub fn is_attention_marked(&self, token_id: &VisibleTokenId) -> bool {
+        self.attention_marks
+            .iter()
+            .any(|mark| mark.token_id == *token_id)
+    }
+
+    pub fn mark_attention(&mut self, paragraph: usize, token: usize) -> Result<(), String> {
+        let token_id = self
+            .token(paragraph, token)
+            .ok_or_else(|| format!("unknown token {paragraph}.{token}"))?
+            .id()
+            .clone();
+        if self.is_attention_marked(&token_id) {
+            return Err(format!("token {paragraph}.{token} is already marked"));
+        }
+        self.remember_editable_state();
+        self.attention_marks.push(AttentionMark { token_id });
+        Ok(())
+    }
+
+    pub fn unmark_attention(&mut self, paragraph: usize, token: usize) -> Result<(), String> {
+        let token_id = self
+            .token(paragraph, token)
+            .ok_or_else(|| format!("unknown token {paragraph}.{token}"))?
+            .id()
+            .clone();
+        let Some(index) = self
+            .attention_marks
+            .iter()
+            .position(|mark| mark.token_id == token_id)
+        else {
+            return Err(format!("token {paragraph}.{token} is not marked"));
+        };
+        self.remember_editable_state();
+        self.attention_marks.remove(index);
+        Ok(())
+    }
 
     pub fn resolve_issue(&mut self, token_ids: Vec<VisibleTokenId>) {
         self.remember_editable_state();
@@ -376,6 +433,7 @@ impl Document {
             replay_chunks: self.replay_chunks.clone(),
             next_structure_id: self.next_structure_id,
             resolved_issues: self.resolved_issues.clone(),
+            attention_marks: self.attention_marks.clone(),
         }
     }
 
@@ -386,6 +444,7 @@ impl Document {
         self.replay_chunks = state.replay_chunks;
         self.next_structure_id = state.next_structure_id;
         self.resolved_issues = state.resolved_issues;
+        self.attention_marks = state.attention_marks;
     }
 
     fn remember_editable_state(&mut self) {
@@ -510,6 +569,8 @@ impl Document {
             .collect::<Vec<_>>();
         self.resolved_issues
             .retain(|issue| !issue.token_ids.iter().any(|id| removed.contains(id)));
+        self.attention_marks
+            .retain(|mark| !removed.contains(&mark.token_id));
         let new_ids = tokens.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
         let delta = tokens.len() as isize - (end - start) as isize;
         let paragraph = &mut self.paragraphs[paragraph_number - 1];
@@ -1280,6 +1341,8 @@ impl Document {
             .collect::<std::collections::HashSet<_>>();
         self.resolved_issues
             .retain(|issue| !issue.token_ids.iter().any(|id| removed_ids.contains(id)));
+        self.attention_marks
+            .retain(|mark| !removed_ids.contains(&mark.token_id));
         let replacement = replacement.map(|text| VisibleToken {
             id: VisibleTokenId::Pseudo {
                 id: format!("edit:{}:{new_revision}", paragraph.id),

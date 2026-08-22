@@ -10,7 +10,7 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 use crate::{
     document::Document,
     navigation::NavigationState,
-    persistence::{load_document, save_document},
+    persistence::{export_text, load_document, save_document},
     recognition::{RecognitionConfig, RecognitionRun, RecognizerSession},
 };
 
@@ -396,6 +396,43 @@ impl<'a> SessionState<'a> {
             SessionCommand::Alternatives { address } => {
                 render_alternatives(document, navigation, address, output, errors)?
             }
+            SessionCommand::Mark { address, remove } => {
+                let target = if let Some(address) = address {
+                    Ok(address)
+                } else if navigation.selection().is_some() {
+                    navigation
+                        .selected_token_endpoints(document)
+                        .map(|(start, _)| start)
+                } else {
+                    navigation.current_token_address(document)
+                };
+                match target {
+                    Ok(address) => {
+                        let result = if remove {
+                            document.unmark_attention(address.paragraph, address.token)
+                        } else {
+                            document.mark_attention(address.paragraph, address.token)
+                        };
+                        match result {
+                            Ok(()) => writeln!(
+                                output,
+                                "{} {address}",
+                                if remove { "unmarked" } else { "marked" }
+                            )?,
+                            Err(error) => writeln!(
+                                errors,
+                                "{} failed: {error}",
+                                if remove { "unmark" } else { "mark" }
+                            )?,
+                        }
+                    }
+                    Err(error) => writeln!(
+                        errors,
+                        "{} requires a current token: {error}",
+                        if remove { "unmark" } else { "mark" }
+                    )?,
+                }
+            }
             SessionCommand::ChooseAlternative { address, candidate } => {
                 let address = match alternative_address(document, navigation, address) {
                     Ok(v) => v,
@@ -655,6 +692,10 @@ impl<'a> SessionState<'a> {
                     Err(error) => writeln!(errors, "{error}")?,
                 }
             }
+            SessionCommand::Export(path) => match export_text(&path, document) {
+                Ok(()) => writeln!(output, "exported {}", path.display())?,
+                Err(error) => writeln!(errors, "{error}")?,
+            },
             SessionCommand::Load(path) => match load_document(&path) {
                 Ok(loaded) => {
                     *document = loaded;
@@ -919,6 +960,10 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(
         output,
         "Alternatives: [M.N]choose N and [M.N]set N select the same candidate"
+    )?;
+    writeln!(
+        output,
+        "Attention: [M.N]mark | [M.N]unmark; export PATH writes plain text with flags"
     )?;
     writeln!(
         output,

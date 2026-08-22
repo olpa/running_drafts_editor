@@ -2,7 +2,7 @@ use std::fs;
 
 use running_drafts_editor::{
     document::{VisibleTokenId, VisibleTokenOrigin},
-    persistence::{load_document, save_document, DocumentIoError},
+    persistence::{export_text, load_document, save_document, DocumentIoError},
 };
 use serde_json::json;
 
@@ -61,6 +61,70 @@ fn baseline(path: &std::path::Path, audio_path: &str) {
         "ignored_future_field": {"safe": true}
     });
     fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+}
+
+#[test]
+fn attention_marks_persist_export_exactly_and_follow_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("input.json");
+    let saved = directory.path().join("saved.json");
+    let exported = directory.path().join("draft.txt");
+    baseline(&input, "missing.wav");
+    let mut document = load_document(&input).unwrap();
+
+    document.mark_attention(1, 1).unwrap();
+    document.mark_attention(1, 2).unwrap();
+    assert!(document
+        .mark_attention(1, 1)
+        .unwrap_err()
+        .contains("already marked"));
+    export_text(&exported, &document).unwrap();
+    assert_eq!(
+        fs::read_to_string(&exported).unwrap(),
+        "⚑hello⚑ exact pseudo text "
+    );
+    document.split_paragraph(1, 1).unwrap();
+    assert_eq!(document.attention_marks().len(), 2);
+    assert!(document.is_attention_marked(document.token(2, 1).unwrap().id()));
+    document.merge_paragraphs(1).unwrap();
+
+    save_document(&saved, &document).unwrap();
+    let mut reopened = load_document(&saved).unwrap();
+    assert_eq!(reopened.attention_marks().len(), 2);
+    reopened.replace_text(1, 1, 1, 1, "fixed".into()).unwrap();
+    assert_eq!(reopened.attention_marks().len(), 1);
+    assert_eq!(reopened.undo(1), 1);
+    assert_eq!(reopened.attention_marks().len(), 2);
+    assert_eq!(reopened.redo(1), 1);
+    assert_eq!(reopened.attention_marks().len(), 1);
+    reopened.unmark_attention(1, 2).unwrap();
+    assert!(reopened
+        .unmark_attention(1, 2)
+        .unwrap_err()
+        .contains("not marked"));
+}
+
+#[test]
+fn malformed_and_duplicate_attention_marks_are_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("input.json");
+    baseline(&input, "missing.wav");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&input).unwrap()).unwrap();
+    let unknown = json!({"token_id":{"kind":"pseudo","id":"missing"}});
+    value["attention_marks"] = json!([unknown]);
+    fs::write(&input, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(load_document(&input)
+        .unwrap_err()
+        .to_string()
+        .contains("unknown visible token"));
+
+    let current = json!({"token_id":{"kind":"pseudo","id":"user:1"}});
+    value["attention_marks"] = json!([current.clone(), current]);
+    fs::write(&input, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(load_document(&input)
+        .unwrap_err()
+        .to_string()
+        .contains("more than one attention mark"));
 }
 
 #[test]

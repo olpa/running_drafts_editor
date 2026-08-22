@@ -143,4 +143,5 @@ allow recognition retry without losing visible work.
 ## Export usable text
 
 Write clean paragraph text without tokens, confidence, chunk markers, or other
-recognition internals.
+recognition internals. Intentional `⚑` attention marks remain in the exported
+text so another tool can inspect those positions.
