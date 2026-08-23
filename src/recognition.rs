@@ -183,12 +183,12 @@ pub struct ChunkRefreshRequest {
 }
 
 pub struct RecognizerSession {
-    cached_chunk: Option<CachedChunk>,
+    chunk_decode_cache: Option<ChunkDecodeCache>,
     decoder: WhisperDecoder,
     model_path: std::path::PathBuf,
 }
 
-struct CachedChunk {
+struct ChunkDecodeCache {
     source_sha256: String,
     range: SampleRange,
     language: String,
@@ -198,7 +198,7 @@ struct CachedChunk {
 impl RecognizerSession {
     pub fn load(model: &Path, config: &RecognitionConfig) -> Result<Self, RecognitionError> {
         Ok(Self {
-            cached_chunk: None,
+            chunk_decode_cache: None,
             decoder: WhisperDecoder::load(model, config)?,
             model_path: model.into(),
         })
@@ -206,7 +206,7 @@ impl RecognizerSession {
 
     pub fn from_decoder(decoder: WhisperDecoder, model_path: &Path) -> Self {
         Self {
-            cached_chunk: None,
+            chunk_decode_cache: None,
             decoder,
             model_path: model_path.into(),
         }
@@ -263,7 +263,7 @@ impl RecognizerSession {
         let end = usize::try_from(request.chunk_range.end_sample)
             .map_err(|_| RecognitionError::AudioTooLong)?;
         self.decoder.language = request.language.clone();
-        let cache_matches = self.cached_chunk.as_ref().is_some_and(|cached| {
+        let cache_matches = self.chunk_decode_cache.as_ref().is_some_and(|cached| {
             cached.source_sha256 == request.source.sha256
                 && cached.range == request.chunk_range
                 && cached.language == request.language
@@ -283,7 +283,7 @@ impl RecognizerSession {
             session
                 .load_audio(&samples[start..end])
                 .map_err(|error| RecognitionError::Model(error.to_string()))?;
-            self.cached_chunk = Some(CachedChunk {
+            self.chunk_decode_cache = Some(ChunkDecodeCache {
                 source_sha256: request.source.sha256.clone(),
                 range: request.chunk_range,
                 language: request.language.clone(),
@@ -291,7 +291,7 @@ impl RecognizerSession {
             });
         }
         let cached = self
-            .cached_chunk
+            .chunk_decode_cache
             .as_mut()
             .expect("chunk cache was initialized");
         let transcription = if request.forced_tokens.is_empty() {
