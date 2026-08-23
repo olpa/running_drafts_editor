@@ -110,6 +110,7 @@ large design.
   when a member token is edited. Thresholds are session-only; resolved tokens
   suppress red and orange confidence color.
 - Visible-token corrections synchronously re-recognize their one complete replay chunk with a forced decoder prefix; `refresh` does the same without a prefix. The operation keeps chunk structure, appends an immutable run, and installs new recognition truth atomically. Session model and language settings are not persisted, and `delete` is disabled pending audio-backed deletion semantics.
+- `open-audio` retains its loaded Whisper model context for interactive correction. The first recognition of an exact replay chunk caches that chunk's encoder state; later correction or refresh of the same audio range reuses it and runs only the decoder.
 - Forced-prefix correction uses one greedy decoder; normal transcription keeps
   five-beam search. Development builds retain verbose Whisper decode traces.
 - Canonical audio and recognition positions use mono 16 kHz sample offsets;

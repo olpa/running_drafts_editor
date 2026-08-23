@@ -35,6 +35,7 @@ pub struct SessionContext<'a> {
     recognition_run: Option<&'a RecognitionRun>,
     start: SessionStart<'a>,
     model: Option<&'a Path>,
+    recognizer: Option<RecognizerSession>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -50,6 +51,7 @@ impl<'a> SessionContext<'a> {
             recognition_run: None,
             start: SessionStart::SavedDocument,
             model,
+            recognizer: None,
         }
     }
 
@@ -64,6 +66,23 @@ impl<'a> SessionContext<'a> {
             recognition_run: Some(recognition_run),
             start: SessionStart::RecognizedAudio { source },
             model,
+            recognizer: None,
+        }
+    }
+
+    pub fn recognized_audio_with_recognizer(
+        recognition_run: &'a RecognitionRun,
+        source: &'a Path,
+        document_path: Option<&'a Path>,
+        model: Option<&'a Path>,
+        recognizer: RecognizerSession,
+    ) -> Self {
+        Self {
+            document_path,
+            recognition_run: Some(recognition_run),
+            start: SessionStart::RecognizedAudio { source },
+            model,
+            recognizer: Some(recognizer),
         }
     }
 }
@@ -101,6 +120,7 @@ impl<'a> SessionState<'a> {
             recognition_run,
             start,
             model,
+            recognizer,
         } = context;
         let document = document.clone();
         let document_path = document_path.map(Path::to_path_buf);
@@ -189,7 +209,7 @@ impl<'a> SessionState<'a> {
             navigation,
             last_playback: None,
             language: "auto".to_string(),
-            recognizer: None,
+            recognizer,
             model_path,
             issue_thresholds: IssueThresholds::default(),
             color,

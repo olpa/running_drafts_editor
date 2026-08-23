@@ -182,16 +182,32 @@ pub struct ChunkRefreshRequest {
 }
 
 pub struct RecognizerSession {
+    cached_chunk: Option<CachedChunk>,
     decoder: WhisperDecoder,
     model_path: std::path::PathBuf,
+}
+
+struct CachedChunk {
+    source_sha256: String,
+    range: SampleRange,
+    state: WhisperState,
 }
 
 impl RecognizerSession {
     pub fn load(model: &Path, config: &RecognitionConfig) -> Result<Self, RecognitionError> {
         Ok(Self {
+            cached_chunk: None,
             decoder: WhisperDecoder::load(model, config)?,
             model_path: model.into(),
         })
+    }
+
+    pub fn from_decoder(decoder: WhisperDecoder, model_path: &Path) -> Self {
+        Self {
+            cached_chunk: None,
+            decoder,
+            model_path: model_path.into(),
+        }
     }
 
     pub fn model_path(&self) -> &Path {
@@ -245,9 +261,33 @@ impl RecognizerSession {
         let end = usize::try_from(request.chunk_range.end_sample)
             .map_err(|_| RecognitionError::AudioTooLong)?;
         self.decoder.language = request.language.clone();
+        let cache_matches = self.cached_chunk.as_ref().is_some_and(|cached| {
+            cached.source_sha256 == request.source.sha256 && cached.range == request.chunk_range
+        });
+        if !cache_matches {
+            let state = self
+                .decoder
+                .context
+                .create_state()
+                .map_err(|error| RecognitionError::Model(error.to_string()))?;
+            self.cached_chunk = Some(CachedChunk {
+                source_sha256: request.source.sha256.clone(),
+                range: request.chunk_range,
+                state,
+            });
+        }
+        let cached = self
+            .cached_chunk
+            .as_mut()
+            .expect("chunk cache was initialized");
         let relative = self
             .decoder
-            .decode_forced(&samples[start..end], request.forced_tokens.clone())
+            .decode_forced_with_state(
+                &mut cached.state,
+                &samples[start..end],
+                request.forced_tokens.clone(),
+                cache_matches,
+            )
             .map_err(RecognitionError::Model)?;
         let segments = normalize_segments(relative, request.chunk_range, 1);
         let chunk_text = segments
@@ -832,22 +872,21 @@ impl WhisperDecoder {
         Ok(output)
     }
 
-    fn decode_forced(
-        &mut self,
+    fn decode_forced_with_state(
+        &self,
+        state: &mut WhisperState,
         audio: &[f32],
         forced_tokens: Vec<i32>,
+        skip_encode: bool,
     ) -> Result<Vec<WindowSegment>, String> {
-        let mut state = self
-            .context
-            .create_state()
-            .map_err(|error| error.to_string())?;
         let mut params = self.params_with_sampling(SamplingStrategy::Greedy { best_of: 1 });
         params.set_single_segment(true);
         params.set_forced_tokens_owned(forced_tokens);
+        params.set_skip_encode(skip_encode);
         state
             .full(params, audio)
             .map_err(|error| error.to_string())?;
-        self.extract_segments(&state)
+        self.extract_segments(state)
     }
 
     fn params(&self) -> FullParams<'_, '_> {
