@@ -112,9 +112,40 @@ shorter.
 ## Recognition
 
 The tool uses Whisper through revision-pinned `hfvc_lib`, `whisper-rs`, and
-`whisper.cpp` sources. The user supplies a Whisper model file. The tool hashes the model and
-stores the hash with the recognition result, so results from different models
-can be distinguished.
+`whisper.cpp` sources. The user supplies a Whisper model file. The tool hashes
+the model and stores the hash with the recognition result, so results from
+different models can be distinguished.
+
+### Model and chunk decode cache ownership
+
+One `RecognizerSession` owns one shared `Arc<WhisperContext>`. That context
+contains the loaded model weights, vocabulary, model metadata, and shared
+backend resources. Loading another replay chunk does not load another model.
+
+RDE's `ChunkDecodeCache` represents one exact replay-chunk audio range. It owns
+an `hfvc_lib::InteractiveSession`, which owns the chunk PCM, current
+transcription and forced prefix, and one `WhisperState`. The native
+`WhisperState` contains the chunk-specific encoder and decoder caches, including
+the cross-attention and self-attention KV caches. These caches cannot be shared
+between different chunks because they depend on different audio and decoder
+history.
+
+The ownership relationship is:
+
+```text
+RecognizerSession
+├── Arc<WhisperContext>                 shared model, loaded once
+└── ChunkDecodeCache                    one exact replay-chunk range
+    └── hfvc_lib::InteractiveSession
+        └── WhisperState                chunk-specific encoder and KV caches
+```
+
+The first correction or refresh for a chunk encodes that exact chunk. Later
+operations on the same cached range use `skip_encode` and reuse its encoded
+audio state; decoding state follows the new forced prefix. RDE currently keeps
+one `ChunkDecodeCache` at a time. If it later keeps several, every cache must
+have its own `WhisperState` while cloning the same shared
+`Arc<WhisperContext>`.
 
 Whisper receives mono 16 kHz floating-point audio. Each window described above
 is recognized separately with beam search. The current beam size is 5.
