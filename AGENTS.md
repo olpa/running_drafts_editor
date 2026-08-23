@@ -177,10 +177,11 @@ large design.
   source-end boundaries. The CLI renders a marker after every chunk and
   addresses it as `M@N`, with `M` as the paragraph number and `N` as the chunk
   number inside that paragraph; `M@Ninfo` shows its chunk information. Visible tokens use `M.N`.
-- Whisper Rust and C++ sources are pinned and vendored under
-  `vendor/whisper-rs`; `RDE-VENDOR.md` records their exact provenance. The
-  backend builds statically without project-specific build variables or a
-  runtime shared-library path. Whisper model binaries remain external.
+- RDE uses `hfvc_lib` for cached interactive decoding. `hfvc_lib` and its
+  canonical `whisper-rs` backend are pinned by full Git revisions;
+  `whisper-rs` pins `whisper.cpp` as a submodule and builds it statically
+  without project-specific build variables or a runtime shared-library path.
+  Whisper model binaries remain external.
 
 ## MVP boundary
 

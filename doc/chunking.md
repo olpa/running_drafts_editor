@@ -111,8 +111,8 @@ shorter.
 
 ## Recognition
 
-The tool uses Whisper through the vendored `whisper-rs` and `whisper.cpp`
-sources. The user supplies a Whisper model file. The tool hashes the model and
+The tool uses Whisper through revision-pinned `hfvc_lib`, `whisper-rs`, and
+`whisper.cpp` sources. The user supplies a Whisper model file. The tool hashes the model and
 stores the hash with the recognition result, so results from different models
 can be distinguished.
 

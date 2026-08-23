@@ -345,6 +345,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
+name = "hfvc_lib"
+version = "0.2.0"
+source = "git+ssh://git@github.com/olpa/hfvc_lib.git?rev=73f294503e332c657bf4d46a2a0b5a933a4b7ab8#73f294503e332c657bf4d46a2a0b5a933a4b7ab8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "whisper-rs",
+]
+
+[[package]]
 name = "home"
 version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -630,6 +641,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "hex",
+ "hfvc_lib",
  "hound",
  "proptest",
  "rustyline",
@@ -873,6 +885,7 @@ dependencies = [
 [[package]]
 name = "whisper-rs"
 version = "0.16.0"
+source = "git+https://github.com/olpa/whisper-rs.git?rev=001016f2c773324594327e2be47b0ef9103091d0#001016f2c773324594327e2be47b0ef9103091d0"
 dependencies = [
  "whisper-rs-sys",
 ]
@@ -880,6 +893,7 @@ dependencies = [
 [[package]]
 name = "whisper-rs-sys"
 version = "0.14.1"
+source = "git+https://github.com/olpa/whisper-rs.git?rev=001016f2c773324594327e2be47b0ef9103091d0#001016f2c773324594327e2be47b0ef9103091d0"
 dependencies = [
  "bindgen",
  "cfg-if",

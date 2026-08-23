@@ -15,13 +15,13 @@ cargo test --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-Tests use synthetic PCM and do not download speech models. Exact source
-snapshots of the selected `olpa/whisper-rs` fork and its `whisper.cpp` backend
-live under `vendor/whisper-rs`; their provenance is recorded there. Cargo and
-CMake compile whisper.cpp into the executable, so no HandsfreeVC checkout,
-project-specific environment variable, or runtime shared-library path is
-needed. A first native build can take about a minute and requires a C/C++
-compiler, CMake, and libclang for bindgen.
+Tests use synthetic PCM and do not download speech models. Cargo pins
+`olpa/hfvc_lib` and `olpa/whisper-rs` by full Git revisions; the latter pins its
+`whisper.cpp` source as a submodule. Cargo and CMake compile whisper.cpp into
+the executable, so no HandsfreeVC checkout, project-specific environment
+variable, or runtime shared-library path is needed. A first native build can
+take about a minute and requires a C/C++ compiler, CMake, and libclang for
+bindgen.
 
 ## Transcribe and edit
 
@@ -87,6 +87,6 @@ only the initial deterministic deduplication rule.
 ## Reproducibility and licenses
 
 The command hashes the caller-supplied Whisper model. This repository does not
-redistribute recognition models. The vendored whisper-rs and whisper.cpp
-license files remain with their source snapshots. Review licenses again before
-packaging.
+redistribute recognition models. The pinned hfvc_lib, whisper-rs, and
+whisper.cpp sources retain their upstream license files. Review licenses again
+before packaging.
