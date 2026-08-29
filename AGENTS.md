@@ -110,8 +110,11 @@ large design.
   when a member token is edited. Thresholds are session-only; resolved tokens
   suppress red and orange confidence color.
 - Visible-token corrections synchronously re-recognize their one complete replay chunk with a forced decoder prefix; `refresh` does the same without a prefix. The operation keeps chunk structure, appends an immutable run, and installs new recognition truth atomically. Session model and language settings are not persisted, and `delete` is disabled pending audio-backed deletion semantics.
+- A recognition session owns one shared `Arc<WhisperContext>` so its chunk decode caches load the model only once. Each `ChunkDecodeCache` covers one exact replay-chunk audio range and owns an `hfvc_lib::InteractiveSession` with its own `WhisperState`, encoded-audio state, and KV caches; different chunks never share a `WhisperState`. RDE currently retains one chunk decode cache at a time. The first recognition of its exact range encodes it; later correction or refresh of that range reuses the encoder state and runs only the decoder.
 - Forced-prefix correction uses one greedy decoder; normal transcription keeps
-  five-beam search. Development builds retain verbose Whisper decode traces.
+  five-beam search. Correction prefixes begin with Whisper's beginning
+  timestamp token before the visible text tokens. Development builds retain
+  verbose Whisper decode traces.
 - Canonical audio and recognition positions use mono 16 kHz sample offsets;
   recognition identities exclude local paths and nondeterministic diagnostics.
 - WAV input accepts common 8/16/24/32-bit integer PCM and 32-bit float formats;
@@ -176,10 +179,11 @@ large design.
   source-end boundaries. The CLI renders a marker after every chunk and
   addresses it as `M@N`, with `M` as the paragraph number and `N` as the chunk
   number inside that paragraph; `M@Ninfo` shows its chunk information. Visible tokens use `M.N`.
-- Whisper Rust and C++ sources are pinned and vendored under
-  `vendor/whisper-rs`; `RDE-VENDOR.md` records their exact provenance. The
-  backend builds statically without project-specific build variables or a
-  runtime shared-library path. Whisper model binaries remain external.
+- RDE uses `hfvc_lib` for cached interactive decoding. `hfvc_lib` and its
+  canonical `whisper-rs` backend are pinned by full Git revisions;
+  `whisper-rs` pins `whisper.cpp` as a submodule and builds it statically
+  without project-specific build variables or a runtime shared-library path.
+  Whisper model binaries remain external.
 
 ## MVP boundary
 

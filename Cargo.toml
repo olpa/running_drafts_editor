@@ -16,12 +16,13 @@ path = "src/main.rs"
 clap = { version = "=4.5.45", features = ["derive"] }
 hex = "=0.4.3"
 hound = "=3.5.1"
+hfvc_lib = { git = "ssh://git@github.com/olpa/hfvc_lib.git", rev = "73f294503e332c657bf4d46a2a0b5a933a4b7ab8" }
 rustyline = "18.0.1"
 serde = { version = "=1.0.219", features = ["derive"] }
 serde_json = "=1.0.142"
 sha2 = "=0.10.9"
 thiserror = "=2.0.12"
-whisper-rs = { path = "vendor/whisper-rs" }
+whisper-rs = { git = "https://github.com/olpa/whisper-rs.git", rev = "001016f2c773324594327e2be47b0ef9103091d0" }
 
 [dev-dependencies]
 proptest = "=1.7.0"

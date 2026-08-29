@@ -1,7 +1,8 @@
 //! Immutable Whisper recognition evidence and bounded-window orchestration.
 
-use std::{fs::File, io::Read, path::Path};
+use std::{fs::File, io::Read, path::Path, sync::Arc};
 
+use hfvc_lib::{InteractiveSession, SessionConfig, Transcription};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use whisper_rs::{
@@ -182,16 +183,33 @@ pub struct ChunkRefreshRequest {
 }
 
 pub struct RecognizerSession {
+    chunk_decode_cache: Option<ChunkDecodeCache>,
     decoder: WhisperDecoder,
     model_path: std::path::PathBuf,
+}
+
+struct ChunkDecodeCache {
+    source_sha256: String,
+    range: SampleRange,
+    language: String,
+    session: InteractiveSession,
 }
 
 impl RecognizerSession {
     pub fn load(model: &Path, config: &RecognitionConfig) -> Result<Self, RecognitionError> {
         Ok(Self {
+            chunk_decode_cache: None,
             decoder: WhisperDecoder::load(model, config)?,
             model_path: model.into(),
         })
+    }
+
+    pub fn from_decoder(decoder: WhisperDecoder, model_path: &Path) -> Self {
+        Self {
+            chunk_decode_cache: None,
+            decoder,
+            model_path: model_path.into(),
+        }
     }
 
     pub fn model_path(&self) -> &Path {
@@ -224,6 +242,10 @@ impl RecognizerSession {
             .collect()
     }
 
+    pub fn beginning_timestamp_token(&self) -> i32 {
+        self.decoder.context.token_beg()
+    }
+
     pub fn refresh_chunk(
         &mut self,
         request: ChunkRefreshRequest,
@@ -245,10 +267,61 @@ impl RecognizerSession {
         let end = usize::try_from(request.chunk_range.end_sample)
             .map_err(|_| RecognitionError::AudioTooLong)?;
         self.decoder.language = request.language.clone();
+        let cache_matches = self.chunk_decode_cache.as_ref().is_some_and(|cached| {
+            cached.source_sha256 == request.source.sha256
+                && cached.range == request.chunk_range
+                && cached.language == request.language
+        });
+        if !cache_matches {
+            let mut config = SessionConfig::default()
+                .with_threads(self.decoder.threads)
+                .with_top_candidates(self.decoder.top_candidates)
+                .with_greedy(1)
+                .with_token_timestamps(true);
+            if request.language != "auto" {
+                config = config.with_language(request.language.clone());
+            }
+            let mut session =
+                InteractiveSession::new_with_context(Arc::clone(&self.decoder.context), config)
+                    .map_err(|error| RecognitionError::Model(error.to_string()))?;
+            session
+                .load_audio(&samples[start..end])
+                .map_err(|error| RecognitionError::Model(error.to_string()))?;
+            self.chunk_decode_cache = Some(ChunkDecodeCache {
+                source_sha256: request.source.sha256.clone(),
+                range: request.chunk_range,
+                language: request.language.clone(),
+                session,
+            });
+        }
+        let cached = self
+            .chunk_decode_cache
+            .as_mut()
+            .expect("chunk cache was initialized");
+        let transcription = if request.forced_tokens.is_empty() {
+            if cache_matches {
+                cached
+                    .session
+                    .reset()
+                    .map_err(|error| RecognitionError::Model(error.to_string()))?
+                    .clone()
+            } else {
+                cached
+                    .session
+                    .transcription()
+                    .expect("new interactive session has a transcription")
+                    .clone()
+            }
+        } else {
+            cached
+                .session
+                .force_prefix_tokens(&request.forced_tokens)
+                .map_err(|error| RecognitionError::Model(error.to_string()))?
+                .clone()
+        };
         let relative = self
             .decoder
-            .decode_forced(&samples[start..end], request.forced_tokens.clone())
-            .map_err(RecognitionError::Model)?;
+            .interactive_segments(&cached.session, &transcription)?;
         let segments = normalize_segments(relative, request.chunk_range, 1);
         let chunk_text = segments
             .iter()
@@ -751,7 +824,7 @@ fn run_id(
 }
 
 pub struct WhisperDecoder {
-    context: WhisperContext,
+    context: Arc<WhisperContext>,
     identity: RecognizerIdentity,
     language: String,
     threads: usize,
@@ -764,8 +837,10 @@ impl WhisperDecoder {
         let path = model
             .to_str()
             .ok_or_else(|| RecognitionError::Model("model path is not valid UTF-8".into()))?;
-        let context = WhisperContext::new_with_params(path, WhisperContextParameters::default())
-            .map_err(|error| RecognitionError::Model(error.to_string()))?;
+        let context = Arc::new(
+            WhisperContext::new_with_params(path, WhisperContextParameters::default())
+                .map_err(|error| RecognitionError::Model(error.to_string()))?,
+        );
         Ok(Self {
             context,
             identity: RecognizerIdentity {
@@ -832,22 +907,48 @@ impl WhisperDecoder {
         Ok(output)
     }
 
-    fn decode_forced(
-        &mut self,
-        audio: &[f32],
-        forced_tokens: Vec<i32>,
-    ) -> Result<Vec<WindowSegment>, String> {
-        let mut state = self
-            .context
-            .create_state()
-            .map_err(|error| error.to_string())?;
-        let mut params = self.params_with_sampling(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_single_segment(true);
-        params.set_forced_tokens_owned(forced_tokens);
-        state
-            .full(params, audio)
-            .map_err(|error| error.to_string())?;
-        self.extract_segments(&state)
+    fn interactive_segments(
+        &self,
+        session: &InteractiveSession,
+        transcription: &Transcription,
+    ) -> Result<Vec<WindowSegment>, RecognitionError> {
+        Ok(transcription
+            .segments
+            .iter()
+            .filter_map(|segment| {
+                let audio_range = milliseconds_range(segment.start_time_ms, segment.end_time_ms)?;
+                let tokens = segment
+                    .tokens
+                    .iter()
+                    .map(|token| {
+                        let alternatives = session
+                            .candidates_at(token.position, self.top_candidates)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|candidate| TokenAlternative {
+                                token_id: candidate.token_id,
+                                text: candidate.text,
+                                probability: candidate.probability,
+                            })
+                            .collect();
+                        RecognitionToken {
+                            token_id: token.token_id,
+                            text: token.text.clone(),
+                            probability: token.probability,
+                            is_special: token.token_id >= self.context.token_eot(),
+                            audio_range: milliseconds_range(token.start_time_ms, token.end_time_ms),
+                            alternatives,
+                        }
+                    })
+                    .collect();
+                Some(WindowSegment {
+                    audio_range,
+                    text: segment.text.clone(),
+                    no_speech_probability: segment.no_speech_prob,
+                    tokens,
+                })
+            })
+            .collect())
     }
 
     fn params(&self) -> FullParams<'_, '_> {
@@ -907,6 +1008,15 @@ fn centiseconds_range(start: i64, end: i64) -> Option<SampleRange> {
     let end = u64::try_from(end)
         .ok()?
         .checked_mul(SAMPLES_PER_CENTISECOND)?;
+    (start < end).then_some(SampleRange {
+        start_sample: start,
+        end_sample: end,
+    })
+}
+
+fn milliseconds_range(start: i64, end: i64) -> Option<SampleRange> {
+    let start = u64::try_from(start).ok()?.checked_mul(16)?;
+    let end = u64::try_from(end).ok()?.checked_mul(16)?;
     (start < end).then_some(SampleRange {
         start_sample: start,
         end_sample: end,

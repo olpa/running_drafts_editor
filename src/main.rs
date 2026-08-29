@@ -5,7 +5,7 @@ use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
 use running_drafts_editor::document::Document;
 use running_drafts_editor::persistence::{load_document, save_document};
 use running_drafts_editor::recognition::{
-    recognize, PostChunkConfig, RecognitionConfig, WhisperDecoder,
+    recognize, PostChunkConfig, RecognitionConfig, RecognizerSession, WhisperDecoder,
 };
 use running_drafts_editor::session::{run_readline_session, run_session, Ffplay, SessionContext};
 
@@ -141,7 +141,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_transcribe(args: TranscribeArgs) -> Result<(), Box<dyn std::error::Error>> {
     validate_output_target(&args.output)?;
-    let run = recognize_audio(&args.input, &args.recognition)?;
+    let (run, _) = recognize_audio(&args.input, &args.recognition)?;
     let document = Document::from_run_with_source(&run, Some(&args.input));
     save_document(&args.output, &document)?;
     println!("saved {}", args.output.display());
@@ -199,7 +199,7 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     if let Some(path) = &args.output {
         validate_output_target(path)?;
     }
-    let run = recognize_audio(&args.input, &args.recognition)?;
+    let (run, recognizer) = recognize_audio(&args.input, &args.recognition)?;
     let document = Document::from_run_with_source(&run, Some(&args.input));
     if let Some(path) = &args.output {
         save_document(path, &document)?;
@@ -212,11 +212,12 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    let context = SessionContext::recognized_audio(
+    let context = SessionContext::recognized_audio_with_recognizer(
         &run,
         &args.input,
         args.output.as_deref(),
         Some(&args.recognition.model),
+        recognizer,
     );
     if stdin.is_terminal() && stdout.is_terminal() {
         run_readline_session(
@@ -245,7 +246,13 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
 fn recognize_audio(
     input: &std::path::Path,
     args: &RecognitionArgs,
-) -> Result<running_drafts_editor::recognition::RecognitionRun, Box<dyn std::error::Error>> {
+) -> Result<
+    (
+        running_drafts_editor::recognition::RecognitionRun,
+        RecognizerSession,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let wav = read_canonical_wav(input)?;
     let source = SourceFacts {
         sha256: wav.source_sha256,
@@ -273,7 +280,8 @@ fn recognize_audio(
     };
     let mut decoder = WhisperDecoder::load(&args.model, &config)?;
     let run = recognize(source, &wav.samples, config, &mut decoder)?;
-    Ok(run)
+    let recognizer = RecognizerSession::from_decoder(decoder, &args.model);
+    Ok((run, recognizer))
 }
 
 #[cfg(test)]
