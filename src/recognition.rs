@@ -242,6 +242,10 @@ impl RecognizerSession {
             .collect()
     }
 
+    pub fn beginning_timestamp_token(&self) -> i32 {
+        self.decoder.context.token_beg()
+    }
+
     pub fn refresh_chunk(
         &mut self,
         request: ChunkRefreshRequest,

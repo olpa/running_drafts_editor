@@ -198,6 +198,7 @@ pub(crate) fn run_corrected_refresh(
             Err(e) => return writeln!(errors, "recognition failed: {e}"),
         }
     }
+    prepend_beginning_timestamp(&mut forced, session.beginning_timestamp_token());
     let marker = document
         .chunk_for_token(paragraph, token)
         .expect("address was resolved")
@@ -205,6 +206,10 @@ pub(crate) fn run_corrected_refresh(
     run_refresh(
         document, navigation, recognizer, language, paragraph, marker, forced, output, errors,
     )
+}
+
+fn prepend_beginning_timestamp(forced: &mut Vec<i32>, beginning_timestamp: i32) {
+    forced.insert(0, beginning_timestamp);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -471,6 +476,15 @@ pub(crate) fn apply_chunk_merge(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn correction_prefix_starts_with_whisper_beginning_timestamp() {
+        let mut forced = vec![708, 366, 5622];
+
+        prepend_beginning_timestamp(&mut forced, 50_364);
+
+        assert_eq!(forced, vec![50_364, 708, 366, 5622]);
+    }
 
     #[test]
     fn all_whitespace_selection_does_not_contribute_boundaries() {
