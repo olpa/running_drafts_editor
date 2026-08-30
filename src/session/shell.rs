@@ -983,7 +983,7 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         output,
-        "Attention: [M.N]mark | [M.N]unmark; export PATH writes plain text with flags"
+        "Attention: [M.N]mark | [M.N]unmark; export PATH writes clean paragraph text with flags"
     )?;
     writeln!(
         output,
