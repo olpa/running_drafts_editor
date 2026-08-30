@@ -140,7 +140,7 @@ history for undo. Preserve recovery when optional metadata is unknown or lost.
 Keep reading and text editing available. Explain unavailable replay locally and
 allow recognition retry without losing visible work.
 
-## Export usable text
+## [x] Export usable text
 
 Write clean paragraph text without tokens, confidence, chunk markers, or other
 recognition internals. Intentional `⚑` attention marks remain in the exported

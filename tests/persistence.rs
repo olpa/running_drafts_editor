@@ -105,6 +105,25 @@ fn attention_marks_persist_export_exactly_and_follow_history() {
 }
 
 #[test]
+fn export_writes_only_exact_visible_text_with_blank_lines_between_paragraphs() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("input.json");
+    let exported = directory.path().join("draft.txt");
+    baseline(&input, "missing.wav");
+    let mut document = load_document(&input).unwrap();
+
+    // Recognition tokens, chunk markers, confidence, alternatives, and audio
+    // mappings remain stored, but none of them are rendered into the export.
+    document.split_paragraph(1, 1).unwrap();
+    export_text(&exported, &document).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(exported).unwrap(),
+        "hello\n\n exact pseudo text "
+    );
+}
+
+#[test]
 fn malformed_and_duplicate_attention_marks_are_rejected() {
     let directory = tempfile::tempdir().unwrap();
     let input = directory.path().join("input.json");
