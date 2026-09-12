@@ -34,18 +34,29 @@ large design.
   and `parasplit` splits a paragraph after a chunk marker. `Mmerge` joins
   paragraphs without changing text or joining their chunks; `M@Nmerge` joins
   compatible chunks around a marker.
-- Chunks are at most about 30 seconds and may overlap.
+- Domain chunks are disjoint and at most about 30 seconds. Provisional chunks
+  may overlap during transcription to find better boundaries; finalized chunks
+  retain the overlapping transcription evidence but must not overlap.
 - Derived chunk splits retain immutable parent provenance and keep replay
   available: use an exact shared token boundary, the midpoint of a mapped gap
   with aligned status, or the complete parent range with inherited status.
   Derived chunk identity, token membership, parents, and mapping alignment are
   persisted. Chunk merges require one audio source and at most 480,000 samples.
-- Recognition runs are immutable; retries and boundary changes create revisions.
+- Stored transcriptions are immutable; retries and boundary changes create new
+  transcriptions rather than modifying one in place. The project has one linear
+  undo/redo history. A new user action after undo clears the redo path, and
+  transcriptions no reachable history state can restore are orphaned and may be
+  deleted together with user actions referenced only by those transcriptions.
+  If producing a transcription fails, leave the current transcription unchanged
+  and redo history available, and discard the supplied user actions; do not
+  retain a pending-action state.
+  Whether successful user actions or transcriptions have stable identities is
+  implementation-specific.
 - Successful text, structural, and installed recognition edits persist
   restorable history with the document. `undo`/`redo` apply one edit and
   `Nundo`/`Nredo` apply up to N available edits. A new edit clears redo history.
   History restores visible structure and current mappings without removing or
-  duplicating immutable recognition evidence.
+  duplicating reachable transcription evidence.
 - Selection and text editing use ranges of complete visible tokens; a token
   cannot be selected or edited in part. Initial tokens refer to accepted normal
   Whisper tokens. Edits may replace or add them with indivisible pseudo-tokens
@@ -198,7 +209,8 @@ annotations, multi-speaker UI, collaboration, LSP, and mobile UX design.
 
 - Keep each change limited to its ticket and the smallest supporting work.
 - Prefer simple, inspectable representations over generic frameworks.
-- Preserve old recognition evidence; users never edit it directly.
+- Preserve reachable transcription evidence; users never edit it directly.
+  Orphaned transcriptions may be deleted.
 - Add focused tests for implemented behavior and failure paths.
 - Do not commit editor swap files, recordings, credentials, or generated output.
 - Record unresolved choices rather than silently fixing open product questions.
@@ -224,5 +236,53 @@ For ticket operations, use GitHub Issues; read `docs/agents/issue-tracker.md`.
 Before triaging issues, read the default role mapping in `docs/agents/triage-labels.md`.
 
 ### Domain docs
+
+Use `CONTEXT.md` for agreed domain vocabulary. Older documentation and code
+also use “chunk” for groups formed after initial transcription; that naming
+conflict is unresolved and must be surfaced when working on chunk structure.
+The agreed disjoint-chunk model is a domain requirement, not a claim that
+current code already enforces it.
+
+Finalized chunks must not be split or joined during editing. This agreed change
+is deferred to GitHub issue #54; the current split/merge behavior described above
+remains implemented until that refactor. Paragraph operations retain whole chunks.
+
+In agreed domain vocabulary, a document is the chunk composition presented to
+the user; a project is the complete working state behind it. The current
+`Document` type conflates them pending GitHub issue #56.
+
+Use “transcription” consistently in new domain language, including its supporting
+data and circumstances. Existing “recognition” identifiers and documentation are
+legacy terminology pending GitHub issue #57. “Transcription cleanup” names the
+user's job; user actions lead to another transcription without a separate name
+for that transition. Each later transcription records the transcription that was
+current when the user acted. A new action after undo clears redo; transcriptions
+that are no longer reachable through undo or redo are orphaned and may be
+deleted. User actions referenced only by orphaned transcriptions may be deleted
+with them. When the user uses any noncanonical domain term in a sense covered by
+`CONTEXT.md`, immediately give them a brief, playful terminology penalty and
+supply the agreed term. Quoting or discussing the term itself does not incur a
+penalty.
+
+In agreed domain vocabulary, “token” means a Whisper token with a vocabulary
+ID and text. Current code also has visible-token identities and pseudo-tokens;
+keep these distinctions explicit until GitHub issue #57 reconciles their names
+and model.
+
+Use “position” and “current position” in domain language. “Insertion point” and
+“caret” are legacy terms pending the address refactor in GitHub issue #55. The
+selection is the currently selected half-open range; its zero-length form defines
+the current position. Range endpoints may mix address depths: paragraph and chunk
+addresses resolve to the item's structural start. Chunks with `has_tokens` set
+to false retain structural boundaries, including between chunks with tokens. A
+paragraph may consist entirely of such chunks and remains addressable and
+playable. A range around one selects that chunk and is structurally nonempty;
+only equal endpoints define an empty range and the current position.
+Each chunk exposes a `has_tokens` property derived from whether its current
+transcription contains an addressable token. Special tokens do not count; an
+addressable token with empty token text does. When false, the chunk has no
+token-level address but retains its structural addresses.
+Clean text export of a paragraph whose chunks all have `has_tokens` set to false
+is intentionally unspecified and may preserve or omit that paragraph.
 
 Before domain exploration, read `docs/agents/domain.md` for the single-context layout and existing project references.
