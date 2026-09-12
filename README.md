@@ -5,6 +5,17 @@ existing recordings and imperfect recognition into usable text. It can
 transcribe a recording to a saved JSON document and open that document in a
 line-oriented editor. The `open-audio` command exposes fresh recognition details.
 
+## Documentation
+
+- [CLI work plan](docs/cli-mvp1.md)
+- [Navigation and selection](docs/navigation.md)
+- [Recognition chunking](docs/chunking.md)
+- [Technical model](docs/transcript-cleanup-ui-proposal-v0.1.md)
+- [Product intent](docs/thought-recovery-transcriber-prd-v0.1.md)
+- [Saved task briefs](docs/tasks/README.md)
+
+Agent skill configuration lives in [docs/agents/](docs/agents/domain.md).
+
 ## Build and test
 
 The Rust toolchain is pinned in `rust-toolchain.toml`; crate versions and

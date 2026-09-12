@@ -15,10 +15,10 @@ module rather than a separate product or crate.
 
 ## Read when needed
 
-1. `doc/cli-mvp1.md` — ordered CLI work plan and current scope.
-2. `doc/chunking.md` — durable recognition-chunking context.
-3. `doc/transcript-cleanup-ui-proposal-v0.1.md` — technical model and invariants.
-4. `doc/thought-recovery-transcriber-prd-v0.1.md` — product intent and non-goals.
+1. `docs/cli-mvp1.md` — ordered CLI work plan and current scope.
+2. `docs/chunking.md` — durable recognition-chunking context.
+3. `docs/transcript-cleanup-ui-proposal-v0.1.md` — technical model and invariants.
+4. `docs/thought-recovery-transcriber-prd-v0.1.md` — product intent and non-goals.
 
 When documents disagree, preserve visible text and data recoverability, follow
 the CLI plan for MVP scope, and surface the conflict instead of inventing a
@@ -212,3 +212,17 @@ feature, durable constraint, architectural decision, command convention, or
 important technical insight. Replace stale statements; keep the file brief and
 broad. Do not turn it into a changelog or duplicate details available in the
 source documents.
+
+## Agent skills
+
+### Issue tracker
+
+For ticket operations, use GitHub Issues; read `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Before triaging issues, read the default role mapping in `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Before domain exploration, read `docs/agents/domain.md` for the single-context layout and existing project references.
