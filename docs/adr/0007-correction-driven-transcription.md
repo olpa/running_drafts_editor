@@ -2,12 +2,15 @@
 status: accepted
 ---
 
-# Make corrections produce another transcription
+# Install corrections as completed transcriptions
 
-A visible-token correction synchronously transcribes its one complete chunk
-with the correction supplied as a forced decoder prefix, then atomically
-installs the completed transcription. Failure leaves the project unchanged;
-successful decoding may also revise surrounding tokens. Typed correction text
-is therefore an instruction to the decoder rather than durable replacement
-text, while deletion remains separate because a forced prefix cannot express
-which spoken audio must be removed.
+A correction is a decoder instruction that produces another immutable
+transcription, rather than a direct durable mutation of document text. Only a
+completed transcription is installed, keeping the previous project state
+intact on failure.
+
+## Consequences
+
+The current implementation synchronously transcribes one complete chunk with a
+forced prefix and may revise surrounding tokens. Deletion remains separate
+because a forced prefix cannot express which spoken audio must be removed.

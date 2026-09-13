@@ -19,7 +19,7 @@ changes it. The repository is one Rust package: `rde` is the executable and
 - Product intent and interaction rationale: `docs/product.md`; read it before
   changing scope, workflow, replay, correction, export, or user-facing UX.
 - Initial-transcription chunking: `docs/transcription-chunking.md`; read it
-  before changing provisional windows, boundary selection, overlap ownership,
+  before changing provisional chunks, boundary selection, overlap ownership,
   accepted-segment grouping, or pause handling.
 - Domain language: `CONTEXT.md`; use it in new code, tests, and issues even when
   legacy identifiers have not migrated yet.
@@ -40,7 +40,8 @@ recoverable project data while resolving them.
   architectural decision only when it is hard to reverse, surprising without
   context, and chosen among real alternatives.
 - Keep plans and specifications in GitHub Issues. Keep implementation details
-  in code, tests, and CLI help instead of copying them into Markdown.
+  in code, tests, and CLI help. Use a pointed technical note only when a
+  cross-cutting procedure or rationale is costly to reconstruct from them.
 - Use clear B2-level English in project text.
 - Leave recordings, model binaries, credentials, generated output, and editor
   swap files untracked.

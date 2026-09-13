@@ -1,69 +1,58 @@
 # Transcription chunking
 
-This document explains the current initial-transcription procedure and why it
-replaced a separate voice-activity planner. The domain terms are defined in
-root `CONTEXT.md`; current Rust identifiers still use legacy terminology
-pending GitHub issue #57.
+This document preserves the cross-cutting initial-transcription procedure.
+[ADR-0003](adr/0003-transcription-driven-chunk-boundaries.md) records why it
+replaced a separate voice-activity planner. Code and tests remain the source
+for current parameter values and exact implementation behavior.
 
-## Why provisional chunks overlap
+## Ownership model
 
-Whisper accepts at most about 30 seconds of audio at once. Cutting independent
-30-second pieces can deprive speech near an edge of useful context and can cut
-through a phrase. Initial transcription therefore examines overlapping
-provisional chunks while assigning every source sample to one consecutive,
-non-overlapping owned range.
+Initial transcription examines overlapping provisional chunks while assigning
+every source sample to one consecutive, non-overlapping owned core.
 
-Overlap is transcription evidence, not final ownership. Finalized chunks are
-disjoint, so replay and document structure never need to decide which of two
-chunks owns the same audio.
+Overlap is transcription evidence, not intended final ownership. The agreed
+domain model requires finalized chunks to be disjoint, but current stored chunk
+ranges do not yet guarantee this: an accepted segment may begin before its
+owned core, and editing can inherit overlapping ranges. [Issue #58](https://github.com/olpa/running_drafts_editor/issues/58)
+and [issue #54](https://github.com/olpa/running_drafts_editor/issues/54) track
+those two gaps.
 
-## Current procedure
-
-The current code represents the provisional stage with `ProcessingWindow` and
-`core` values rather than a type named `ProvisionalChunk`.
+## Procedure
 
 1. Convert the source to canonical mono 16 kHz audio. All positions below are
    sample offsets in that coordinate system.
 2. Place a cursor at the first sample not owned by an earlier step.
-3. Submit up to three seconds of left context, a target owned range of 24
-   seconds, and three seconds of right context. The submitted audio is never
-   longer than Whisper's 30-second limit.
+3. Submit left context, a target core beginning at the cursor, and right
+   context, within Whisper's input limit.
 4. Decode the submitted audio with timestamps. Retain every decoded segment as
    immutable evidence, including segments not selected for visible text.
-5. In the right-context area, choose the latest decoded segment end between the
-   24-second target and the end of the submitted audio. That timestamp becomes
-   the owned range's end. At source end, use source end; when decoding fails or
-   supplies no usable timestamp, use the 24-second target.
+5. Around the target end, choose the latest usable decoded-segment end in the
+   right context. Use source end for the final core and the target end as the
+   bounded-progress fallback.
 6. Accept a decoded segment for the ordered text sequence when its midpoint is
    at or after the current cursor and its end is no later than the chosen
    boundary. This is deliberately minimal overlap reconciliation; the other
-   hypotheses remain available as evidence.
+   decoded segments remain available as transcription evidence.
 7. Advance the cursor to the boundary and repeat. The resulting owned ranges
    cover the source consecutively without gaps or overlap, and every iteration
-   advances even when transcription fails.
-8. Pass normal token IDs from the last accepted segment directly as the next
-   Whisper prompt. Timestamp and other special tokens remain evidence but are
-   not valid context for the next window.
-
-The 24-second target and three-second contexts are experimental defaults, not
-domain limits. Their canonical values are 384,000 and 48,000 samples.
+   advances even when one window's decoding fails.
+8. Pass text-token IDs from the last accepted segment directly as the next
+   Whisper prompt. A text round trip could change the token sequence; timestamp
+   and other special tokens carry invalid window-local state.
 
 ## From accepted segments to finalized chunks
 
-After all provisional windows have been processed, the implementation groups
+After all provisional chunks have been processed, the implementation groups
 the accepted Whisper segments into finalized chunks. It keeps every segment
 whole so it does not invent a boundary inside text for which Whisper supplied
 only a segment-level timestamp.
 
-The current experimental defaults use 8, 32, and 64 normal text tokens as the
-minimum, target, and maximum sizes. Gaps of 300, 800, and 2,000 milliseconds are
-usable, strong, and long pauses:
+Grouping balances text-token size goals with usable, strong, and long pauses:
 
 - A long pause always ends a chunk.
 - A strong pause ends a chunk after the minimum size.
 - Usable pauses compete near the target size; the score rewards longer pauses
-  and penalizes distance from the target token count: `pause_ms - 20 ×
-  distance_from_32_tokens`.
+  and penalizes distance from the target token count.
 - At the maximum size, the closest earlier whole-segment boundary is used.
 - Source end finishes the last chunk.
 
@@ -71,20 +60,20 @@ Boundary reasons and pause lengths remain inspectable. Initial paragraphs join
 consecutive finalized chunks and end at a long-pause or source-end boundary.
 Other chunk boundaries remain visible inside the paragraph.
 
-## Why a separate voice detector was rejected
+Current defaults and the exact scoring rule live in `RecognitionConfig` and
+`PostChunkConfig` in `src/recognition.rs`.
 
-The first implementation used Silero voice activity detection to plan chunks
-before Whisper ran. On representative quiet but intelligible speech, Silero
-reported very low speech probabilities and proposed boundaries inside audible
-speech. Lowering the threshold enough to retain those passages made the
-threshold useless as a general speech decision.
+## Experiment record
 
-The chosen design therefore lets Whisper's own decoded timestamps establish
-owned ranges. Pause duration is still useful after transcription, when it is a
-gap between accepted timestamped segments and helps group them into convenient
-finalized chunks. It is not treated as proof that a pre-transcription interval
+ADR-0003 records why Silero voice activity detection was rejected as the
+pre-transcription boundary authority. Pause duration remains useful after
+transcription, when it is a gap between accepted timestamped segments and helps
+group them into finalized chunks; it is not proof that an earlier interval
 contains no voice.
 
 The experiment and its measurements remain in [GitHub issue #25](https://github.com/olpa/running_drafts_editor/issues/25).
 The initial Whisper design and overlap requirements are in [issue #2](https://github.com/olpa/running_drafts_editor/issues/2)
-and [issue #3](https://github.com/olpa/running_drafts_editor/issues/3).
+and [issue #3](https://github.com/olpa/running_drafts_editor/issues/3). The
+current code uses `ProcessingWindow`, `core`, and `RecognitionChunk` as legacy
+names; [issue #57](https://github.com/olpa/running_drafts_editor/issues/57)
+owns their vocabulary review.

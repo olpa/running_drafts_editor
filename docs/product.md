@@ -30,6 +30,9 @@ reviewing; it is neither proof of an error nor work the user must complete.
 - **Hidden internals.** Normal product views use familiar document concepts.
   Model data, token identities, overlap, and decoder state belong to supporting
   data or developer tools.
+- **Familiar structure.** Paragraphs present the composition without requiring
+  the user to understand how transcription divided the audio. The feasibility
+  CLI exposes chunk boundaries for inspection; the intended product need not.
 
 ## Product boundary
 
@@ -37,10 +40,12 @@ The current line-oriented CLI is a technical-feasibility surface for the text,
 transcription, replay, correction, and recovery model. It is not the intended
 final interaction design.
 
-Waveform editing, timeline scrubbing, publishing, collaboration, subtitle
-authoring, and professional multi-speaker transcription are outside the
-product's core job. A future mobile experience may optimize for one-handed use,
-but that is a product hypothesis rather than a CLI requirement.
+Waveform editing and timeline scrubbing optimize audio manipulation rather than
+thought recovery, so they are outside the primary interaction. Publishing,
+collaboration, subtitle authoring, and professional multi-speaker transcription
+are also outside the product's core job. A future mobile experience may
+optimize for one-handed use, but that is a product hypothesis rather than a CLI
+requirement.
 
 Voice replacement earns a place only when it is faster or easier than typing.
 Quick-replay context, correction-audio retention, issue ranking, and the final

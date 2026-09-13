@@ -10,7 +10,7 @@ the audio and transcription data needed for correction.
 **Project**:
 The complete working set for editing one document, including its recording,
 audio sources, chunks, transcriptions, user actions, issues, attention marks,
-and history. A project owns one linear undo and redo history.
+and history.
 _Avoid_: Document as a name for the complete working set.
 
 **Document**:
@@ -48,14 +48,12 @@ _Avoid_: Chunk address, chunk ordinal, audio range.
 
 **has_tokens**:
 A chunk property that is true exactly when its current transcription exposes at
-least one addressable token. Special tokens do not count; an addressable token
-with empty token text does, while a false value leaves the chunk's
-structural boundaries and playback intact.
+least one addressable token. Special tokens do not count, while an addressable
+token with empty token text does.
 
 **Paragraph**:
 An ordered group of one or more complete chunks presented as one block of text.
-Paragraph boundaries occur only between chunks, and a paragraph remains valid
-and playable when none of its chunks has addressable tokens.
+Paragraph boundaries occur only between chunks.
 
 ### Transcription
 
@@ -77,8 +75,7 @@ instructions used to produce a transcription. Hardware and runtime details are
 optional diagnostics.
 
 **Current transcription**:
-The completed transcription selected as a chunk's current state. Undo may make
-an earlier transcription current while a later one remains available to redo.
+The completed transcription selected as a chunk's current state.
 
 **Latest transcription**:
 The most recently produced transcription of a chunk, which may differ from its
@@ -86,8 +83,7 @@ current transcription after undo.
 
 **Orphaned transcription**:
 A transcription that no reachable project history state can restore through
-undo or redo. It and any user actions referenced only by orphaned
-transcriptions may be deleted.
+undo or redo.
 
 **Current text**:
 The text supplied by a chunk's current transcription.
@@ -129,8 +125,7 @@ The text associated with a Whisper token.
 
 **Token alternative**:
 A candidate token at one token position in a transcription, with its own token
-ID, text, and probability. A token position may have several alternatives;
-choosing one is an edit that may contribute to another transcription.
+ID, text, and probability. A token position may have several alternatives.
 
 **Token probability**:
 The numeric probability supplied by Whisper for a token at one position in a
@@ -161,22 +156,17 @@ refer to the same place.
 _Avoid_: Insertion point, caret.
 
 **Range**:
-A half-open span of document content bounded by two positions that never
-contains part of a token; use document range or audio range when the kind is
-ambiguous. A chunk remains inside the range between its
-structural boundaries even without addressable tokens; only equal endpoints
-make a range empty.
+A half-open span of document content bounded by two positions. It contains
+complete structural items rather than part of a token; equal endpoints define
+an empty range. Use document range or audio range when the kind is ambiguous.
 
 **Selection**:
 The range currently selected in the editor.
 
 **Current position**:
-The position at both ends of a zero-length selection, used for an action without
-an explicit address.
+The position at both ends of a zero-length selection.
 _Avoid_: Caret.
 
 **Address**:
 Displayed notation referring to a position in the current document structure.
-Its structural depth identifies a paragraph, chunk, or token while different
-depths may name the same range endpoint; an address is derived and may change
-when the document changes.
+It is derived from that structure rather than serving as a stable identity.
