@@ -40,7 +40,11 @@ external to the repository.
 
 ## Project information
 
+- [`docs/product.md`](docs/product.md) records product intent and interaction
+  rationale.
 - [`CONTEXT.md`](CONTEXT.md) defines the domain language.
+- [`docs/adr/`](docs/adr/) records durable architectural decisions and their
+  reasons.
 - [GitHub Issues](https://github.com/olpa/running_drafts_editor/issues) contain
   plans, specifications, and acceptance criteria.
 - [`AGENTS.md`](AGENTS.md) tells coding agents how to find project context.

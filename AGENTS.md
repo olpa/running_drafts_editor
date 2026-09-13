@@ -16,10 +16,14 @@ changes it. The repository is one Rust package: `rde` is the executable and
 - Current behavior: code, tests, and `rde --help`.
 - Planned behavior and acceptance criteria: the assigned GitHub issue and its
   comments.
+- Product intent and interaction rationale: `docs/product.md`; read it before
+  changing scope, workflow, replay, correction, export, or user-facing UX.
 - Domain language: `CONTEXT.md`; use it in new code, tests, and issues even when
   legacy identifiers have not migrated yet.
-- Durable architectural decisions: accepted records in `docs/adr/`, when any
-  exist.
+- Durable architecture: read the relevant accepted record in `docs/adr/`
+  before changing document authority or recovery, editing units, chunk boundary
+  formation, audio coordinates, correction transactions, or decoder and prompt
+  state.
 
 Surface conflicts between these sources. Preserve exact user-visible text and
 recoverable project data while resolving them.
