@@ -18,6 +18,9 @@ changes it. The repository is one Rust package: `rde` is the executable and
   comments.
 - Product intent and interaction rationale: `docs/product.md`; read it before
   changing scope, workflow, replay, correction, export, or user-facing UX.
+- Initial-transcription chunking: `docs/transcription-chunking.md`; read it
+  before changing provisional windows, boundary selection, overlap ownership,
+  accepted-segment grouping, or pause handling.
 - Domain language: `CONTEXT.md`; use it in new code, tests, and issues even when
   legacy identifiers have not migrated yet.
 - Durable architecture: read the relevant accepted record in `docs/adr/`

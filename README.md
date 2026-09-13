@@ -42,6 +42,8 @@ external to the repository.
 
 - [`docs/product.md`](docs/product.md) records product intent and interaction
   rationale.
+- [`docs/transcription-chunking.md`](docs/transcription-chunking.md) explains
+  provisional overlap, final chunk formation, and the earlier VAD experiment.
 - [`CONTEXT.md`](CONTEXT.md) defines the domain language.
 - [`docs/adr/`](docs/adr/) records durable architectural decisions and their
   reasons.
