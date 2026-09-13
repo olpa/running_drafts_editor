@@ -2,14 +2,10 @@
 
 Issues and specs live in GitHub Issues for `olpa/running_drafts_editor`. Use the `gh` CLI for all operations.
 
-When working on an issue with a [saved task brief](../tasks/README.md), read
-the brief alongside the current GitHub issue. Briefs preserve earlier agent
-instructions; check GitHub for later changes and surface any conflicts.
-
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Write multi-line bodies to a temporary file and pass `--body-file PATH`.
-- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
+- **Read an issue**: `gh issue view <number> --json number,title,state,body,labels,comments`, filtering the JSON with `--jq` when useful. Supplying explicit fields avoids GitHub's deprecated Projects Classic query.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
@@ -23,11 +19,11 @@ Infer the repo from `git remote -v`; `gh` does this automatically when run insid
 
 When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
 
-- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
+- **Read a PR**: `gh pr view <number> --json number,title,state,body,labels,author,authorAssociation,comments` and `gh pr diff <number>` for the diff.
 - **List external PRs for triage**: `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments` then keep only `authorAssociation` of `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` (drop `OWNER`/`MEMBER`/`COLLABORATOR`).
 - **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
 
-GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with `gh pr view 42` and fall back to `gh issue view 42`.
+GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with explicit-field `gh pr view` and fall back to explicit-field `gh issue view`.
 
 ## When a skill says "publish to the issue tracker"
 
@@ -35,7 +31,7 @@ Create a GitHub issue.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `gh issue view <number> --comments`.
+Read the issue body and comments with the explicit-field command above.
 
 ## Wayfinding operations
 

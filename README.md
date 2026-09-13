@@ -1,103 +1,49 @@
 # Running Drafts Editor
 
-Running Drafts Editor (`rde`) is an experimental line-oriented tool for turning
-existing recordings and imperfect recognition into usable text. It can
-transcribe a recording to a saved JSON document and open that document in a
-line-oriented editor. The `open-audio` command exposes fresh recognition details.
+Running Drafts Editor turns an existing recording and an imperfect
+transcription into usable text. The current technical-feasibility version is a
+line-oriented CLI: text is authoritative, while transcription data and audio
+support replay and correction.
 
-## Documentation
+## Build
 
-- [CLI work plan](docs/cli-mvp1.md)
-- [Navigation and selection](docs/navigation.md)
-- [Recognition chunking](docs/chunking.md)
-- [Technical model](docs/transcript-cleanup-ui-proposal-v0.1.md)
-- [Product intent](docs/thought-recovery-transcriber-prd-v0.1.md)
-- [Saved task briefs](docs/tasks/README.md)
+The project requires the Rust toolchain pinned by `rust-toolchain.toml` and a
+Whisper ggml model supplied by the user.
 
-Agent skill configuration lives in [docs/agents/](docs/agents/domain.md).
-
-## Build and test
-
-The Rust toolchain is pinned in `rust-toolchain.toml`; crate versions and
-checksums are pinned in `Cargo.lock`.
-
-```console
-cargo test --all-targets
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-Tests use synthetic PCM and do not download speech models. Cargo pins
-`olpa/hfvc_lib` and `olpa/whisper-rs` by full Git revisions; the latter pins its
-`whisper.cpp` source as a submodule. Cargo and CMake compile whisper.cpp into
-the executable, so no HandsfreeVC checkout, project-specific environment
-variable, or runtime shared-library path is needed. A first native build can
-take about a minute and requires a C/C++ compiler, CMake, and libclang for
-bindgen.
-
-## Transcribe and edit
-
-First, build the executable:
-
-```console
+```sh
 cargo build
+cargo test --all-targets
 ```
 
-Transcription requires two external files:
+The `hfvc_lib` and `whisper-rs` dependencies are pinned to Git revisions.
+`whisper-rs` builds its pinned `whisper.cpp` submodule statically.
 
-- `AUDIO` must point to a PCM WAV recording. The tool accepts 8-, 16-, 24-,
-  and 32-bit integer PCM or 32-bit float samples, averages multiple channels,
-  and resamples the audio to mono 16 kHz internally. Compressed WAV files and
-  non-WAV formats are not supported.
-- `--model` must point to a Whisper ggml model. Models are not included in this
-  repository.
+## Use
 
-Create a versioned JSON document without opening an interactive prompt:
+Transcribe a PCM WAV recording and save an editable file:
 
-```console
-./target/debug/rde transcribe recording.wav \
+```sh
+cargo run -- transcribe recording.wav \
   --model ggml-tiny.bin \
-  --output draft.rde.json \
-  --language de
+  --output draft.rde.json
 ```
 
-Then open it in the line-oriented editor:
+Open the saved file in the editor:
 
-```console
-./target/debug/rde edit draft.rde.json
+```sh
+cargo run -- edit draft.rde.json
 ```
 
-For all recognition and chunking options, run `rde transcribe --help`.
-Recognition may take some time. On success, `transcribe` saves the document
-atomically and exits. It does not start playback or read an interactive prompt.
+Use `cargo run -- --help` and the session `help` command for the current command
+reference. Model binaries, recordings, and generated project files remain
+external to the repository.
 
-## Open audio after transcription
+## Project information
 
-Use the same recognition pipeline and open its result interactively:
+- [`CONTEXT.md`](CONTEXT.md) defines the domain language.
+- [GitHub Issues](https://github.com/olpa/running_drafts_editor/issues) contain
+  plans, specifications, and acceptance criteria.
+- [`AGENTS.md`](AGENTS.md) tells coding agents how to find project context.
 
-```console
-./target/debug/rde open-audio \
-  recording.wav \
-  --model ggml-tiny.bin \
-  --language de
-```
-
-When recognition finishes, the tool shows the recognized document and opens an
-`rde>` prompt. Type `help` there to see the current session commands.
-Interactive prompts support ordinary readline navigation and keep command
-history across runs in `$XDG_STATE_HOME/rde/history`, or in
-`~/.local/state/rde/history` when `XDG_STATE_HOME` is not set. Redirected input
-continues to read plain command lines without readline behavior.
-
-The listing contains replay chunks built from whole accepted Whisper segments.
-Pause length and normal text-token count choose their boundaries. Marker play
-replays an exact chunk, and marker info shows its time range, duration, token
-count, boundary reason, and text. All
-overlapping window hypotheses remain immutable evidence; midpoint ownership is
-only the initial deterministic deduplication rule.
-
-## Reproducibility and licenses
-
-The command hashes the caller-supplied Whisper model. This repository does not
-redistribute recognition models. The pinned hfvc_lib, whisper-rs, and
-whisper.cpp sources retain their upstream license files. Review licenses again
-before packaging.
+This project is licensed under GPL-3.0-or-later. Its dependencies retain their
+own licenses.

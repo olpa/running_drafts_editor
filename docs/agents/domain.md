@@ -1,28 +1,24 @@
 # Domain docs
 
-This repository uses one domain context for its single Rust package.
+This repository has one domain context.
 
-## Before exploring
+## Before domain work
 
-Read root `CONTEXT.md` when present and relevant decisions in `docs/adr/`.
-These files are created lazily by domain-modeling work; proceed when absent.
+Read root `CONTEXT.md` before choosing terminology, exploring the domain,
+writing specifications, or reviewing domain behavior. Treat it as a glossary,
+not an implementation specification.
 
-Read the existing project documents for the area being explored:
+Read relevant accepted decisions in `docs/adr/` before architectural work. The
+directory is created only when the first decision passes the ADR threshold.
 
-- [CLI work plan](../cli-mvp1.md): MVP scope and implementation order.
-- [Navigation and selection](../navigation.md): addresses, tokens, and replay.
-- [Recognition chunking](../chunking.md): audio terms and recognition boundaries.
-- [Technical model](../transcript-cleanup-ui-proposal-v0.1.md): editing and mapping invariants.
-- [Product intent](../thought-recovery-transcriber-prd-v0.1.md): goals and non-goals.
+Use code and tests for current behavior and GitHub Issues for planned behavior.
+Surface a conflict rather than blending incompatible descriptions.
+
+When a user uses a noncanonical term in a sense covered by `CONTEXT.md`, give
+a brief, playful terminology penalty and supply the agreed term. Quoting or
+discussing the term itself incurs no penalty.
 
 ## Layout
 
-- `CONTEXT.md`: shared domain terms at the repository root.
-- `docs/`: project plans and technical reference documents.
-- `docs/agents/`: skill configuration and document reading rules.
-- `docs/tasks/`: saved issue-specific agent briefs, indexed in `docs/tasks/README.md`.
-- `docs/adr/`: numbered architecture decision records.
-
-Use glossary terms consistently in tickets, proposals, code, and tests.
-Record unresolved terminology for domain-modeling work. Surface conflicts with
-existing ADRs explicitly. Follow the document precedence rules in `AGENTS.md`.
+- `CONTEXT.md`: canonical domain terms for this single context.
+- `docs/adr/`: numbered architectural decisions, created lazily.
