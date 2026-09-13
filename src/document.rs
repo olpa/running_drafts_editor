@@ -49,13 +49,6 @@ pub enum AlternativeEditError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChunkSplitOutcome {
-    pub paragraph: usize,
-    pub marker: Option<usize>,
-    pub created: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParagraphSplitOutcome {
     pub right_paragraph: usize,
 }
@@ -70,22 +63,12 @@ pub struct ParagraphMergeOutcome {
 pub enum StructureEditError {
     #[error("unknown paragraph {0}")]
     UnknownParagraph(usize),
-    #[error("unknown token {paragraph}.{token}")]
-    UnknownToken { paragraph: usize, token: usize },
     #[error("unknown chunk marker {paragraph}@{marker}")]
     UnknownMarker { paragraph: usize, marker: usize },
     #[error("paragraph {0} has no following paragraph")]
     NoFollowingParagraph(usize),
     #[error("the final chunk marker cannot split a paragraph")]
     FinalMarker,
-    #[error("the final chunk marker has no chunk to merge on its right")]
-    NoRightChunk,
-    #[error("chunk merge requires compatible replay mappings from one audio source")]
-    IncompatibleChunkMappings,
-    #[error("merged chunk would exceed 480000 canonical samples")]
-    ChunkTooLong,
-    #[error("paragraph revision cannot be increased")]
-    RevisionOverflow,
 }
 
 pub const DOCUMENT_SCHEMA: &str = "rde-document/v1-experimental";
@@ -734,208 +717,9 @@ impl Document {
             })
     }
 
-    pub fn split_chunk(
-        &mut self,
-        paragraph_number: usize,
-        token_number: usize,
-        after: bool,
-    ) -> Result<ChunkSplitOutcome, StructureEditError> {
-        let paragraph = self
-            .paragraph(paragraph_number)
-            .ok_or(StructureEditError::UnknownParagraph(paragraph_number))?;
-        if token_number == 0 || token_number > paragraph.tokens.len() {
-            return Err(StructureEditError::UnknownToken {
-                paragraph: paragraph_number,
-                token: token_number,
-            });
-        }
-        let boundary = if after {
-            token_number
-        } else {
-            token_number - 1
-        };
-        if boundary == 0 {
-            return Ok(ChunkSplitOutcome {
-                paragraph: paragraph_number,
-                marker: None,
-                created: false,
-            });
-        }
-        if let Some(marker) = paragraph
-            .chunk_boundaries
-            .iter()
-            .position(|marker| marker.after_tokens == boundary)
-        {
-            return Ok(ChunkSplitOutcome {
-                paragraph: paragraph_number,
-                marker: Some(marker + 1),
-                created: false,
-            });
-        }
-        let marker_index = paragraph
-            .chunk_boundaries
-            .iter()
-            .position(|marker| marker.after_tokens > boundary)
-            .expect("the final marker follows every token boundary");
-        if paragraph.revision == u64::MAX {
-            return Err(StructureEditError::RevisionOverflow);
-        }
-        let chunk_start = marker_index
-            .checked_sub(1)
-            .map_or(0, |index| paragraph.chunk_boundaries[index].after_tokens);
-        let chunk_end = paragraph.chunk_boundaries[marker_index].after_tokens;
-        let parent_id = paragraph.chunk_boundaries[marker_index].chunk_id.clone();
-        let left_ids = paragraph.tokens[chunk_start..boundary]
-            .iter()
-            .map(|token| token.id.clone())
-            .collect::<Vec<_>>();
-        let right_ids = paragraph.tokens[boundary..chunk_end]
-            .iter()
-            .map(|token| token.id.clone())
-            .collect::<Vec<_>>();
-        let left_edge = paragraph.tokens[boundary - 1].id.clone();
-        let right_edge = paragraph.tokens[boundary].id.clone();
-        let paragraph_id = paragraph.id.clone();
-        let paragraph_revision = paragraph.revision;
-        self.remember_editable_state();
-        self.ensure_replay_chunks();
-        let (left_id, right_id) = (
-            self.new_structure_id("chunk"),
-            self.new_structure_id("chunk"),
-        );
-
-        let mappings = self.split_chunk_mappings(
-            &parent_id,
-            (&left_id, &right_id),
-            (&paragraph_id, paragraph_revision),
-            (&left_edge, &right_edge),
-        );
-        self.chunk_audio_mappings
-            .retain(|mapping| mapping.chunk_id != parent_id);
-        self.chunk_audio_mappings.extend(mappings);
-        self.replay_chunks.push(ReplayChunk {
-            id: left_id.clone(),
-            parent_ids: vec![parent_id.clone()],
-            token_ids: left_ids,
-        });
-        self.replay_chunks.push(ReplayChunk {
-            id: right_id.clone(),
-            parent_ids: vec![parent_id],
-            token_ids: right_ids,
-        });
-        let paragraph = &mut self.paragraphs[paragraph_number - 1];
-        paragraph.chunk_boundaries[marker_index].chunk_id = right_id;
-        paragraph.chunk_boundaries.insert(
-            marker_index,
-            ChunkBoundaryMarker {
-                chunk_id: left_id,
-                after_tokens: boundary,
-            },
-        );
-        self.advance_paragraph_revision(paragraph_number)?;
-        Ok(ChunkSplitOutcome {
-            paragraph: paragraph_number,
-            marker: Some(marker_index + 1),
-            created: true,
-        })
-    }
-
-    fn split_chunk_mappings(
-        &self,
-        parent_id: &str,
-        child_ids: (&str, &str),
-        paragraph: (&str, u64),
-        edge_tokens: (&VisibleTokenId, &VisibleTokenId),
-    ) -> Vec<ChunkAudioMapping> {
-        let (left_id, right_id) = child_ids;
-        let (paragraph_id, revision) = paragraph;
-        let (left_token, right_token) = edge_tokens;
-        let Some(parent) = self.chunk_audio_mapping(parent_id) else {
-            return Vec::new();
-        };
-        let token_mapping = |id: &VisibleTokenId| {
-            self.token_audio_mappings.iter().find(|mapping| {
-                mapping.paragraph_id == paragraph_id
-                    && mapping.paragraph_revision == revision
-                    && &mapping.token_id == id
-                    && mapping.source_id == parent.source_id
-                    && mapping.alignment <= AlignmentState::Aligned
-            })
-        };
-        let boundary = match (token_mapping(left_token), token_mapping(right_token)) {
-            (Some(left), Some(right)) if left.range.end_sample == right.range.start_sample => {
-                Some((left.range.end_sample, AlignmentState::Exact))
-            }
-            (Some(left), Some(right)) if left.range.end_sample < right.range.start_sample => {
-                Some((
-                    left.range.end_sample + (right.range.start_sample - left.range.end_sample) / 2,
-                    AlignmentState::Aligned,
-                ))
-            }
-            _ => None,
-        };
-        match boundary {
-            Some((sample, alignment))
-                if parent.range.start_sample < sample && sample < parent.range.end_sample =>
-            {
-                vec![
-                    ChunkAudioMapping {
-                        chunk_id: left_id.into(),
-                        source_id: parent.source_id.clone(),
-                        range: SampleRange {
-                            start_sample: parent.range.start_sample,
-                            end_sample: sample,
-                        },
-                        alignment: parent.alignment.max(alignment),
-                    },
-                    ChunkAudioMapping {
-                        chunk_id: right_id.into(),
-                        source_id: parent.source_id.clone(),
-                        range: SampleRange {
-                            start_sample: sample,
-                            end_sample: parent.range.end_sample,
-                        },
-                        alignment: parent.alignment.max(alignment),
-                    },
-                ]
-            }
-            _ => vec![
-                ChunkAudioMapping {
-                    chunk_id: left_id.into(),
-                    source_id: parent.source_id.clone(),
-                    range: parent.range,
-                    alignment: parent.alignment.max(AlignmentState::Inherited),
-                },
-                ChunkAudioMapping {
-                    chunk_id: right_id.into(),
-                    source_id: parent.source_id.clone(),
-                    range: parent.range,
-                    alignment: parent.alignment.max(AlignmentState::Inherited),
-                },
-            ],
-        }
-    }
-
     fn new_structure_id(&mut self, kind: &str) -> String {
         self.next_structure_id = self.next_structure_id.saturating_add(1);
         format!("{kind}:{}:{}", self.id, self.next_structure_id)
-    }
-
-    fn advance_paragraph_revision(
-        &mut self,
-        paragraph_number: usize,
-    ) -> Result<(), StructureEditError> {
-        let paragraph = &mut self.paragraphs[paragraph_number - 1];
-        let old_revision = paragraph.revision;
-        paragraph.revision = old_revision
-            .checked_add(1)
-            .ok_or(StructureEditError::RevisionOverflow)?;
-        for mapping in &mut self.token_audio_mappings {
-            if mapping.paragraph_id == paragraph.id && mapping.paragraph_revision == old_revision {
-                mapping.paragraph_revision = paragraph.revision;
-            }
-        }
-        Ok(())
     }
 
     fn ensure_replay_chunks(&mut self) {
@@ -1078,92 +862,6 @@ impl Document {
                 mapping.paragraph_revision = 1;
             }
         }
-    }
-
-    pub fn merge_chunks(
-        &mut self,
-        paragraph_number: usize,
-        marker_number: usize,
-    ) -> Result<usize, StructureEditError> {
-        let paragraph = self
-            .paragraph(paragraph_number)
-            .ok_or(StructureEditError::UnknownParagraph(paragraph_number))?;
-        let left_index = marker_number
-            .checked_sub(1)
-            .filter(|index| *index < paragraph.chunk_boundaries.len())
-            .ok_or(StructureEditError::UnknownMarker {
-                paragraph: paragraph_number,
-                marker: marker_number,
-            })?;
-        if left_index + 1 >= paragraph.chunk_boundaries.len() {
-            return Err(StructureEditError::NoRightChunk);
-        }
-        if paragraph.revision == u64::MAX {
-            return Err(StructureEditError::RevisionOverflow);
-        }
-        let left_id = paragraph.chunk_boundaries[left_index].chunk_id.clone();
-        let right_id = paragraph.chunk_boundaries[left_index + 1].chunk_id.clone();
-        let left_mapping = self
-            .chunk_audio_mapping(&left_id)
-            .ok_or(StructureEditError::IncompatibleChunkMappings)?
-            .clone();
-        let right_mapping = self
-            .chunk_audio_mapping(&right_id)
-            .ok_or(StructureEditError::IncompatibleChunkMappings)?
-            .clone();
-        if left_mapping.source_id != right_mapping.source_id {
-            return Err(StructureEditError::IncompatibleChunkMappings);
-        }
-        let range = SampleRange {
-            start_sample: left_mapping
-                .range
-                .start_sample
-                .min(right_mapping.range.start_sample),
-            end_sample: left_mapping
-                .range
-                .end_sample
-                .max(right_mapping.range.end_sample),
-        };
-        if range.len() > 480_000 {
-            return Err(StructureEditError::ChunkTooLong);
-        }
-        self.remember_editable_state();
-        self.ensure_replay_chunks();
-        let left_tokens = self
-            .replay_chunks
-            .iter()
-            .find(|chunk| chunk.id == left_id)
-            .expect("current marker has a replay chunk")
-            .token_ids
-            .clone();
-        let right_tokens = self
-            .replay_chunks
-            .iter()
-            .find(|chunk| chunk.id == right_id)
-            .expect("current marker has a replay chunk")
-            .token_ids
-            .clone();
-        let merged_id = self.new_structure_id("chunk");
-        let mut token_ids = left_tokens;
-        token_ids.extend(right_tokens);
-        self.replay_chunks.push(ReplayChunk {
-            id: merged_id.clone(),
-            parent_ids: vec![left_id.clone(), right_id.clone()],
-            token_ids,
-        });
-        self.chunk_audio_mappings
-            .retain(|mapping| mapping.chunk_id != left_id && mapping.chunk_id != right_id);
-        self.chunk_audio_mappings.push(ChunkAudioMapping {
-            chunk_id: merged_id.clone(),
-            source_id: left_mapping.source_id,
-            range,
-            alignment: left_mapping.alignment.max(right_mapping.alignment),
-        });
-        let paragraph = &mut self.paragraphs[paragraph_number - 1];
-        paragraph.chunk_boundaries.remove(left_index);
-        paragraph.chunk_boundaries[left_index].chunk_id = merged_id;
-        self.advance_paragraph_revision(paragraph_number)?;
-        Ok(marker_number)
     }
 
     pub fn insert_text(
@@ -1758,8 +1456,11 @@ impl TokenFallback {
 mod tests {
     use super::*;
     use crate::{
-        chunking::SampleRange,
-        recognition::{ChunkBoundary, RecognitionToken},
+        chunking::{SampleRange, SourceFacts},
+        recognition::{
+            ChunkBoundary, RecognitionConfig, RecognitionRun, RecognitionStatus, RecognitionToken,
+            RecognizerIdentity, RECOGNITION_RUN_SCHEMA,
+        },
     };
 
     fn token(text: &str) -> RecognitionToken {
@@ -1806,6 +1507,36 @@ mod tests {
                 reason,
                 pause_samples: None,
             },
+        }
+    }
+
+    fn run(id: &str, chunk_id: &str, segment_id: &str, text: &str) -> RecognitionRun {
+        let segment = segment(segment_id, text, vec![token(text)]);
+        RecognitionRun {
+            schema: RECOGNITION_RUN_SCHEMA.into(),
+            id: id.into(),
+            revision: 1,
+            source: SourceFacts {
+                sha256: "source".into(),
+                sample_rate_hz: 16_000,
+                channels: 1,
+                decoded_sample_count: 1,
+            },
+            recognizer: RecognizerIdentity {
+                name: "test".into(),
+                implementation: "test".into(),
+                model_sha256: "model".into(),
+            },
+            config: RecognitionConfig::default(),
+            status: RecognitionStatus::Succeeded,
+            windows: Vec::new(),
+            segments: vec![segment],
+            chunks: vec![chunk(
+                chunk_id,
+                segment_id,
+                text,
+                ChunkBoundaryReason::SourceEnd,
+            )],
         }
     }
 
@@ -1984,7 +1715,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_outer_structure_operations_do_not_change_the_document() {
+    fn invalid_paragraph_structure_operations_do_not_change_the_document() {
         let segments = vec![segment("s1", "a", vec![token("a")])];
         let chunks = vec![chunk("a", "s1", "a", ChunkBoundaryReason::SourceEnd)];
         let mut document = Document::from_evidence("run", &segments, &chunks);
@@ -2000,11 +1731,54 @@ mod tests {
             Err(StructureEditError::NoFollowingParagraph(1))
         );
         assert_eq!(document, original);
+    }
+
+    #[test]
+    fn paragraph_structure_edits_preserve_chunk_identity_and_evidence() {
+        let segments = vec![
+            segment("s1", "one", vec![token("one")]),
+            segment("s2", " two", vec![token(" two")]),
+        ];
+        let chunks = vec![
+            chunk("a", "s1", "one", ChunkBoundaryReason::StrongPause),
+            chunk("b", "s2", " two", ChunkBoundaryReason::SourceEnd),
+        ];
+        let mut document = Document::from_evidence("run", &segments, &chunks);
+        let evidence = document.recognition_token_evidence.clone();
+
+        document.split_paragraph(1, 1).unwrap();
+        assert_eq!(document.paragraphs[0].chunk_boundaries[0].chunk_id, "a");
+        assert_eq!(document.paragraphs[1].chunk_boundaries[0].chunk_id, "b");
+        assert_eq!(document.recognition_token_evidence, evidence);
+
+        document.merge_paragraphs(1).unwrap();
         assert_eq!(
-            document.merge_chunks(1, 1),
-            Err(StructureEditError::NoRightChunk)
+            document.paragraphs[0]
+                .chunk_boundaries
+                .iter()
+                .map(|marker| marker.chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
         );
-        assert_eq!(document, original);
+        assert_eq!(document.recognition_token_evidence, evidence);
+    }
+
+    #[test]
+    fn installing_another_transcription_preserves_chunk_identity() {
+        let initial = run("initial", "stable", "s1", "old");
+        let mut document = Document::from_run(&initial);
+        let mapping = document.chunk_audio_mapping("stable").unwrap().clone();
+
+        document
+            .install_chunk_recognition(1, 1, run("refresh", "ignored", "s2", "new"))
+            .unwrap();
+
+        assert_eq!(document.paragraphs[0].text(), "new");
+        assert_eq!(
+            document.paragraphs[0].chunk_boundaries[0].chunk_id,
+            "stable"
+        );
+        assert_eq!(document.chunk_audio_mapping("stable"), Some(&mapping));
     }
 
     #[test]

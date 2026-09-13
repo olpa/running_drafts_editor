@@ -232,6 +232,93 @@ fn edit_history_survives_save_and_reopen_without_copying_recognition_backing() {
 }
 
 #[test]
+fn legacy_chunk_boundary_history_remains_readable_and_reachable() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("legacy-split.json");
+    let output = directory.path().join("saved.json");
+    let first_id = json!({
+        "kind": "recognition", "run_id": "run", "segment_id": "s", "token_index": 0
+    });
+    let second_id = json!({
+        "kind": "recognition", "run_id": "run", "segment_id": "s", "token_index": 1
+    });
+    let tokens = json!([
+        {"id": first_id, "text": "old", "origin": {"kind": "recognition"}},
+        {"id": second_id, "text": " text", "origin": {"kind": "recognition"}}
+    ]);
+    let parent_paragraph = json!([{
+        "id": "paragraph", "revision": 1, "tokens": tokens,
+        "chunk_boundaries": [{"chunk_id": "parent", "after_tokens": 2}]
+    }]);
+    let parent_mapping = json!([{
+        "chunk_id": "parent", "source_id": "audio",
+        "range": {"start_sample": 0, "end_sample": 200}
+    }]);
+    let value = json!({
+        "schema": "rde-document/v1-experimental",
+        "id": "document:legacy-split",
+        "paragraphs": [{
+            "id": "paragraph", "revision": 2, "tokens": tokens,
+            "chunk_boundaries": [
+                {"chunk_id": "left", "after_tokens": 1},
+                {"chunk_id": "right", "after_tokens": 2}
+            ]
+        }],
+        "audio_sources": [{"id": "audio", "canonical_sample_count": 200}],
+        "chunk_audio_mappings": [
+            {"chunk_id": "left", "source_id": "audio", "range": {"start_sample": 0, "end_sample": 100}},
+            {"chunk_id": "right", "source_id": "audio", "range": {"start_sample": 100, "end_sample": 200}}
+        ],
+        "replay_chunks": [
+            {"id": "parent", "parent_ids": [], "token_ids": [first_id, second_id]},
+            {"id": "left", "parent_ids": ["parent"], "token_ids": [first_id]},
+            {"id": "right", "parent_ids": ["parent"], "token_ids": [second_id]}
+        ],
+        "recognition_token_evidence": [
+            {"token_id": first_id, "recognition_token_id": 10, "probability": 0.8, "alternatives": []},
+            {"token_id": second_id, "recognition_token_id": 11, "probability": 0.7, "alternatives": []}
+        ],
+        "next_structure_id": 2,
+        "edit_history": [{"before": {
+            "paragraphs": parent_paragraph,
+            "chunk_audio_mappings": parent_mapping,
+            "token_audio_mappings": [],
+            "replay_chunks": [],
+            "next_structure_id": 0
+        }}]
+    });
+    fs::write(&input, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+    let mut document = load_document(&input).unwrap();
+    assert_eq!(document.paragraphs()[0].text(), "old text");
+    assert_eq!(document.paragraphs()[0].chunk_boundaries().len(), 2);
+    assert_eq!(document.recognition_token_evidence().len(), 2);
+
+    assert_eq!(document.undo(1), 1);
+    assert_eq!(document.paragraphs()[0].text(), "old text");
+    assert_eq!(document.paragraphs()[0].chunk_boundaries().len(), 1);
+    assert_eq!(
+        document.paragraphs()[0].chunk_boundaries()[0].chunk_id(),
+        "parent"
+    );
+    assert_eq!(document.recognition_token_evidence().len(), 2);
+    save_document(&output, &document).unwrap();
+
+    let mut reopened = load_document(&output).unwrap();
+    assert_eq!(reopened.redo(1), 1);
+    assert_eq!(reopened.paragraphs()[0].text(), "old text");
+    assert_eq!(
+        reopened.paragraphs()[0]
+            .chunk_boundaries()
+            .iter()
+            .map(|marker| marker.chunk_id())
+            .collect::<Vec<_>>(),
+        vec!["left", "right"]
+    );
+    assert_eq!(reopened.recognition_token_evidence().len(), 2);
+}
+
+#[test]
 fn rejects_unsupported_schema_and_invalid_authoritative_structure() {
     let directory = tempfile::tempdir().unwrap();
     let input = directory.path().join("document.json");

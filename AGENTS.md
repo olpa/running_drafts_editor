@@ -27,6 +27,10 @@ changes it. The repository is one Rust package: `rde` is the executable and
   before changing document authority or recovery, editing units, chunk boundary
   formation, audio coordinates, correction transactions, or decoder and prompt
   state.
+- Finalized chunk identity and boundaries: [ADR-0008](docs/adr/0008-keep-finalized-chunks-stable.md).
+  Editing may move complete chunks between paragraphs but does not split or join
+  chunks. Preserve derived chunk records and boundary-changing history found in
+  projects saved by historical versions.
 
 Surface conflicts between these sources. Preserve exact user-visible text and
 recoverable project data while resolving them.

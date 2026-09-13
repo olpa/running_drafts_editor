@@ -17,10 +17,9 @@ use crate::{
 use super::{
     command::{parse_command, SessionCommand},
     editing::{
-        alternative_address, apply_chunk_merge, apply_chunk_split, apply_history,
-        apply_paragraph_merge, apply_paragraph_split, chunk_prefix, edit_range,
-        preserve_boundary_whitespace, render_alternatives, resolve_current_chunk,
-        run_corrected_refresh, run_refresh,
+        alternative_address, apply_history, apply_paragraph_merge, apply_paragraph_split,
+        chunk_prefix, edit_range, preserve_boundary_whitespace, render_alternatives,
+        resolve_current_chunk, run_corrected_refresh, run_refresh,
     },
     issues::{self, IssueThresholds},
     playback::{repeat_document_replay, start_document_replay, AudioPlayer, ReplayStart},
@@ -623,17 +622,11 @@ impl<'a> SessionState<'a> {
                     writeln!(output, "language {language}")?;
                 }
             },
-            SessionCommand::SplitChunk { address, after } => {
-                apply_chunk_split(document, navigation, address, after, output, errors)?
-            }
             SessionCommand::SplitParagraph { marker } => {
                 apply_paragraph_split(document, navigation, marker, output, errors)?
             }
             SessionCommand::MergeParagraph(paragraph) => {
                 apply_paragraph_merge(document, navigation, paragraph, output, errors)?
-            }
-            SessionCommand::MergeChunks { paragraph, marker } => {
-                apply_chunk_merge(document, navigation, paragraph, marker, output, errors)?
             }
             SessionCommand::Undo(count) => {
                 apply_history(document, navigation, count, false, output)?
@@ -987,7 +980,7 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         output,
-        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  [M.N]alternatives | alts   list alternatives for one token/current token\n  [M.N]choose N              correct one token and refresh its chunk\n  M.Ninsert TEXT             correct before M.N and refresh its chunk\n  M.Nappend TEXT             correct after M.N and refresh its chunk\n  [M.N,M.U]replace TEXT      replace a one-chunk range and refresh\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            disabled pending audio-backed deletion\n  [M@N]refresh               re-recognize one complete replay chunk\n  model [PATH]               show or load the session model\n  language [CODE]            show or set the session language\n  [M.N]split | [M.N]isplit   split chunk before token/current caret\n  [M.N]asplit                split chunk after token/current caret\n  [M@N]parasplit             split paragraph after marker/current marker\n  Mmerge                     merge paragraph M with M+1 exactly\n  M@Nmerge                   merge chunks around marker M@N when legal\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
+        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  [M.N]alternatives | alts   list alternatives for one token/current token\n  [M.N]choose N              correct one token and refresh its chunk\n  M.Ninsert TEXT             correct before M.N and refresh its chunk\n  M.Nappend TEXT             correct after M.N and refresh its chunk\n  [M.N,M.U]replace TEXT      replace a one-chunk range and refresh\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            disabled pending audio-backed deletion\n  [M@N]refresh               re-recognize one complete replay chunk\n  model [PATH]               show or load the session model\n  language [CODE]            show or set the session language\n  [M@N]parasplit             split paragraph after marker/current marker\n  Mmerge                     merge paragraph M with M+1 exactly\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
     )
 }
 
@@ -1032,9 +1025,10 @@ mod tests {
         assert!(output.contains("[M.N,M.U]replace TEXT"));
         assert!(output.contains("unquoted keeps selected boundary whitespace"));
         assert!(output.contains("quoted \"TEXT\" controls boundaries exactly"));
-        assert!(output.contains("split | [M.N]isplit"));
         assert!(output.contains("parasplit"));
-        assert!(output.contains("M@Nmerge"));
+        assert!(!output.contains("isplit"));
+        assert!(!output.contains("[M.N]asplit"));
+        assert!(!output.contains("M@Nmerge"));
         assert!(output.contains("[A]play | [A]slowplay"));
         assert!(output.contains("M@N,M@Uplay"));
         assert!(output.contains("[A]slowplay"));

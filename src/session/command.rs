@@ -49,18 +49,10 @@ pub(crate) enum SessionCommand {
     Delete {
         range: Option<(TokenAddress, TokenAddress)>,
     },
-    SplitChunk {
-        address: Option<TokenAddress>,
-        after: bool,
-    },
     SplitParagraph {
         marker: Option<(usize, usize)>,
     },
     MergeParagraph(usize),
-    MergeChunks {
-        paragraph: usize,
-        marker: usize,
-    },
     Undo(usize),
     Redo(usize),
     NextIssue,
@@ -372,24 +364,6 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
             reject_arguments(&name, &arguments)?;
             optional_token_range(address, name).map(|range| SessionCommand::Delete { range })
         }
-        "split" | "isplit" | "asplit" => {
-            reject_arguments(&name, &arguments)?;
-            let token = match address {
-                Some(Address::Token(token)) => Some(token),
-                None => None,
-                Some(address) => {
-                    return Err(CommandParseError::InvalidAddress {
-                        command: name,
-                        address,
-                        expected: "a token address M.N",
-                    })
-                }
-            };
-            Ok(SessionCommand::SplitChunk {
-                address: token,
-                after: name == "asplit",
-            })
-        }
         "parasplit" => {
             reject_arguments(&name, &arguments)?;
             let marker = match address {
@@ -411,17 +385,14 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
                 Some(Address::Paragraph(paragraph)) => {
                     Ok(SessionCommand::MergeParagraph(paragraph))
                 }
-                Some(Address::Marker { paragraph, marker }) => {
-                    Ok(SessionCommand::MergeChunks { paragraph, marker })
-                }
                 Some(address) => Err(CommandParseError::InvalidAddress {
                     command: name,
                     address,
-                    expected: "a paragraph M or chunk-marker M@N address",
+                    expected: "a paragraph M address",
                 }),
                 None => Err(CommandParseError::AddressRequired {
                     command: name,
-                    expected: "a paragraph M or chunk-marker M@N address",
+                    expected: "a paragraph M address",
                 }),
             }
         }
@@ -623,23 +594,6 @@ mod tests {
         assert_eq!(parse_command("redo").unwrap(), SessionCommand::Redo(1));
         assert_eq!(parse_command("3redo").unwrap(), SessionCommand::Redo(3));
         assert_eq!(
-            parse_command("1.2split").unwrap(),
-            SessionCommand::SplitChunk {
-                address: Some(TokenAddress {
-                    paragraph: 1,
-                    token: 2,
-                }),
-                after: false,
-            }
-        );
-        assert_eq!(
-            parse_command("asplit").unwrap(),
-            SessionCommand::SplitChunk {
-                address: None,
-                after: true,
-            }
-        );
-        assert_eq!(
             parse_command("1@2parasplit").unwrap(),
             SessionCommand::SplitParagraph {
                 marker: Some((1, 2)),
@@ -649,13 +603,29 @@ mod tests {
             parse_command("1merge").unwrap(),
             SessionCommand::MergeParagraph(1)
         );
-        assert_eq!(
-            parse_command("1@2merge").unwrap(),
-            SessionCommand::MergeChunks {
-                paragraph: 1,
-                marker: 2,
-            }
-        );
+        for command in [
+            "split",
+            "1.2split",
+            "1.2 split",
+            "1@2split",
+            "isplit",
+            "2.3isplit",
+            "2.3 isplit",
+            "asplit",
+            "3.4asplit",
+            "3.4 asplit",
+        ] {
+            assert!(matches!(
+                parse_command(command),
+                Err(CommandParseError::Unknown(_))
+            ));
+        }
+        for command in ["1@2merge", "1@2 merge"] {
+            assert!(matches!(
+                parse_command(command),
+                Err(CommandParseError::InvalidAddress { .. })
+            ));
+        }
         assert_eq!(
             parse_command("1.2insert  typed text  ").unwrap(),
             SessionCommand::Insert {
