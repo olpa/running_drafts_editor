@@ -182,6 +182,10 @@ pub struct ChunkRefreshRequest {
     pub revision: u64,
 }
 
+/// Owns one model context and at most one exact-range decode cache.
+///
+/// `InteractiveSession` contains audio- and history-specific Whisper state, so
+/// a cache must never be reused for a different source, range, or language.
 pub struct RecognizerSession {
     chunk_decode_cache: Option<ChunkDecodeCache>,
     decoder: WhisperDecoder,
@@ -471,6 +475,9 @@ pub fn recognize<D: WindowDecoder>(
                 && !segment.audio_range.is_empty()
             {
                 accepted_ids.push(segment.id.clone());
+                // Preserve the exact accepted token sequence. A text round trip
+                // could retokenize it, while special tokens belong to this
+                // window's control and timestamp context.
                 next_prompt_token_ids = Some(
                     segment
                         .tokens

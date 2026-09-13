@@ -1,92 +1,64 @@
 # Running Drafts Editor
 
-Running Drafts Editor (`rde`) is an experimental line-oriented tool for turning
-existing recordings and imperfect recognition into usable text. It can
-transcribe a recording to a saved JSON document and open that document in a
-line-oriented editor. The `open-audio` command exposes fresh recognition details.
+Running Drafts Editor turns an existing recording and an imperfect
+transcription into usable text. The current technical-feasibility version is a
+line-oriented CLI: text is authoritative, while transcription data and audio
+support replay and correction.
 
-## Build and test
+## Build
 
-The Rust toolchain is pinned in `rust-toolchain.toml`; crate versions and
-checksums are pinned in `Cargo.lock`.
+The project requires the Rust toolchain pinned by `rust-toolchain.toml`, a C/C++
+compiler, CMake, and libclang for bindgen. Native compilation builds the pinned
+`whisper.cpp` source statically and may take about a minute on the first run.
 
-```console
+```sh
+cargo build
 cargo test --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-Tests use synthetic PCM and do not download speech models. Cargo pins
-`olpa/hfvc_lib` and `olpa/whisper-rs` by full Git revisions; the latter pins its
-`whisper.cpp` source as a submodule. Cargo and CMake compile whisper.cpp into
-the executable, so no HandsfreeVC checkout, project-specific environment
-variable, or runtime shared-library path is needed. A first native build can
-take about a minute and requires a C/C++ compiler, CMake, and libclang for
-bindgen.
+Tests use synthetic PCM and do not download a Whisper model.
 
-## Transcribe and edit
+The `hfvc_lib` and `whisper-rs` dependencies are pinned to Git revisions.
+`whisper-rs` builds its pinned `whisper.cpp` submodule statically.
 
-First, build the executable:
+## Use
 
-```console
-cargo build
-```
+Transcribe a PCM WAV recording and save an editable file:
 
-Transcription requires two external files:
-
-- `AUDIO` must point to a PCM WAV recording. The tool accepts 8-, 16-, 24-,
-  and 32-bit integer PCM or 32-bit float samples, averages multiple channels,
-  and resamples the audio to mono 16 kHz internally. Compressed WAV files and
-  non-WAV formats are not supported.
-- `--model` must point to a Whisper ggml model. Models are not included in this
-  repository.
-
-Create a versioned JSON document without opening an interactive prompt:
-
-```console
-./target/debug/rde transcribe recording.wav \
+```sh
+cargo run -- transcribe recording.wav \
   --model ggml-tiny.bin \
-  --output draft.rde.json \
-  --language de
+  --output draft.rde.json
 ```
 
-Then open it in the line-oriented editor:
+Transcription requires a Whisper ggml model supplied by the user; models are
+not included in the repository. Input may use 8-, 16-, 24-, or 32-bit integer
+PCM or 32-bit floating-point PCM. The program averages channels and resamples
+to mono 16 kHz; compressed WAV and non-WAV formats are unsupported.
 
-```console
-./target/debug/rde edit draft.rde.json
+Open the saved file in the editor:
+
+```sh
+cargo run -- edit draft.rde.json
 ```
 
-For all recognition and chunking options, run `rde transcribe --help`.
-Recognition may take some time. On success, `transcribe` saves the document
-atomically and exits. It does not start playback or read an interactive prompt.
+Use `cargo run -- --help` and the session `help` command for the current command
+reference. Model binaries, recordings, and generated project files remain
+external to the repository.
 
-## Open audio after transcription
+## Project information
 
-Use the same recognition pipeline and open its result interactively:
+- [`docs/product.md`](docs/product.md) records product intent and interaction
+  rationale.
+- [`docs/transcription-chunking.md`](docs/transcription-chunking.md) explains
+  provisional overlap, final chunk formation, and the earlier VAD experiment.
+- [`CONTEXT.md`](CONTEXT.md) defines the domain language.
+- [`docs/adr/`](docs/adr/) records durable architectural decisions and their
+  reasons.
+- [GitHub Issues](https://github.com/olpa/running_drafts_editor/issues) contain
+  plans, specifications, and acceptance criteria.
+- [`AGENTS.md`](AGENTS.md) tells coding agents how to find project context.
 
-```console
-./target/debug/rde open-audio \
-  recording.wav \
-  --model ggml-tiny.bin \
-  --language de
-```
-
-When recognition finishes, the tool shows the recognized document and opens an
-`rde>` prompt. Type `help` there to see the current session commands.
-Interactive prompts support ordinary readline navigation and keep command
-history across runs in `$XDG_STATE_HOME/rde/history`, or in
-`~/.local/state/rde/history` when `XDG_STATE_HOME` is not set. Redirected input
-continues to read plain command lines without readline behavior.
-
-The listing contains replay chunks built from whole accepted Whisper segments.
-Pause length and normal text-token count choose their boundaries. Marker play
-replays an exact chunk, and marker info shows its time range, duration, token
-count, boundary reason, and text. All
-overlapping window hypotheses remain immutable evidence; midpoint ownership is
-only the initial deterministic deduplication rule.
-
-## Reproducibility and licenses
-
-The command hashes the caller-supplied Whisper model. This repository does not
-redistribute recognition models. The pinned hfvc_lib, whisper-rs, and
-whisper.cpp sources retain their upstream license files. Review licenses again
-before packaging.
+This project is licensed under GPL-3.0-or-later. Its dependencies retain their
+own licenses.
