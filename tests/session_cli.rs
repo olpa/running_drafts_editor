@@ -556,7 +556,7 @@ fn replacement_without_a_model_does_not_change_boundary_whitespace() {
 }
 
 #[test]
-fn chunk_and_paragraph_structure_commands_preserve_text_and_persist_provenance() {
+fn rejected_chunk_commands_do_not_mutate_and_paragraph_commands_preserve_chunks() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("structure.json");
     let token = |index: usize, text: &str| {
@@ -583,14 +583,24 @@ fn chunk_and_paragraph_structure_commands_preserve_text_and_persist_provenance()
             "id": "paragraph:original",
             "revision": 1,
             "tokens": [token(0, "one"), token(1, " two"), token(2, " three"), token(3, " four")],
-            "chunk_boundaries": [{"chunk_id": "chunk:original", "after_tokens": 4}]
+            "chunk_boundaries": [
+                {"chunk_id": "chunk:first", "after_tokens": 2},
+                {"chunk_id": "chunk:second", "after_tokens": 4}
+            ]
         }],
         "audio_sources": [{"id": "audio:run", "canonical_sample_count": 400}],
-        "chunk_audio_mappings": [{
-            "chunk_id": "chunk:original",
-            "source_id": "audio:run",
-            "range": {"start_sample": 0, "end_sample": 400}
-        }],
+        "chunk_audio_mappings": [
+            {
+                "chunk_id": "chunk:first",
+                "source_id": "audio:run",
+                "range": {"start_sample": 0, "end_sample": 200}
+            },
+            {
+                "chunk_id": "chunk:second",
+                "source_id": "audio:run",
+                "range": {"start_sample": 200, "end_sample": 400}
+            }
+        ],
         "token_audio_mappings": [
             mapping(0, 0, 100), mapping(1, 100, 200),
             mapping(2, 200, 300), mapping(3, 300, 400)
@@ -609,7 +619,9 @@ fn chunk_and_paragraph_structure_commands_preserve_text_and_persist_provenance()
         .stdin
         .take()
         .unwrap()
-        .write_all(b"1.3split\n1@1parasplit\n1merge\n1@1merge\n3undo\n2redo\n9redo\nsave\nq\n")
+        .write_all(
+            b"split\n1.2split\nisplit\n1.2isplit\nasplit\n1.2asplit\n1@1merge\n1@1parasplit\n1merge\n9undo\n9redo\nsave\nq\n",
+        )
         .unwrap();
     let result = child.wait_with_output().unwrap();
 
@@ -620,13 +632,13 @@ fn chunk_and_paragraph_structure_commands_preserve_text_and_persist_provenance()
         String::from_utf8_lossy(&result.stderr)
     );
     let output = String::from_utf8(result.stdout).unwrap();
-    assert!(output.contains("split chunk before 1.3; new boundary 1@1"));
     assert!(output.contains("split paragraph 1 after 1@1"));
     assert!(output.contains("merged paragraphs 1 and 2"));
-    assert!(output.contains("merged chunks at 1@1"));
-    assert!(output.contains("undid 3 edits"));
+    assert!(output.contains("undid 2 edits"));
     assert!(output.contains("redid 2 edits"));
-    assert!(output.contains("redid 1 edit"));
+    let errors = String::from_utf8(result.stderr).unwrap();
+    assert_eq!(errors.matches("unknown command").count(), 6);
+    assert!(errors.contains("merge does not accept address '1@1'; expected a paragraph M address"));
 
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(saved["paragraphs"].as_array().unwrap().len(), 1);
@@ -639,13 +651,19 @@ fn chunk_and_paragraph_structure_commands_preserve_text_and_persist_provenance()
             .as_array()
             .unwrap()
             .len(),
-        1
+        2
     );
-    assert_eq!(saved["replay_chunks"].as_array().unwrap().len(), 4);
-    assert_eq!(saved["chunk_audio_mappings"].as_array().unwrap().len(), 1);
+    assert!(saved.get("replay_chunks").is_none());
+    assert_eq!(saved["chunk_audio_mappings"].as_array().unwrap().len(), 2);
     assert_eq!(saved["chunk_audio_mappings"][0]["range"]["start_sample"], 0);
-    assert_eq!(saved["chunk_audio_mappings"][0]["range"]["end_sample"], 400);
-    assert_eq!(saved["chunk_audio_mappings"][0]["alignment"], "exact");
+    assert_eq!(saved["chunk_audio_mappings"][0]["range"]["end_sample"], 200);
+    assert_eq!(
+        saved["chunk_audio_mappings"][1]["range"]["start_sample"],
+        200
+    );
+    assert_eq!(saved["chunk_audio_mappings"][1]["range"]["end_sample"], 400);
+    assert_eq!(saved["edit_history"].as_array().unwrap().len(), 2);
+    assert!(saved.get("redo_history").is_none());
     assert_eq!(
         saved["paragraphs"][0]["tokens"]
             .as_array()

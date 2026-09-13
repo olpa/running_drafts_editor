@@ -330,53 +330,6 @@ pub(crate) fn run_refresh(
     }
 }
 
-pub(crate) fn apply_chunk_split(
-    document: &mut Document,
-    navigation: &mut NavigationState,
-    addressed: Option<TokenAddress>,
-    after: bool,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-) -> io::Result<()> {
-    let address = match addressed.map_or_else(|| navigation.current_token_address(document), Ok) {
-        Ok(address) => address,
-        Err(error) => return writeln!(errors, "split failed: {error}"),
-    };
-    match document.split_chunk(address.paragraph, address.token, after) {
-        Ok(result) => {
-            *navigation = NavigationState::new(document);
-            if let Some(marker) = result.marker {
-                navigation
-                    .move_to(
-                        document,
-                        &Address::Marker {
-                            paragraph: result.paragraph,
-                            marker,
-                        },
-                    )
-                    .expect("chunk split reports a current marker");
-                if result.created {
-                    writeln!(
-                        output,
-                        "split chunk {} {address}; new boundary {}@{marker}",
-                        if after { "after" } else { "before" },
-                        result.paragraph
-                    )
-                } else {
-                    writeln!(
-                        output,
-                        "chunk boundary already exists at {}@{marker}",
-                        result.paragraph
-                    )
-                }
-            } else {
-                writeln!(output, "chunk boundary already exists at paragraph start")
-            }
-        }
-        Err(error) => writeln!(errors, "split failed: {error}"),
-    }
-}
-
 pub(crate) fn apply_paragraph_split(
     document: &mut Document,
     navigation: &mut NavigationState,
@@ -443,32 +396,6 @@ pub(crate) fn apply_paragraph_merge(
             )
         }
         Err(error) => writeln!(errors, "paragraph merge failed: {error}"),
-    }
-}
-
-pub(crate) fn apply_chunk_merge(
-    document: &mut Document,
-    navigation: &mut NavigationState,
-    paragraph: usize,
-    marker: usize,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-) -> io::Result<()> {
-    match document.merge_chunks(paragraph, marker) {
-        Ok(merged_marker) => {
-            *navigation = NavigationState::new(document);
-            navigation
-                .move_to(
-                    document,
-                    &Address::Marker {
-                        paragraph,
-                        marker: merged_marker,
-                    },
-                )
-                .expect("chunk merge reports its right marker");
-            writeln!(output, "merged chunks at {paragraph}@{marker}")
-        }
-        Err(error) => writeln!(errors, "chunk merge failed: {error}"),
     }
 }
 

@@ -11,11 +11,12 @@ Initial transcription examines overlapping provisional chunks while assigning
 every source sample to one consecutive, non-overlapping owned core.
 
 Overlap is transcription evidence, not intended final ownership. The agreed
-domain model requires finalized chunks to be disjoint, but current stored chunk
-ranges do not yet guarantee this: an accepted segment may begin before its
-owned core, and editing can inherit overlapping ranges. [Issue #58](https://github.com/olpa/running_drafts_editor/issues/58)
-and [issue #54](https://github.com/olpa/running_drafts_editor/issues/54) track
-those two gaps.
+domain model requires finalized chunks to be disjoint, but initial
+transcription does not yet guarantee this because an accepted segment may
+begin before its owned core. [Issue #58](https://github.com/olpa/running_drafts_editor/issues/58)
+tracks that gap. Historical editor versions could also split and join chunks;
+current editing keeps finalized chunk identity and boundaries fixed while
+retaining old saved states and history as described in [ADR-0008](adr/0008-keep-finalized-chunks-stable.md).
 
 ## Procedure
 
@@ -45,7 +46,8 @@ those two gaps.
 After all provisional chunks have been processed, the implementation groups
 the accepted Whisper segments into finalized chunks. It keeps every segment
 whole so it does not invent a boundary inside text for which Whisper supplied
-only a segment-level timestamp.
+only a segment-level timestamp. Once finalized, a chunk keeps its identity and
+boundaries through text editing and paragraph restructuring.
 
 Grouping balances text-token size goals with usable, strong, and long pauses:
 

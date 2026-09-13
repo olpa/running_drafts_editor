@@ -407,45 +407,6 @@ mod tests {
     }
 
     #[test]
-    fn derived_chunk_split_keeps_coarse_marker_replay_available() {
-        let mut document: Document = serde_json::from_value(json!({
-            "schema": "rde-document/v1-experimental", "id": "document:split",
-            "paragraphs": [{
-                "id": "p1", "revision": 1,
-                "tokens": [
-                    {"id": {"kind": "pseudo", "id": "a"}, "text": "a", "origin": {"kind": "pseudo", "reason": "test"}},
-                    {"id": {"kind": "pseudo", "id": "b"}, "text": " b", "origin": {"kind": "pseudo", "reason": "test"}}
-                ],
-                "chunk_boundaries": [{"chunk_id": "c1", "after_tokens": 2}]
-            }],
-            "audio_sources": [{"id": "audio", "canonical_sample_count": 1000}],
-            "chunk_audio_mappings": [{
-                "chunk_id": "c1", "source_id": "audio",
-                "range": {"start_sample": 100, "end_sample": 900}
-            }]
-        }))
-        .unwrap();
-        document.split_chunk(1, 2, false).unwrap();
-        let navigation = NavigationState::new(&document);
-
-        for marker in 1..=2 {
-            let replay = resolve(
-                &document,
-                &navigation,
-                Some(&Address::Marker {
-                    paragraph: 1,
-                    marker,
-                }),
-                0,
-            )
-            .unwrap();
-            assert_eq!(replay.range.start_sample, 100);
-            assert_eq!(replay.range.end_sample, 900);
-            assert_eq!(replay.alignment, AlignmentState::Inherited);
-        }
-    }
-
-    #[test]
     fn current_token_replay_adds_and_clamps_context() {
         let document = document(true);
         let navigation = NavigationState::new(&document);
