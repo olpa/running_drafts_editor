@@ -129,8 +129,8 @@ The text associated with a Whisper token.
 
 **Token alternative**:
 A candidate token at one token position in a transcription, with its own token
-ID, text, and probability. Choosing one is an edit that may contribute to
-another transcription.
+ID, text, and probability. A token position may have several alternatives;
+choosing one is an edit that may contribute to another transcription.
 
 **Token probability**:
 The numeric probability supplied by Whisper for a token at one position in a
