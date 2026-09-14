@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use crate::{
     chunking::{read_canonical_wav, SourceFacts},
     document::Document,
-    navigation::{Address, NavigationState, TokenAddress},
+    navigation::{tokens_in_range, Address, NavigationState, PositionAddress, TokenAddress},
     recognition::{ChunkRefreshRequest, RecognizerSession},
 };
 
@@ -18,7 +18,13 @@ pub(crate) fn preserve_boundary_whitespace(
     let paragraph = document
         .paragraph(start.paragraph)
         .expect("a resolved edit range has a paragraph");
-    let selected = paragraph.tokens()[start.token - 1..end.token]
+    let first = document
+        .paragraph_token_number(start.paragraph, start.chunk, start.token)
+        .unwrap();
+    let last = document
+        .paragraph_token_number(end.paragraph, end.chunk, end.token)
+        .unwrap();
+    let selected = paragraph.tokens()[first - 1..last]
         .iter()
         .map(|token| token.text())
         .collect::<String>();
@@ -78,7 +84,10 @@ pub(crate) fn render_alternatives(
         Ok(address) => address,
         Err(error) => return writeln!(errors, "alternatives unavailable: {error}"),
     };
-    let Some(alternatives) = document.alternatives(address.paragraph, address.token) else {
+    let global = document
+        .paragraph_token_number(address.paragraph, address.chunk, address.token)
+        .unwrap();
+    let Some(alternatives) = document.alternatives(address.paragraph, global) else {
         return writeln!(errors, "alternatives unavailable for {address}");
     };
     writeln!(output, "alternatives for {address}:")?;
@@ -102,18 +111,9 @@ pub(crate) fn alternative_address(
 ) -> Result<TokenAddress, String> {
     if let Some(address) = addressed {
         return document
-            .token(address.paragraph, address.token)
+            .chunk_token(address.paragraph, address.chunk, address.token)
             .map(|_| address)
             .ok_or_else(|| format!("unknown token {address}"));
-    }
-    if navigation.selection().is_some() {
-        let (start, end) = navigation
-            .selected_token_range(document)
-            .map_err(|error| error.to_string())?;
-        if start != end {
-            return Err("alternatives require exactly one selected token".into());
-        }
-        return Ok(start);
     }
     navigation
         .current_token_address(document)
@@ -123,9 +123,23 @@ pub(crate) fn alternative_address(
 pub(crate) fn edit_range(
     document: &Document,
     navigation: &NavigationState,
-    addressed: Option<(TokenAddress, TokenAddress)>,
+    addressed: Option<Address>,
 ) -> Result<(TokenAddress, TokenAddress), crate::navigation::NavigationError> {
-    addressed.map_or_else(|| navigation.selected_token_range(document), Ok)
+    if let Some(Address::Range { start, end }) = addressed {
+        let tokens = tokens_in_range(document, start, end)?;
+        let (Some(start), Some(end)) = (tokens.first(), tokens.last()) else {
+            return Err(crate::navigation::NavigationError::NoTokenSelection);
+        };
+        if start.paragraph != end.paragraph {
+            return Err(crate::navigation::NavigationError::CrossParagraphSelection);
+        }
+        if start.chunk != end.chunk {
+            return Err(crate::navigation::NavigationError::CrossChunkSelection);
+        }
+        Ok((*start, *end))
+    } else {
+        navigation.selected_token_range(document)
+    }
 }
 
 pub(crate) fn chunk_prefix(
@@ -133,13 +147,13 @@ pub(crate) fn chunk_prefix(
     address: TokenAddress,
     through: usize,
 ) -> Option<String> {
-    let (marker, _) = document.chunk_for_token(address.paragraph, address.token)?;
     let paragraph = document.paragraph(address.paragraph)?;
-    let start = marker
-        .checked_sub(2)
-        .map_or(0, |i| paragraph.chunk_boundaries()[i].after_tokens());
+    let (start, end) = document.chunk_token_bounds(address.paragraph, address.chunk)?;
+    if through > end - start {
+        return None;
+    }
     Some(
-        paragraph.tokens()[start..through]
+        paragraph.tokens()[start..start + through]
             .iter()
             .map(|token| token.text())
             .collect(),
@@ -150,15 +164,8 @@ pub(crate) fn resolve_current_chunk(
     document: &Document,
     navigation: &NavigationState,
 ) -> Option<(usize, usize)> {
-    let (start, end) = if navigation.selection().is_some() {
-        navigation.selected_token_range(document).ok()?
-    } else {
-        let value = navigation.current_token_address(document).ok()?;
-        (value, value)
-    };
-    let left = document.chunk_for_token(start.paragraph, start.token)?;
-    let right = document.chunk_for_token(end.paragraph, end.token)?;
-    (start.paragraph == end.paragraph && left.0 == right.0).then_some((start.paragraph, left.0))
+    let address = navigation.current_chunk_address(document).ok()?;
+    Some((address.paragraph, address.chunk))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -168,7 +175,7 @@ pub(crate) fn run_corrected_refresh(
     recognizer: &mut Option<RecognizerSession>,
     language: &str,
     paragraph: usize,
-    token: usize,
+    chunk: usize,
     intended: String,
     chosen: Option<i32>,
     output: &mut impl Write,
@@ -199,12 +206,8 @@ pub(crate) fn run_corrected_refresh(
         }
     }
     prepend_beginning_timestamp(&mut forced, session.beginning_timestamp_token());
-    let marker = document
-        .chunk_for_token(paragraph, token)
-        .expect("address was resolved")
-        .0;
     run_refresh(
-        document, navigation, recognizer, language, paragraph, marker, forced, output, errors,
+        document, navigation, recognizer, language, paragraph, chunk, forced, output, errors,
     )
 }
 
@@ -231,10 +234,7 @@ pub(crate) fn run_refresh(
         );
     };
     let Some(boundary) = document.chunk_marker(paragraph, marker) else {
-        return writeln!(
-            errors,
-            "refresh failed: unknown chunk marker {paragraph}@{marker}"
-        );
+        return writeln!(errors, "refresh failed: unknown chunk {paragraph}.{marker}");
     };
     let chunk_id = boundary.chunk_id().to_string();
     let Some(mapping) = document.chunk_audio_mapping(&chunk_id) else {
@@ -318,13 +318,14 @@ pub(crate) fn run_refresh(
             if document.token(paragraph, 1).is_some() {
                 let _ = navigation.move_to(
                     document,
-                    &Address::Token(TokenAddress {
+                    &Address::Position(PositionAddress::Token(TokenAddress {
                         paragraph,
+                        chunk: marker,
                         token: 1,
-                    }),
+                    })),
                 );
             }
-            writeln!(output, "refreshed {paragraph}@{marker}")
+            writeln!(output, "refreshed {paragraph}.{marker}")
         }
         Err(e) => writeln!(errors, "refresh failed: {e}"),
     }
@@ -337,11 +338,29 @@ pub(crate) fn apply_paragraph_split(
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> io::Result<()> {
-    let (paragraph, marker) =
-        match addressed.map_or_else(|| navigation.current_marker_address(document), Ok) {
-            Ok(address) => address,
-            Err(error) => return writeln!(errors, "paragraph split failed: {error}"),
-        };
+    let (paragraph, chunk) = match addressed.map_or_else(
+        || {
+            navigation
+                .current_chunk_address(document)
+                .map(|a| (a.paragraph, a.chunk))
+        },
+        Ok,
+    ) {
+        Ok(address) => address,
+        Err(error) => return writeln!(errors, "paragraph split failed: {error}"),
+    };
+    if document.chunk_token_count(paragraph, chunk).is_none() {
+        return writeln!(
+            errors,
+            "paragraph split failed: unknown chunk {paragraph}.{chunk}"
+        );
+    }
+    let Some(marker) = chunk.checked_sub(1).filter(|m| *m > 0) else {
+        return writeln!(
+            errors,
+            "paragraph split failed: chunk {paragraph}.{chunk} has no preceding boundary"
+        );
+    };
     match document.split_paragraph(paragraph, marker) {
         Ok(result) => {
             *navigation = NavigationState::new(document);
@@ -349,16 +368,17 @@ pub(crate) fn apply_paragraph_split(
                 navigation
                     .move_to(
                         document,
-                        &Address::Token(TokenAddress {
+                        &Address::Position(PositionAddress::Token(TokenAddress {
                             paragraph: result.right_paragraph,
+                            chunk: 1,
                             token: 1,
-                        }),
+                        })),
                     )
                     .expect("right paragraph begins with a current token");
             }
             writeln!(
                 output,
-                "split paragraph {paragraph} after {paragraph}@{marker}"
+                "split paragraph {paragraph} before {paragraph}.{chunk}"
             )
         }
         Err(error) => writeln!(errors, "paragraph split failed: {error}"),
@@ -379,13 +399,17 @@ pub(crate) fn apply_paragraph_merge(
                 .token(result.paragraph, result.first_right_token)
                 .is_some()
             {
+                let (chunk, token) = document
+                    .chunk_token_address(result.paragraph, result.first_right_token)
+                    .unwrap();
                 navigation
                     .move_to(
                         document,
-                        &Address::Token(TokenAddress {
+                        &Address::Position(PositionAddress::Token(TokenAddress {
                             paragraph: result.paragraph,
-                            token: result.first_right_token,
-                        }),
+                            chunk,
+                            token,
+                        })),
                     )
                     .expect("merged right text has a current token");
             }
@@ -436,10 +460,12 @@ mod tests {
                 &document,
                 TokenAddress {
                     paragraph: 1,
+                    chunk: 1,
                     token: 1,
                 },
                 TokenAddress {
                     paragraph: 1,
+                    chunk: 1,
                     token: 1,
                 },
                 "word".into(),
@@ -467,6 +493,7 @@ mod tests {
         .unwrap();
         let address = TokenAddress {
             paragraph: 1,
+            chunk: 1,
             token: 1,
         };
 

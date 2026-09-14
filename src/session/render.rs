@@ -1,13 +1,15 @@
+use crate::{
+    document::Document,
+    navigation::{
+        chunks_in_range, tokens_in_range, ChunkAddress, NavigationState, PositionAddress,
+        TokenAddress,
+    },
+    recognition::{ChunkBoundaryReason, RecognitionRun},
+};
 use std::{
     fmt,
     io::{self, Write},
     path::Path,
-};
-
-use crate::{
-    document::Document,
-    navigation::{Caret, NavigationState, Selection},
-    recognition::{ChunkBoundaryReason, RecognitionRun},
 };
 
 pub fn render_recognition_chunks(
@@ -25,29 +27,18 @@ pub(crate) fn render_recognition_document(
     source: &Path,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    render_recognition_document_with_navigation(run, document, source, None, output)
-}
-
-fn render_recognition_document_with_navigation(
-    run: &RecognitionRun,
-    document: &Document,
-    source: &Path,
-    navigation: Option<&NavigationState>,
-    output: &mut impl Write,
-) -> io::Result<()> {
     writeln!(
         output,
         "Built {} chunks from {}",
         run.chunks.len(),
         source.display()
     )?;
-    if run.chunks.is_empty() {
-        return Ok(());
+    if !run.chunks.is_empty() {
+        writeln!(output)?;
     }
-    writeln!(output)?;
-    for (paragraph_index, paragraph) in document.paragraphs().iter().enumerate() {
-        render_paragraph(paragraph, paragraph_index + 1, navigation, output)?;
-        if paragraph_index + 1 < document.paragraphs().len() {
+    for (index, paragraph) in document.paragraphs().iter().enumerate() {
+        render_paragraph(paragraph, index + 1, None, output)?;
+        if index + 1 < document.paragraphs().len() {
             writeln!(output)?;
         }
     }
@@ -60,7 +51,15 @@ pub(crate) fn render_paragraph(
     navigation: Option<&NavigationState>,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    render_paragraph_inner(paragraph, paragraph_number, navigation, None, None, output)
+    render_paragraph_inner(
+        None,
+        paragraph,
+        paragraph_number,
+        navigation,
+        None,
+        false,
+        output,
+    )
 }
 
 pub(crate) fn render_issue_paragraph(
@@ -73,165 +72,137 @@ pub(crate) fn render_issue_paragraph(
     output: &mut impl Write,
 ) -> io::Result<()> {
     render_paragraph_inner(
+        Some(document),
         paragraph,
         paragraph_number,
         navigation,
-        color.then_some((document, settings)),
-        Some((document, color)),
+        Some(settings),
+        color,
         output,
     )
 }
 
 fn render_paragraph_inner(
+    document: Option<&Document>,
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     navigation: Option<&NavigationState>,
-    issues: Option<(&Document, super::issues::IssueThresholds)>,
-    attention: Option<(&Document, bool)>,
+    settings: Option<super::issues::IssueThresholds>,
+    color: bool,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    let paragraph_selected = navigation.is_some_and(|state| {
-        matches!(state.selection(), Some(Selection::Paragraph { paragraph_id, paragraph_revision })
-            if paragraph_id == paragraph.id() && *paragraph_revision == paragraph.revision())
-    });
-    if paragraph_selected {
-        write!(output, "⟪")?;
-    }
-    let mut marker_index = 0;
-    for token_index in 0..=paragraph.tokens().len() {
-        while paragraph
-            .chunk_boundaries()
-            .get(marker_index)
-            .is_some_and(|marker| marker.after_tokens() == token_index)
-        {
-            let marker = &paragraph.chunk_boundaries()[marker_index];
-            let marker_selected = navigation.is_some_and(|state| {
-                matches!(state.selection(), Some(Selection::Marker(position))
-                    if position.paragraph_id == paragraph.id()
-                        && position.paragraph_revision == paragraph.revision()
-                        && position.chunk_id == marker.chunk_id())
-            });
-            let marker_range_start = navigation.is_some_and(|state| {
-                matches!(state.selection(), Some(Selection::MarkerRange { start, .. })
-                    if start.paragraph_id == paragraph.id()
-                        && start.paragraph_revision == paragraph.revision()
-                        && start.chunk_id == marker.chunk_id())
-            });
-            let marker_range_end = navigation.is_some_and(|state| {
-                matches!(state.selection(), Some(Selection::MarkerRange { end_exclusive, .. })
-                    if end_exclusive.paragraph_id == paragraph.id()
-                        && end_exclusive.paragraph_revision == paragraph.revision()
-                        && end_exclusive.chunk_id == marker.chunk_id())
-            });
-            let marker_caret = navigation.is_some_and(|state| {
-                state.selection().is_none()
-                    && matches!(state.caret(), Some(Caret::Marker(position))
-                        if position.paragraph_id == paragraph.id()
-                            && position.paragraph_revision == paragraph.revision()
-                            && position.chunk_id == marker.chunk_id())
-            });
-            if marker_range_end {
-                write!(output, "⟫")?;
-            }
+    let range = document.and_then(|doc| navigation.and_then(|n| n.current_range(doc).ok()));
+    let selected_tokens = document
+        .and_then(|doc| range.and_then(|(a, b)| tokens_in_range(doc, a, b).ok()))
+        .unwrap_or_default();
+    let selected_chunks = document
+        .and_then(|doc| range.and_then(|(a, b)| chunks_in_range(doc, a, b).ok()))
+        .unwrap_or_default();
+    let current = range
+        .filter(|_| {
+            navigation
+                .is_some_and(|n| document.is_some_and(|d| n.selection_is_empty(d).unwrap_or(false)))
+        })
+        .map(|(a, _)| a);
+    let mut paragraph_token = 0;
+    for (chunk_index, marker) in paragraph.chunk_boundaries().iter().enumerate() {
+        if chunk_index > 0 {
             write!(output, " ")?;
-            if marker_range_start {
-                write!(output, "⟪")?;
-            }
-            if marker_selected {
-                write!(output, "⟪")?;
-            } else if marker_caret {
-                write!(output, "‹")?;
-            }
-            write!(output, "⟦{}@{}⟧", paragraph_number, marker_index + 1)?;
-            if marker_selected {
-                write!(output, "⟫")?;
-            } else if marker_caret {
-                write!(output, "›")?;
-            }
-            marker_index += 1;
         }
-        if let Some(token) = paragraph.tokens().get(token_index) {
-            let selection_start = token_selection_edge(
-                navigation.and_then(NavigationState::selection),
-                paragraph,
-                token,
-                true,
-            );
-            let selection_end = token_selection_edge(
-                navigation.and_then(NavigationState::selection),
-                paragraph,
-                token,
-                false,
-            );
-            let token_caret = navigation.is_some_and(|state| {
-                state.selection().is_none()
-                    && matches!(state.caret(), Some(Caret::Token(position))
-                        if position.paragraph_id == paragraph.id()
-                            && position.paragraph_revision == paragraph.revision()
-                            && position.token_id == *token.id())
-            });
-            if selection_start {
-                write!(output, "⟪")?;
-            } else if token_caret {
-                write!(output, "‹")?;
+        let chunk_address = ChunkAddress {
+            paragraph: paragraph_number,
+            chunk: chunk_index + 1,
+        };
+        let selected_empty_chunk = selected_chunks.contains(&chunk_address)
+            && paragraph
+                .chunk_boundaries()
+                .get(chunk_index.wrapping_sub(1))
+                .map_or(0, |m| m.after_tokens())
+                == marker.after_tokens();
+        let current_chunk = match current {
+            Some(PositionAddress::Paragraph(number)) => {
+                number == paragraph_number && chunk_index == 0
             }
-            if let Some((_, color)) =
-                attention.filter(|(document, _)| document.is_attention_marked(token.id()))
+            Some(PositionAddress::Chunk(address)) => address == chunk_address,
+            Some(PositionAddress::Token(address))
+                if chunk_index > 0
+                    && address.paragraph == paragraph_number
+                    && address.chunk == chunk_index =>
             {
-                if color {
-                    write!(output, "\x1b[31m⚑\x1b[0m")?;
-                } else {
-                    write!(output, "⚑")?;
+                document
+                    .and_then(|doc| doc.chunk_token_count(address.paragraph, address.chunk))
+                    .is_some_and(|count| address.token == count + 1)
+            }
+            _ => false,
+        };
+        if selected_empty_chunk {
+            write!(output, "⟪")?;
+        } else if current_chunk {
+            write!(output, "‹")?;
+        }
+        write!(output, "⟦{chunk_address}⟧")?;
+        if selected_empty_chunk {
+            write!(output, "⟫")?;
+        } else if current_chunk {
+            write!(output, "›")?;
+        }
+        let chunk_start = paragraph_token;
+        let chunk_count = marker.after_tokens() - chunk_start;
+        for local in 0..chunk_count {
+            let token = &paragraph.tokens()[paragraph_token];
+            let address = TokenAddress {
+                paragraph: paragraph_number,
+                chunk: chunk_index + 1,
+                token: local + 1,
+            };
+            let selected = selected_tokens.contains(&address);
+            let first = selected && selected_tokens.first() == Some(&address);
+            let last = selected && selected_tokens.last() == Some(&address);
+            let current_token = current == Some(PositionAddress::Token(address));
+            if first {
+                write!(output, "⟪")?;
+            } else if current_token {
+                write!(output, "‹")?;
+            }
+            if let Some(doc) = document {
+                if doc.is_attention_marked(token.id()) {
+                    write!(
+                        output,
+                        "{}⚑{}",
+                        if color { "\x1b[31m" } else { "" },
+                        if color { "\x1b[0m" } else { "" }
+                    )?;
                 }
-            }
-            let confidence = issues.and_then(|(document, settings)| {
-                super::issues::confidence(document, token.id(), settings)
-            });
-            if let Some(confidence) = confidence {
-                write!(
-                    output,
-                    "{}",
-                    match confidence {
-                        super::issues::Confidence::Red => "\x1b[31m",
-                        super::issues::Confidence::Orange => "\x1b[38;5;208m",
+                let confidence =
+                    settings.and_then(|s| super::issues::confidence(doc, token.id(), s));
+                if color {
+                    if let Some(level) = confidence {
+                        write!(
+                            output,
+                            "{}",
+                            match level {
+                                super::issues::Confidence::Red => "\x1b[31m",
+                                super::issues::Confidence::Orange => "\x1b[38;5;208m",
+                            }
+                        )?;
                     }
-                )?;
+                }
+                write!(output, "{}", token.text())?;
+                if color && confidence.is_some() {
+                    write!(output, "\x1b[0m")?;
+                }
+            } else {
+                write!(output, "{}", token.text())?;
             }
-            write!(output, "{}", token.text())?;
-            if confidence.is_some() {
-                write!(output, "\x1b[0m")?;
-            }
-            if selection_end {
+            if last {
                 write!(output, "⟫")?;
-            } else if token_caret {
+            } else if current_token {
                 write!(output, "›")?;
             }
+            paragraph_token += 1;
         }
-    }
-    if paragraph_selected {
-        write!(output, "⟫")?;
     }
     writeln!(output)
-}
-
-fn token_selection_edge(
-    selection: Option<&Selection>,
-    paragraph: &crate::document::Paragraph,
-    token: &crate::document::VisibleToken,
-    start_edge: bool,
-) -> bool {
-    let Some(Selection::Tokens {
-        start,
-        end_inclusive,
-        ..
-    }) = selection
-    else {
-        return false;
-    };
-    let position = if start_edge { start } else { end_inclusive };
-    position.paragraph_id == paragraph.id()
-        && position.paragraph_revision == paragraph.revision()
-        && position.token_id == *token.id()
 }
 
 pub(crate) fn render_tokens(
@@ -265,65 +236,68 @@ pub(crate) fn render_token_range(
     color: bool,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    let mut marker_index = 0;
-    for token_index in 0..=paragraph.tokens().len() {
-        while paragraph
-            .chunk_boundaries()
-            .get(marker_index)
-            .is_some_and(|marker| marker.after_tokens() == token_index)
-        {
-            if (start..=end_exclusive).contains(&token_index) {
-                writeln!(
-                    output,
-                    "{}@{}  marker  chunk boundary",
-                    paragraph_number,
-                    marker_index + 1
-                )?;
-            }
-            marker_index += 1;
+    let mut previous = 0;
+    for (chunk_index, marker) in paragraph.chunk_boundaries().iter().enumerate() {
+        if (start..=end_exclusive).contains(&previous) {
+            writeln!(
+                output,
+                "{}.{}  chunk  {}",
+                paragraph_number,
+                chunk_index + 1,
+                if marker.after_tokens() > previous {
+                    "has_tokens"
+                } else {
+                    "no tokens"
+                }
+            )?;
         }
-        if (start..end_exclusive).contains(&token_index) {
-            if let Some(token) = paragraph.tokens().get(token_index) {
-                let probability = document
-                    .recognition_token_evidence()
-                    .iter()
-                    .find(|evidence| evidence.token_id() == token.id())
-                    .map(|evidence| format!("{:.3}", evidence.probability()))
-                    .unwrap_or_else(|| "-".into());
+        for global in previous..marker.after_tokens() {
+            if !(start..end_exclusive).contains(&global) {
+                continue;
+            }
+            let token = &paragraph.tokens()[global];
+            let probability = document
+                .recognition_token_evidence()
+                .iter()
+                .find(|e| e.token_id() == token.id())
+                .map(|e| format!("{:.3}", e.probability()))
+                .unwrap_or_else(|| "-".into());
+            write!(
+                output,
+                "{}.{}.{}  {:>5}  ",
+                paragraph_number,
+                chunk_index + 1,
+                global - previous + 1,
+                probability
+            )?;
+            if document.is_attention_marked(token.id()) {
                 write!(
                     output,
-                    "{}.{}  {:>5}  ",
-                    paragraph_number,
-                    token_index + 1,
-                    probability
+                    "{}⚑{}",
+                    if color { "\x1b[31m" } else { "" },
+                    if color { "\x1b[0m" } else { "" }
                 )?;
-                if document.is_attention_marked(token.id()) {
-                    if color {
-                        write!(output, "\x1b[31m⚑\x1b[0m")?;
-                    } else {
-                        write!(output, "⚑")?;
-                    }
-                }
-                let confidence = color
-                    .then(|| super::issues::confidence(document, token.id(), settings))
-                    .flatten();
-                if let Some(confidence) = confidence {
-                    write!(
-                        output,
-                        "{}",
-                        match confidence {
-                            super::issues::Confidence::Red => "\x1b[31m",
-                            super::issues::Confidence::Orange => "\x1b[38;5;208m",
-                        }
-                    )?;
-                }
-                write!(output, "{:?}", token.text())?;
-                if confidence.is_some() {
-                    write!(output, "\x1b[0m")?;
-                }
-                writeln!(output)?;
             }
+            let confidence = color
+                .then(|| super::issues::confidence(document, token.id(), settings))
+                .flatten();
+            if let Some(level) = confidence {
+                write!(
+                    output,
+                    "{}",
+                    match level {
+                        super::issues::Confidence::Red => "\x1b[31m",
+                        super::issues::Confidence::Orange => "\x1b[38;5;208m",
+                    }
+                )?;
+            }
+            write!(output, "{:?}", token.text())?;
+            if confidence.is_some() {
+                write!(output, "\x1b[0m")?;
+            }
+            writeln!(output)?;
         }
+        previous = marker.after_tokens();
     }
     Ok(())
 }
@@ -337,14 +311,14 @@ pub(crate) fn render_chunk_info(
 ) -> io::Result<()> {
     writeln!(
         output,
-        "{}@{}  {} – {}  {:>9}  {:>3} tokens  {}",
+        "{}.{}  {} – {}  {:>9}  {:>3} tokens  {}",
         paragraph,
         chunk_number,
         Timestamp::new(chunk.audio_range.start_sample, run.source.sample_rate_hz),
         Timestamp::new(chunk.audio_range.end_sample, run.source.sample_rate_hz),
         Duration::new(chunk.audio_range.len(), run.source.sample_rate_hz),
         chunk.token_count,
-        chunk_boundary_label(chunk, run.source.sample_rate_hz),
+        chunk_boundary_label(chunk, run.source.sample_rate_hz)
     )?;
     writeln!(output, "     {}", chunk.text)
 }
@@ -357,11 +331,11 @@ fn chunk_boundary_label(
         ChunkBoundaryReason::LongPause => "long pause",
         ChunkBoundaryReason::StrongPause => "strong pause",
         ChunkBoundaryReason::ScoredPause => "best pause",
-        ChunkBoundaryReason::MaximumTokens => return "token limit".to_owned(),
+        ChunkBoundaryReason::MaximumTokens => return "token limit".into(),
         ChunkBoundaryReason::SourceEnd => "source end",
     };
     chunk.boundary.pause_samples.map_or_else(
-        || reason.to_owned(),
+        || reason.into(),
         |samples| format!("{reason} ({})", Duration::new(samples, sample_rate_hz)),
     )
 }
@@ -370,7 +344,6 @@ struct Timestamp {
     samples: u64,
     sample_rate_hz: u32,
 }
-
 impl Timestamp {
     fn new(samples: u64, sample_rate_hz: u32) -> Self {
         Self {
@@ -379,26 +352,23 @@ impl Timestamp {
         }
     }
 }
-
 impl fmt::Display for Timestamp {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let milliseconds = u128::from(self.samples) * 1_000 / u128::from(self.sample_rate_hz);
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ms = u128::from(self.samples) * 1000 / u128::from(self.sample_rate_hz);
         write!(
-            formatter,
+            f,
             "{:02}:{:02}:{:02}.{:03}",
-            milliseconds / 3_600_000,
-            milliseconds / 60_000 % 60,
-            milliseconds / 1_000 % 60,
-            milliseconds % 1_000
+            ms / 3_600_000,
+            ms / 60_000 % 60,
+            ms / 1000 % 60,
+            ms % 1000
         )
     }
 }
-
 struct Duration {
     samples: u64,
     sample_rate_hz: u32,
 }
-
 impl Duration {
     fn new(samples: u64, sample_rate_hz: u32) -> Self {
         Self {
@@ -407,77 +377,9 @@ impl Duration {
         }
     }
 }
-
 impl fmt::Display for Duration {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let milliseconds = u128::from(self.samples) * 1_000 / u128::from(self.sample_rate_hz);
-        write!(
-            formatter,
-            "{}.{:03} s",
-            milliseconds / 1_000,
-            milliseconds % 1_000
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn token_listing_uses_live_confidence_colors_on_token_text() {
-        let id =
-            |index| json!({"kind":"recognition","run_id":"r","segment_id":"s","token_index":index});
-        let document: Document = serde_json::from_value(json!({
-            "schema":"rde-document/v1-experimental","id":"d","paragraphs":[{
-                "id":"p","revision":1,"tokens":[
-                    {"id":id(0),"text":"red","origin":{"kind":"recognition"}},
-                    {"id":id(1),"text":"orange","origin":{"kind":"recognition"}}
-                ],"chunk_boundaries":[{"chunk_id":"c","after_tokens":2}]
-            }],"recognition_token_evidence":[
-                {"token_id":id(0),"recognition_token_id":1,"probability":0.1,"alternatives":[]},
-                {"token_id":id(1),"recognition_token_id":2,"probability":0.2,"alternatives":[]}
-            ]
-        }))
-        .unwrap();
-        let mut output = Vec::new();
-        render_tokens(
-            &document,
-            document.paragraph(1).unwrap(),
-            1,
-            super::super::issues::IssueThresholds::default(),
-            true,
-            &mut output,
-        )
-        .unwrap();
-        let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("1.1  0.100  \x1b[31m\"red\"\x1b[0m"));
-        assert!(output.contains("1.2  0.200  \x1b[38;5;208m\"orange\"\x1b[0m"));
-    }
-
-    #[test]
-    fn attention_flag_is_literal_without_color_and_red_with_its_own_reset() {
-        let document: Document = serde_json::from_value(json!({
-            "schema":"rde-document/v1-experimental","id":"d","paragraphs":[{
-                "id":"p","revision":1,"tokens":[
-                    {"id":{"kind":"pseudo","id":"t"},"text":" text","origin":{"kind":"pseudo","reason":"test"}}
-                ],"chunk_boundaries":[{"chunk_id":"c","after_tokens":1}]
-            }],"attention_marks":[{"token_id":{"kind":"pseudo","id":"t"}}]
-        })).unwrap();
-        for (color, expected) in [(false, "⚑ text"), (true, "\x1b[31m⚑\x1b[0m text")] {
-            let mut output = Vec::new();
-            render_issue_paragraph(
-                &document,
-                document.paragraph(1).unwrap(),
-                1,
-                None,
-                super::super::issues::IssueThresholds::default(),
-                color,
-                &mut output,
-            )
-            .unwrap();
-            assert!(String::from_utf8(output).unwrap().contains(expected));
-        }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ms = u128::from(self.samples) * 1000 / u128::from(self.sample_rate_hz);
+        write!(f, "{}.{:03} s", ms / 1000, ms % 1000)
     }
 }

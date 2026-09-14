@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use crate::navigation::{parse_line, Address, CommandLine, SyntaxError, TokenAddress};
+use crate::navigation::{
+    parse_line, Address, CommandLine, PositionAddress, SyntaxError, TokenAddress,
+};
 
 use super::playback::PlaybackSpeed;
 
@@ -43,11 +45,11 @@ pub(crate) enum SessionCommand {
         text: String,
     },
     Replace {
-        range: Option<(TokenAddress, TokenAddress)>,
+        range: Option<Address>,
         replacement: ReplacementText,
     },
     Delete {
-        range: Option<(TokenAddress, TokenAddress)>,
+        range: Option<Address>,
     },
     SplitParagraph {
         marker: Option<(usize, usize)>,
@@ -209,13 +211,15 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
         "refresh" => {
             reject_arguments(&name, &arguments)?;
             let marker = match address {
-                Some(Address::Marker { paragraph, marker }) => Some((paragraph, marker)),
-                None => None,
+                Some(Address::Position(PositionAddress::Chunk(address))) => {
+                    Some((address.paragraph, address.chunk))
+                }
+                None | Some(Address::Current) => None,
                 Some(address) => {
                     return Err(CommandParseError::InvalidAddress {
                         command: name,
                         address,
-                        expected: "a chunk-marker address M@N",
+                        expected: "a chunk position N.M",
                     })
                 }
             };
@@ -250,11 +254,13 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
             reject_arguments(&name, &arguments)?;
             match address {
                 None => Ok(SessionCommand::Print(None)),
-                Some(Address::Paragraph(paragraph)) => Ok(SessionCommand::Print(Some(paragraph))),
+                Some(Address::Position(PositionAddress::Paragraph(paragraph))) => {
+                    Ok(SessionCommand::Print(Some(paragraph)))
+                }
                 Some(address) => Err(CommandParseError::InvalidAddress {
                     command: name,
                     address,
-                    expected: "a paragraph address M",
+                    expected: "a paragraph position N",
                 }),
             }
         }
@@ -293,17 +299,20 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
                 .map(SessionCommand::Select)
                 .ok_or(CommandParseError::AddressRequired {
                     command: name,
-                    expected: "an address M, M.N, M.N,M.U, M@N, M@N,M@U, or .",
+                    expected: "an address N, N.M, N.M.K, A,B, or .",
                 })
         }
         "tokens" => {
             reject_arguments(&name, &arguments)?;
             match address {
-                Some(Address::Paragraph(paragraph)) => Ok(SessionCommand::Tokens(Some(paragraph))),
+                Some(Address::Position(PositionAddress::Paragraph(paragraph))) => {
+                    Ok(SessionCommand::Tokens(Some(paragraph)))
+                }
+                Some(Address::Current) => Ok(SessionCommand::Tokens(None)),
                 Some(address) => Err(CommandParseError::InvalidAddress {
                     command: name,
                     address,
-                    expected: "a paragraph address M",
+                    expected: "a paragraph position N",
                 }),
                 None => Ok(SessionCommand::Tokens(None)),
             }
@@ -333,22 +342,26 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
                 return Err(CommandParseError::TextRequired(name));
             }
             match address {
-                Some(Address::Token(address)) if name == "insert" => Ok(SessionCommand::Insert {
-                    address,
-                    text: arguments,
-                }),
-                Some(Address::Token(address)) => Ok(SessionCommand::Append {
-                    address,
-                    text: arguments,
-                }),
+                Some(Address::Position(PositionAddress::Token(address))) if name == "insert" => {
+                    Ok(SessionCommand::Insert {
+                        address,
+                        text: arguments,
+                    })
+                }
+                Some(Address::Position(PositionAddress::Token(address))) => {
+                    Ok(SessionCommand::Append {
+                        address,
+                        text: arguments,
+                    })
+                }
                 Some(address) => Err(CommandParseError::InvalidAddress {
                     command: name,
                     address,
-                    expected: "a token address M.N",
+                    expected: "a token position N.M.K",
                 }),
                 None => Err(CommandParseError::AddressRequired {
                     command: name,
-                    expected: "a token address M.N",
+                    expected: "a token position N.M.K",
                 }),
             }
         }
@@ -367,13 +380,15 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
         "parasplit" => {
             reject_arguments(&name, &arguments)?;
             let marker = match address {
-                Some(Address::Marker { paragraph, marker }) => Some((paragraph, marker)),
-                None => None,
+                Some(Address::Position(PositionAddress::Chunk(address))) => {
+                    Some((address.paragraph, address.chunk))
+                }
+                None | Some(Address::Current) => None,
                 Some(address) => {
                     return Err(CommandParseError::InvalidAddress {
                         command: name,
                         address,
-                        expected: "a chunk-marker address M@N",
+                        expected: "a chunk position N.M",
                     })
                 }
             };
@@ -382,17 +397,17 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
         "merge" => {
             reject_arguments(&name, &arguments)?;
             match address {
-                Some(Address::Paragraph(paragraph)) => {
+                Some(Address::Position(PositionAddress::Paragraph(paragraph))) => {
                     Ok(SessionCommand::MergeParagraph(paragraph))
                 }
                 Some(address) => Err(CommandParseError::InvalidAddress {
                     command: name,
                     address,
-                    expected: "a paragraph M address",
+                    expected: "a paragraph position N",
                 }),
                 None => Err(CommandParseError::AddressRequired {
                     command: name,
-                    expected: "a paragraph M address",
+                    expected: "a paragraph position N",
                 }),
             }
         }
@@ -490,15 +505,17 @@ fn marker_command(
     build: impl FnOnce(usize, usize) -> SessionCommand,
 ) -> Result<SessionCommand, CommandParseError> {
     match address {
-        Some(Address::Marker { paragraph, marker }) => Ok(build(paragraph, marker)),
+        Some(Address::Position(PositionAddress::Chunk(address))) => {
+            Ok(build(address.paragraph, address.chunk))
+        }
         Some(address) => Err(CommandParseError::InvalidAddress {
             command,
             address,
-            expected: "a chunk-marker address M@N",
+            expected: "a chunk position N.M",
         }),
         None => Err(CommandParseError::AddressRequired {
             command,
-            expected: "a chunk-marker address M@N",
+            expected: "a chunk position N.M",
         }),
     }
 }
@@ -506,13 +523,14 @@ fn marker_command(
 fn optional_token_range(
     address: Option<Address>,
     command: String,
-) -> Result<Option<(TokenAddress, TokenAddress)>, CommandParseError> {
+) -> Result<Option<Address>, CommandParseError> {
     match address {
-        Some(Address::TokenRange { start, end }) => Ok(Some((start, end))),
+        Some(address @ Address::Range { .. }) => Ok(Some(address)),
+        Some(Address::Current) => Ok(None),
         Some(address) => Err(CommandParseError::InvalidAddress {
             command,
             address,
-            expected: "an inclusive token range M.N,M.U",
+            expected: "a half-open range A,B",
         }),
         None => Ok(None),
     }
@@ -523,11 +541,12 @@ fn optional_token(
     command: String,
 ) -> Result<Option<TokenAddress>, CommandParseError> {
     match address {
-        Some(Address::Token(token)) => Ok(Some(token)),
+        Some(Address::Position(PositionAddress::Token(token))) => Ok(Some(token)),
+        Some(Address::Current) => Ok(None),
         Some(address) => Err(CommandParseError::InvalidAddress {
             command,
             address,
-            expected: "a token address M.N",
+            expected: "a token position N.M.K",
         }),
         None => Ok(None),
     }
@@ -546,9 +565,67 @@ fn no_address(
 }
 
 #[cfg(test)]
+mod hierarchical_tests {
+    use super::*;
+    use crate::navigation::{ChunkAddress, PositionAddress, TokenAddress};
+
+    #[test]
+    fn dispatches_commands_by_structural_depth() {
+        assert_eq!(
+            parse_command("2play").unwrap(),
+            SessionCommand::Play {
+                address: Some(Address::Position(PositionAddress::Paragraph(2))),
+                speed: PlaybackSpeed::Normal
+            }
+        );
+        assert_eq!(
+            parse_command("2.3info").unwrap(),
+            SessionCommand::Info {
+                paragraph: 2,
+                chunk: 3
+            }
+        );
+        assert_eq!(
+            parse_command("2.3.4alts").unwrap(),
+            SessionCommand::Alternatives {
+                address: Some(TokenAddress {
+                    paragraph: 2,
+                    chunk: 3,
+                    token: 4
+                })
+            }
+        );
+        assert!(matches!(
+            parse_command("2.3.4,3replace text"),
+            Ok(SessionCommand::Replace {
+                range: Some(Address::Range {
+                    start: PositionAddress::Token(_),
+                    end: PositionAddress::Paragraph(3)
+                }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse_command("2.3merge"),
+            Err(CommandParseError::InvalidAddress { .. })
+        ));
+        let _ = ChunkAddress {
+            paragraph: 2,
+            chunk: 3,
+        };
+    }
+
+    #[test]
+    fn rejects_removed_marker_syntax_as_invalid() {
+        let error = parse_command("2@3play").unwrap_err().to_string();
+        assert!(error.contains("invalid address"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::navigation::{Address, SyntaxError, TokenAddress};
+    use crate::navigation::{Address, ChunkAddress, PositionAddress, SyntaxError, TokenAddress};
     use std::path::PathBuf;
 
     #[test]
@@ -559,12 +636,12 @@ mod tests {
             SessionCommand::Print(Some(2))
         );
         assert_eq!(
-            parse_command(" 2@3play ").unwrap(),
+            parse_command(" 2.3play ").unwrap(),
             SessionCommand::Play {
-                address: Some(Address::Marker {
+                address: Some(Address::Position(PositionAddress::Chunk(ChunkAddress {
                     paragraph: 2,
-                    marker: 3
-                }),
+                    chunk: 3
+                }))),
                 speed: PlaybackSpeed::Normal,
             }
         );
@@ -578,7 +655,7 @@ mod tests {
         assert_eq!(
             parse_command("2slowplay").unwrap(),
             SessionCommand::Play {
-                address: Some(Address::Paragraph(2)),
+                address: Some(Address::Position(PositionAddress::Paragraph(2))),
                 speed: PlaybackSpeed::Slow
             }
         );
@@ -594,7 +671,7 @@ mod tests {
         assert_eq!(parse_command("redo").unwrap(), SessionCommand::Redo(1));
         assert_eq!(parse_command("3redo").unwrap(), SessionCommand::Redo(3));
         assert_eq!(
-            parse_command("1@2parasplit").unwrap(),
+            parse_command("1.2parasplit").unwrap(),
             SessionCommand::SplitParagraph {
                 marker: Some((1, 2)),
             }
@@ -607,7 +684,6 @@ mod tests {
             "split",
             "1.2split",
             "1.2 split",
-            "1@2split",
             "isplit",
             "2.3isplit",
             "2.3 isplit",
@@ -620,45 +696,49 @@ mod tests {
                 Err(CommandParseError::Unknown(_))
             ));
         }
-        for command in ["1@2merge", "1@2 merge"] {
+        for command in ["1.2merge", "1.2 merge"] {
             assert!(matches!(
                 parse_command(command),
                 Err(CommandParseError::InvalidAddress { .. })
             ));
         }
         assert_eq!(
-            parse_command("1.2insert  typed text  ").unwrap(),
+            parse_command("1.1.2insert  typed text  ").unwrap(),
             SessionCommand::Insert {
                 address: TokenAddress {
                     paragraph: 1,
+                    chunk: 1,
                     token: 2,
                 },
                 text: " typed text  ".into(),
             }
         );
         assert_eq!(
-            parse_command("1.2 append text").unwrap(),
+            parse_command("1.1.2 append text").unwrap(),
             SessionCommand::Append {
                 address: TokenAddress {
                     paragraph: 1,
+                    chunk: 1,
                     token: 2,
                 },
                 text: "text".into(),
             }
         );
         assert_eq!(
-            parse_command("1.2,1.4replace new text").unwrap(),
+            parse_command("1.1.2,1.1.4replace new text").unwrap(),
             SessionCommand::Replace {
-                range: Some((
-                    TokenAddress {
+                range: Some(Address::Range {
+                    start: PositionAddress::Token(TokenAddress {
                         paragraph: 1,
-                        token: 2,
-                    },
-                    TokenAddress {
+                        chunk: 1,
+                        token: 2
+                    }),
+                    end: PositionAddress::Token(TokenAddress {
                         paragraph: 1,
-                        token: 4,
-                    },
-                )),
+                        chunk: 1,
+                        token: 4
+                    }),
+                }),
                 replacement: ReplacementText {
                     text: "new text".into(),
                     exact_boundaries: false,
@@ -666,31 +746,37 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_command("1.2,1.4delete").unwrap(),
+            parse_command("1.1.2,1.1.4delete").unwrap(),
             SessionCommand::Delete {
-                range: Some((
-                    TokenAddress {
+                range: Some(Address::Range {
+                    start: PositionAddress::Token(TokenAddress {
                         paragraph: 1,
-                        token: 2,
-                    },
-                    TokenAddress {
+                        chunk: 1,
+                        token: 2
+                    }),
+                    end: PositionAddress::Token(TokenAddress {
                         paragraph: 1,
-                        token: 4,
-                    },
-                )),
+                        chunk: 1,
+                        token: 4
+                    }),
+                }),
             }
         );
         assert_eq!(
-            parse_command("1@1,1@2sel").unwrap(),
-            SessionCommand::Select(Address::MarkerRange {
-                start_paragraph: 1,
-                start_marker: 1,
-                end_paragraph: 1,
-                end_marker_exclusive: 2,
+            parse_command("1.1,1.2sel").unwrap(),
+            SessionCommand::Select(Address::Range {
+                start: PositionAddress::Chunk(ChunkAddress {
+                    paragraph: 1,
+                    chunk: 1
+                }),
+                end: PositionAddress::Chunk(ChunkAddress {
+                    paragraph: 1,
+                    chunk: 2
+                }),
             })
         );
         assert_eq!(
-            parse_command("2@3 i").unwrap(),
+            parse_command("2.3 i").unwrap(),
             SessionCommand::Info {
                 paragraph: 2,
                 chunk: 3
@@ -719,11 +805,12 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_command("2.3set 5").unwrap(),
+            parse_command("2.3.4set 5").unwrap(),
             SessionCommand::ChooseAlternative {
                 address: Some(TokenAddress {
                     paragraph: 2,
-                    token: 3,
+                    chunk: 3,
+                    token: 4,
                 }),
                 candidate: 5,
             }
@@ -752,16 +839,16 @@ mod tests {
         assert_eq!(
             parse_command("1play").unwrap(),
             SessionCommand::Play {
-                address: Some(Address::Paragraph(1)),
+                address: Some(Address::Position(PositionAddress::Paragraph(1))),
                 speed: PlaybackSpeed::Normal
             }
         );
         assert_eq!(
             parse_command("7").unwrap(),
-            SessionCommand::Move(Address::Paragraph(7))
+            SessionCommand::Move(Address::Position(PositionAddress::Paragraph(7)))
         );
         assert_eq!(
-            parse_command("1@1play now").unwrap_err(),
+            parse_command("1.1play now").unwrap_err(),
             CommandParseError::ExtraArguments("play".into())
         );
         assert_eq!(
@@ -776,32 +863,33 @@ mod tests {
             parse_command("info").unwrap_err(),
             CommandParseError::AddressRequired {
                 command: "info".into(),
-                expected: "a chunk-marker address M@N",
+                expected: "a chunk position N.M",
             }
         );
         assert_eq!(
             parse_command("2info").unwrap_err(),
             CommandParseError::InvalidAddress {
                 command: "info".into(),
-                address: Address::Paragraph(2),
-                expected: "a chunk-marker address M@N",
+                address: Address::Position(PositionAddress::Paragraph(2)),
+                expected: "a chunk position N.M",
             }
         );
         assert_eq!(
-            parse_command("0@1info").unwrap_err(),
-            CommandParseError::Syntax(SyntaxError::ZeroAddress("0@1".into()))
+            parse_command("0.1info").unwrap_err(),
+            CommandParseError::Syntax(SyntaxError::ZeroAddress("0.1".into()))
         );
         assert_eq!(
-            parse_command("2.4,3.2select").unwrap(),
-            SessionCommand::Select(Address::TokenRange {
-                start: crate::navigation::TokenAddress {
+            parse_command("2.4,3.2.1select").unwrap(),
+            SessionCommand::Select(Address::Range {
+                start: PositionAddress::Chunk(ChunkAddress {
                     paragraph: 2,
-                    token: 4
-                },
-                end: crate::navigation::TokenAddress {
+                    chunk: 4
+                }),
+                end: PositionAddress::Token(TokenAddress {
                     paragraph: 3,
-                    token: 2
-                },
+                    chunk: 2,
+                    token: 1
+                }),
             })
         );
         assert_eq!(
@@ -817,7 +905,7 @@ mod tests {
             CommandParseError::UnexpectedAddress("help".into())
         );
         assert_eq!(
-            parse_command("1.2insert").unwrap_err(),
+            parse_command("1.1.2insert").unwrap_err(),
             CommandParseError::TextRequired("insert".into())
         );
         assert_eq!(
@@ -835,11 +923,11 @@ mod tests {
             SessionCommand::Delete { range: None }
         );
         assert!(matches!(
-            parse_command("1.2replace text"),
+            parse_command("1.1.2replace text"),
             Err(CommandParseError::InvalidAddress { .. })
         ));
         assert!(matches!(
-            parse_command("1.2delete"),
+            parse_command("1.1.2delete"),
             Err(CommandParseError::InvalidAddress { .. })
         ));
         assert_eq!(
@@ -884,11 +972,12 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_command("2.3unmark").unwrap(),
+            parse_command("2.3.4unmark").unwrap(),
             SessionCommand::Mark {
                 address: Some(TokenAddress {
                     paragraph: 2,
-                    token: 3
+                    chunk: 3,
+                    token: 4
                 }),
                 remove: true
             }

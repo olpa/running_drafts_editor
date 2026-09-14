@@ -1,39 +1,58 @@
-//! Address-first command syntax for the line-oriented editor.
+//! Hierarchical, address-first navigation for the line-oriented editor.
 
-use std::fmt;
+use std::{cmp::Ordering, fmt};
 
 use crate::document::{Document, VisibleTokenId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ChunkAddress {
+    pub paragraph: usize,
+    pub chunk: usize,
+}
+
+impl fmt::Display for ChunkAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.paragraph, self.chunk)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TokenAddress {
     pub paragraph: usize,
+    pub chunk: usize,
     pub token: usize,
 }
 
 impl fmt::Display for TokenAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}", self.paragraph, self.token)
+        write!(f, "{}.{}.{}", self.paragraph, self.chunk, self.token)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PositionAddress {
+    Paragraph(usize),
+    Chunk(ChunkAddress),
+    Token(TokenAddress),
+}
+
+impl fmt::Display for PositionAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Paragraph(paragraph) => write!(f, "{paragraph}"),
+            Self::Chunk(address) => write!(f, "{address}"),
+            Self::Token(address) => write!(f, "{address}"),
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Address {
     Current,
-    Paragraph(usize),
-    Token(TokenAddress),
-    TokenRange {
-        start: TokenAddress,
-        end: TokenAddress,
-    },
-    Marker {
-        paragraph: usize,
-        marker: usize,
-    },
-    MarkerRange {
-        start_paragraph: usize,
-        start_marker: usize,
-        end_paragraph: usize,
-        end_marker_exclusive: usize,
+    Position(PositionAddress),
+    Range {
+        start: PositionAddress,
+        end: PositionAddress,
     },
 }
 
@@ -41,25 +60,8 @@ impl fmt::Display for Address {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Current => f.write_str("."),
-            Self::Paragraph(p) => write!(f, "{p}"),
-            Self::Token(a) => write!(f, "{}.{}", a.paragraph, a.token),
-            Self::TokenRange { start, end } => write!(
-                f,
-                "{}.{},{}.{}",
-                start.paragraph, start.token, end.paragraph, end.token
-            ),
-            Self::Marker { paragraph, marker } => write!(f, "{paragraph}@{marker}"),
-            Self::MarkerRange {
-                start_paragraph,
-                start_marker,
-                end_paragraph,
-                end_marker_exclusive,
-            } => {
-                write!(
-                    f,
-                    "{start_paragraph}@{start_marker},{end_paragraph}@{end_marker_exclusive}"
-                )
-            }
+            Self::Position(position) => write!(f, "{position}"),
+            Self::Range { start, end } => write!(f, "{start},{end}"),
         }
     }
 }
@@ -77,14 +79,10 @@ pub enum CommandLine {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SyntaxError {
-    #[error("invalid address '{0}'; expected M, M.N, M.N,M.U, M@N, M@N,M@U, or .")]
+    #[error("invalid address '{0}'; expected N, N.M, N.M.K, A,B, or .")]
     InvalidAddress(String),
     #[error("address numbers must be positive in '{0}'")]
     ZeroAddress(String),
-    #[error("token range '{0}' ends before it starts")]
-    ReversedRange(String),
-    #[error("marker range '{0}' must end after it starts")]
-    ReversedMarkerRange(String),
     #[error("invalid command syntax '{0}'")]
     InvalidCommand(String),
 }
@@ -96,7 +94,6 @@ pub fn parse_line(input: &str) -> Result<CommandLine, SyntaxError> {
     }
     let (first, raw_tail) = split_head(input);
     let parsed_address = parse_address(first);
-
     if let Ok(address) = parsed_address {
         let tail = raw_tail.trim_start();
         if tail.is_empty() {
@@ -110,7 +107,6 @@ pub fn parse_line(input: &str) -> Result<CommandLine, SyntaxError> {
             name,
         });
     }
-
     let split = first.find(char::is_alphabetic).unwrap_or(0);
     if split > 0 {
         let (address, name) = first.split_at(split);
@@ -121,15 +117,13 @@ pub fn parse_line(input: &str) -> Result<CommandLine, SyntaxError> {
             name,
         });
     }
-
     if first
         .chars()
         .next()
-        .is_some_and(|character| character.is_ascii_digit() || matches!(character, '.' | '@' | ','))
+        .is_some_and(|c| c.is_ascii_digit() || matches!(c, '.' | '@' | ','))
     {
         return Err(parsed_address.expect_err("address-shaped input did not parse"));
     }
-
     let name = parse_command_name(first)?;
     Ok(CommandLine::Command {
         address: None,
@@ -142,12 +136,8 @@ fn split_head(input: &str) -> (&str, &str) {
     input
         .find(char::is_whitespace)
         .map_or((input, ""), |split| {
-            let separator_len = input[split..]
-                .chars()
-                .next()
-                .expect("split points at whitespace")
-                .len_utf8();
-            (&input[..split], &input[split + separator_len..])
+            let len = input[split..].chars().next().unwrap().len_utf8();
+            (&input[..split], &input[split + len..])
         })
 }
 
@@ -163,59 +153,40 @@ pub fn parse_address(input: &str) -> Result<Address, SyntaxError> {
     if input == "." {
         return Ok(Address::Current);
     }
-    if let Some((start, end)) = split_once(input, ',')? {
-        if start.contains('@') || end.contains('@') {
-            let Some((start_paragraph, start_marker)) = split_once(start, '@')? else {
-                return Err(SyntaxError::InvalidAddress(input.into()));
-            };
-            let Some((end_paragraph, end_marker)) = split_once(end, '@')? else {
-                return Err(SyntaxError::InvalidAddress(input.into()));
-            };
-            let start = (
-                parse_number(start_paragraph, input)?,
-                parse_number(start_marker, input)?,
-            );
-            let end = (
-                parse_number(end_paragraph, input)?,
-                parse_number(end_marker, input)?,
-            );
-            if start >= end {
-                return Err(SyntaxError::ReversedMarkerRange(input.into()));
-            }
-            return Ok(Address::MarkerRange {
-                start_paragraph: start.0,
-                start_marker: start.1,
-                end_paragraph: end.0,
-                end_marker_exclusive: end.1,
-            });
-        }
-        let start = parse_token(start, input)?;
-        let end = parse_token(end, input)?;
-        if (start.paragraph, start.token) > (end.paragraph, end.token) {
-            return Err(SyntaxError::ReversedRange(input.into()));
-        }
-        return Ok(Address::TokenRange { start, end });
+    if input.contains('@') {
+        return Err(SyntaxError::InvalidAddress(input.into()));
     }
-    if let Some((paragraph, marker)) = split_once(input, '@')? {
-        return Ok(Address::Marker {
-            paragraph: parse_number(paragraph, input)?,
-            marker: parse_number(marker, input)?,
+    if let Some((start, end)) = split_once(input, ',')? {
+        return Ok(Address::Range {
+            start: parse_position(start, input)?,
+            end: parse_position(end, input)?,
         });
     }
-    if input.contains('.') {
-        return parse_token(input, input).map(Address::Token);
-    }
-    parse_number(input, input).map(Address::Paragraph)
+    parse_position(input, input).map(Address::Position)
 }
 
-fn parse_token(input: &str, whole: &str) -> Result<TokenAddress, SyntaxError> {
-    let Some((paragraph, token)) = split_once(input, '.')? else {
+fn parse_position(input: &str, whole: &str) -> Result<PositionAddress, SyntaxError> {
+    let parts = input.split('.').collect::<Vec<_>>();
+    if parts.is_empty() || parts.len() > 3 || parts.iter().any(|part| part.is_empty()) {
         return Err(SyntaxError::InvalidAddress(whole.into()));
-    };
-    Ok(TokenAddress {
-        paragraph: parse_number(paragraph, whole)?,
-        token: parse_number(token, whole)?,
-    })
+    }
+    let values = parts
+        .iter()
+        .map(|part| parse_number(part, whole))
+        .collect::<Result<Vec<_>, _>>()?;
+    match values.as_slice() {
+        [p] => Ok(PositionAddress::Paragraph(*p)),
+        [p, c] => Ok(PositionAddress::Chunk(ChunkAddress {
+            paragraph: *p,
+            chunk: *c,
+        })),
+        [p, c, t] => Ok(PositionAddress::Token(TokenAddress {
+            paragraph: *p,
+            chunk: *c,
+            token: *t,
+        })),
+        _ => Err(SyntaxError::InvalidAddress(whole.into())),
+    }
 }
 
 fn split_once(input: &str, separator: char) -> Result<Option<(&str, &str)>, SyntaxError> {
@@ -232,19 +203,15 @@ fn parse_number(input: &str, whole: &str) -> Result<usize, SyntaxError> {
     input
         .parse::<usize>()
         .map_err(|_| SyntaxError::InvalidAddress(whole.into()))
-        .and_then(|number| {
-            (number > 0)
-                .then_some(number)
+        .and_then(|n| {
+            (n > 0)
+                .then_some(n)
                 .ok_or_else(|| SyntaxError::ZeroAddress(whole.into()))
         })
 }
 
 fn parse_command_name(input: &str) -> Result<String, SyntaxError> {
-    if input.is_empty()
-        || !input
-            .chars()
-            .all(|character| character.is_ascii_alphabetic())
-    {
+    if input.is_empty() || !input.chars().all(|c| c.is_ascii_alphabetic()) {
         Err(SyntaxError::InvalidCommand(input.into()))
     } else {
         Ok(input.to_ascii_lowercase())
@@ -252,72 +219,49 @@ fn parse_command_name(input: &str) -> Result<String, SyntaxError> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StableTokenPosition {
-    pub paragraph_id: String,
-    pub paragraph_revision: u64,
-    pub token_id: VisibleTokenId,
+struct StablePosition {
+    address: PositionAddress,
+    paragraph_id: Option<String>,
+    paragraph_revision: Option<u64>,
+    chunk_id: Option<String>,
+    token_id: Option<VisibleTokenId>,
+    document_end: Option<Vec<(String, u64)>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StableMarkerPosition {
-    pub paragraph_id: String,
-    pub paragraph_revision: u64,
-    pub chunk_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StableParagraphRevision {
-    pub paragraph_id: String,
-    pub revision: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Caret {
-    Token(StableTokenPosition),
-    Marker(StableMarkerPosition),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Selection {
-    Tokens {
-        start: StableTokenPosition,
-        end_inclusive: StableTokenPosition,
-        paragraph_revisions: Vec<StableParagraphRevision>,
-    },
-    Paragraph {
-        paragraph_id: String,
-        paragraph_revision: u64,
-    },
-    Marker(StableMarkerPosition),
-    MarkerRange {
-        start: StableMarkerPosition,
-        end_exclusive: StableMarkerPosition,
-        paragraph_revisions: Vec<StableParagraphRevision>,
-    },
+pub struct Selection {
+    start: StablePosition,
+    end: StablePosition,
+    document_revisions: Vec<(String, u64)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NavigationState {
-    caret: Option<Caret>,
     selection: Option<Selection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NavigationError {
-    #[error("unknown paragraph {0}")]
+    #[error("unknown paragraph position {0}")]
     UnknownParagraph(usize),
-    #[error("unknown token {paragraph}.{token}")]
-    UnknownToken { paragraph: usize, token: usize },
-    #[error("unknown chunk marker {paragraph}@{marker}")]
-    UnknownMarker { paragraph: usize, marker: usize },
-    #[error("address '{0}' cannot hold a caret; expected M.N or M@N")]
-    InvalidCaretAddress(Address),
-    #[error("token range '{start},{end}' ends before it starts")]
-    ReversedTokenRange {
-        start: TokenAddress,
-        end: TokenAddress,
+    #[error("unknown chunk position {paragraph}.{chunk}")]
+    UnknownChunk { paragraph: usize, chunk: usize },
+    #[error("unknown token position {paragraph}.{chunk}.{token}")]
+    UnknownToken {
+        paragraph: usize,
+        chunk: usize,
+        token: usize,
     },
-    #[error("there is no current caret or selection")]
+    #[error("chunk {paragraph}.{chunk} has no token positions")]
+    ChunkHasNoTokens { paragraph: usize, chunk: usize },
+    #[error("address '{0}' cannot name one position")]
+    InvalidPositionAddress(Address),
+    #[error("range '{start},{end}' ends before it starts")]
+    ReversedRange {
+        start: PositionAddress,
+        end: PositionAddress,
+    },
+    #[error("there is no current position or selection")]
     NoCurrentPosition,
     #[error("there is no current token selection")]
     NoTokenSelection,
@@ -325,36 +269,140 @@ pub enum NavigationError {
     StaleSelection,
     #[error("text-edit ranges cannot cross paragraph boundaries")]
     CrossParagraphSelection,
+    #[error("text-edit ranges cannot cross chunk boundaries")]
+    CrossChunkSelection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Ordinal {
+    chunk: usize,
+    token: usize,
+}
+impl Ord for Ordinal {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.chunk, self.token).cmp(&(other.chunk, other.token))
+    }
+}
+impl PartialOrd for Ordinal {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl NavigationState {
     pub fn new(document: &Document) -> Self {
-        let mut state = Self::default();
-        for (paragraph_index, paragraph) in document.paragraphs().iter().enumerate() {
-            if !paragraph.tokens().is_empty() {
-                state.caret = resolve_token(document, paragraph_index + 1, 1)
-                    .ok()
-                    .map(Caret::Token);
-                break;
-            }
-            if let Some(marker) = paragraph.chunk_boundaries().first() {
-                state.caret = Some(Caret::Marker(StableMarkerPosition {
-                    paragraph_id: paragraph.id().into(),
-                    paragraph_revision: paragraph.revision(),
-                    chunk_id: marker.chunk_id().into(),
-                }));
-                break;
-            }
-        }
-        state
-    }
-
-    pub fn caret(&self) -> Option<&Caret> {
-        self.caret.as_ref()
+        let first = document
+            .paragraphs()
+            .iter()
+            .enumerate()
+            .find_map(|(pi, paragraph)| {
+                paragraph.chunk_boundaries().first().map(|marker| {
+                    if marker.after_tokens() > 0 {
+                        PositionAddress::Token(TokenAddress {
+                            paragraph: pi + 1,
+                            chunk: 1,
+                            token: 1,
+                        })
+                    } else {
+                        PositionAddress::Chunk(ChunkAddress {
+                            paragraph: pi + 1,
+                            chunk: 1,
+                        })
+                    }
+                })
+            });
+        let selection = first
+            .and_then(|position| stable_position(document, position).ok())
+            .map(|p| Selection {
+                start: p.clone(),
+                end: p,
+                document_revisions: document_revisions(document),
+            });
+        Self { selection }
     }
 
     pub fn selection(&self) -> Option<&Selection> {
         self.selection.as_ref()
+    }
+
+    pub fn move_to(
+        &mut self,
+        document: &Document,
+        address: &Address,
+    ) -> Result<(), NavigationError> {
+        let point = match address {
+            Address::Current => return self.current_range(document).map(|_| ()),
+            Address::Position(point) => *point,
+            Address::Range { .. } => {
+                return Err(NavigationError::InvalidPositionAddress(address.clone()))
+            }
+        };
+        let stable = stable_position(document, point)?;
+        self.selection = Some(Selection {
+            start: stable.clone(),
+            end: stable,
+            document_revisions: document_revisions(document),
+        });
+        Ok(())
+    }
+
+    pub fn select(
+        &mut self,
+        document: &Document,
+        address: &Address,
+    ) -> Result<(), NavigationError> {
+        match address {
+            Address::Current => self.current_range(document).map(|_| ()),
+            Address::Position(_) => self.move_to(document, address),
+            Address::Range { start, end } => {
+                if resolve_position(document, *start)? > resolve_position(document, *end)? {
+                    return Err(NavigationError::ReversedRange {
+                        start: *start,
+                        end: *end,
+                    });
+                }
+                self.selection = Some(Selection {
+                    start: stable_position(document, *start)?,
+                    end: stable_position(document, *end)?,
+                    document_revisions: document_revisions(document),
+                });
+                Ok(())
+            }
+        }
+    }
+
+    pub fn current_range(
+        &self,
+        document: &Document,
+    ) -> Result<(PositionAddress, PositionAddress), NavigationError> {
+        let s = self
+            .selection
+            .as_ref()
+            .ok_or(NavigationError::NoCurrentPosition)?;
+        if s.document_revisions != document_revisions(document) {
+            return Err(NavigationError::StaleSelection);
+        }
+        Ok((
+            resolve_stable(document, &s.start)?,
+            resolve_stable(document, &s.end)?,
+        ))
+    }
+
+    pub fn selection_is_empty(&self, document: &Document) -> Result<bool, NavigationError> {
+        let (start, end) = self.current_range(document)?;
+        Ok(resolve_position(document, start)? == resolve_position(document, end)?)
+    }
+
+    pub fn selected_token_endpoints(
+        &self,
+        document: &Document,
+    ) -> Result<(TokenAddress, TokenAddress), NavigationError> {
+        let (start, end) = self.current_range(document)?;
+        let tokens = tokens_in_range(document, start, end)?;
+        match (tokens.first(), tokens.last()) {
+            (Some(a), Some(b)) => Ok((*a, *b)),
+            _ => Err(NavigationError::NoTokenSelection),
+        }
     }
 
     pub fn selected_token_range(
@@ -365,26 +413,8 @@ impl NavigationState {
         if start.paragraph != end.paragraph {
             return Err(NavigationError::CrossParagraphSelection);
         }
-        Ok((start, end))
-    }
-
-    pub fn selected_token_endpoints(
-        &self,
-        document: &Document,
-    ) -> Result<(TokenAddress, TokenAddress), NavigationError> {
-        let Some(Selection::Tokens {
-            start,
-            end_inclusive,
-            ..
-        }) = self.selection.as_ref()
-        else {
-            return Err(NavigationError::NoTokenSelection);
-        };
-        let start = stable_token_address(document, start).ok_or(NavigationError::StaleSelection)?;
-        let end =
-            stable_token_address(document, end_inclusive).ok_or(NavigationError::StaleSelection)?;
-        if (start.paragraph, start.token) > (end.paragraph, end.token) {
-            return Err(NavigationError::StaleSelection);
+        if start.chunk != end.chunk {
+            return Err(NavigationError::CrossChunkSelection);
         }
         Ok((start, end))
     }
@@ -393,478 +423,588 @@ impl NavigationState {
         &self,
         document: &Document,
     ) -> Result<TokenAddress, NavigationError> {
-        let Some(Caret::Token(position)) = self.caret.as_ref() else {
-            return Err(NavigationError::NoCurrentPosition);
-        };
-        stable_token_address(document, position).ok_or(NavigationError::StaleSelection)
+        let (start, end) = self.current_range(document)?;
+        if resolve_position(document, start)? == resolve_position(document, end)? {
+            if let PositionAddress::Token(address) = start {
+                return item_token(document, address);
+            }
+            return Err(NavigationError::NoTokenSelection);
+        }
+        let tokens = tokens_in_range(document, start, end)?;
+        (tokens.len() == 1)
+            .then_some(tokens[0])
+            .ok_or(NavigationError::NoTokenSelection)
     }
 
-    pub fn current_marker_address(
+    pub fn current_chunk_address(
         &self,
         document: &Document,
-    ) -> Result<(usize, usize), NavigationError> {
-        let position = match self.selection.as_ref() {
-            Some(Selection::Marker(position)) => position,
-            Some(_) => return Err(NavigationError::NoCurrentPosition),
-            None => match self.caret.as_ref() {
-                Some(Caret::Marker(position)) => position,
-                _ => return Err(NavigationError::NoCurrentPosition),
-            },
-        };
-        document
-            .paragraphs()
-            .iter()
-            .enumerate()
-            .find_map(|(paragraph_index, paragraph)| {
-                (paragraph.id() == position.paragraph_id
-                    && paragraph.revision() == position.paragraph_revision)
-                    .then(|| {
-                        paragraph
-                            .chunk_boundaries()
-                            .iter()
-                            .position(|marker| marker.chunk_id() == position.chunk_id)
-                            .map(|marker| (paragraph_index + 1, marker + 1))
+    ) -> Result<ChunkAddress, NavigationError> {
+        let (start, end) = self.current_range(document)?;
+        if resolve_position(document, start)? == resolve_position(document, end)? {
+            return match start {
+                PositionAddress::Chunk(address) => item_chunk(document, address),
+                PositionAddress::Token(address) => {
+                    resolve_position(document, start)?;
+                    Ok(ChunkAddress {
+                        paragraph: address.paragraph,
+                        chunk: address.chunk,
                     })
-                    .flatten()
-            })
-            .ok_or(NavigationError::StaleSelection)
-    }
-
-    pub fn move_to(
-        &mut self,
-        document: &Document,
-        address: &Address,
-    ) -> Result<(), NavigationError> {
-        let caret = match address {
-            Address::Token(address) => {
-                Caret::Token(resolve_token(document, address.paragraph, address.token)?)
-            }
-            Address::Marker { paragraph, marker } => {
-                Caret::Marker(resolve_marker(document, *paragraph, *marker)?)
-            }
-            Address::Current => {
-                return self
-                    .caret
-                    .as_ref()
-                    .map(|_| ())
-                    .ok_or(NavigationError::NoCurrentPosition)
-            }
-            address => return Err(NavigationError::InvalidCaretAddress(address.clone())),
-        };
-        self.caret = Some(caret);
-        self.selection = None;
-        Ok(())
-    }
-
-    pub fn select(
-        &mut self,
-        document: &Document,
-        address: &Address,
-    ) -> Result<(), NavigationError> {
-        let selection = match address {
-            Address::Token(address) => {
-                let token = resolve_token(document, address.paragraph, address.token)?;
-                Selection::Tokens {
-                    start: token.clone(),
-                    end_inclusive: token,
-                    paragraph_revisions: stable_paragraph_revisions(
-                        document,
-                        address.paragraph,
-                        address.paragraph,
-                    )?,
                 }
-            }
-            Address::TokenRange { start, end }
-                if (start.paragraph, start.token) > (end.paragraph, end.token) =>
-            {
-                return Err(NavigationError::ReversedTokenRange {
-                    start: *start,
-                    end: *end,
-                });
-            }
-            Address::TokenRange { start, end } => Selection::Tokens {
-                start: resolve_token(document, start.paragraph, start.token)?,
-                end_inclusive: resolve_token(document, end.paragraph, end.token)?,
-                paragraph_revisions: stable_paragraph_revisions(
-                    document,
-                    start.paragraph,
-                    end.paragraph,
-                )?,
-            },
-            Address::Paragraph(paragraph) => {
-                let value = document
-                    .paragraph(*paragraph)
-                    .ok_or(NavigationError::UnknownParagraph(*paragraph))?;
-                Selection::Paragraph {
-                    paragraph_id: value.id().into(),
-                    paragraph_revision: value.revision(),
-                }
-            }
-            Address::Marker { paragraph, marker } => {
-                Selection::Marker(resolve_marker(document, *paragraph, *marker)?)
-            }
-            Address::MarkerRange {
-                start_paragraph,
-                start_marker,
-                end_paragraph,
-                end_marker_exclusive,
-            } => Selection::MarkerRange {
-                start: resolve_marker(document, *start_paragraph, *start_marker)?,
-                end_exclusive: resolve_marker(document, *end_paragraph, *end_marker_exclusive)?,
-                paragraph_revisions: stable_paragraph_revisions(
-                    document,
-                    *start_paragraph,
-                    *end_paragraph,
-                )?,
-            },
-            Address::Current => return self.select_current(),
-        };
-        self.selection = Some(selection);
-        Ok(())
-    }
-
-    fn select_current(&mut self) -> Result<(), NavigationError> {
-        if self.selection.is_some() {
-            return Ok(());
+                PositionAddress::Paragraph(_) => Err(NavigationError::NoCurrentPosition),
+            };
         }
-        let selection = match self.caret.clone() {
-            Some(Caret::Token(token)) => Selection::Tokens {
-                paragraph_revisions: vec![StableParagraphRevision {
-                    paragraph_id: token.paragraph_id.clone(),
-                    revision: token.paragraph_revision,
-                }],
-                start: token.clone(),
-                end_inclusive: token,
-            },
-            Some(Caret::Marker(marker)) => Selection::Marker(marker),
-            None => return Err(NavigationError::NoCurrentPosition),
-        };
-        self.selection = Some(selection);
-        Ok(())
+        let chunks = chunks_in_range(document, start, end)?;
+        if chunks.len() == 1 {
+            return Ok(chunks[0]);
+        }
+        if chunks.is_empty() {
+            let tokens = tokens_in_range(document, start, end)?;
+            if let Some(first) = tokens.first() {
+                if tokens
+                    .iter()
+                    .all(|token| token.paragraph == first.paragraph && token.chunk == first.chunk)
+                {
+                    return Ok(ChunkAddress {
+                        paragraph: first.paragraph,
+                        chunk: first.chunk,
+                    });
+                }
+            }
+        }
+        Err(NavigationError::NoCurrentPosition)
     }
 }
 
-fn stable_token_address(
-    document: &Document,
-    position: &StableTokenPosition,
-) -> Option<TokenAddress> {
+fn document_revisions(document: &Document) -> Vec<(String, u64)> {
     document
         .paragraphs()
         .iter()
-        .enumerate()
-        .find_map(|(paragraph_index, paragraph)| {
-            (paragraph.id() == position.paragraph_id
-                && paragraph.revision() == position.paragraph_revision)
-                .then(|| {
-                    paragraph
-                        .tokens()
-                        .iter()
-                        .position(|token| token.id() == &position.token_id)
-                        .map(|token| TokenAddress {
-                            paragraph: paragraph_index + 1,
-                            token: token + 1,
-                        })
-                })
-                .flatten()
-        })
-}
-
-fn stable_paragraph_revisions(
-    document: &Document,
-    start: usize,
-    end: usize,
-) -> Result<Vec<StableParagraphRevision>, NavigationError> {
-    (start..=end)
-        .map(|paragraph| {
-            let value = document
-                .paragraph(paragraph)
-                .ok_or(NavigationError::UnknownParagraph(paragraph))?;
-            Ok(StableParagraphRevision {
-                paragraph_id: value.id().into(),
-                revision: value.revision(),
-            })
-        })
+        .map(|paragraph| (paragraph.id().to_owned(), paragraph.revision()))
         .collect()
 }
 
-fn resolve_token(
-    document: &Document,
-    paragraph: usize,
-    token: usize,
-) -> Result<StableTokenPosition, NavigationError> {
-    let value = document
+pub fn item_paragraph(document: &Document, paragraph: usize) -> Result<usize, NavigationError> {
+    document
         .paragraph(paragraph)
-        .ok_or(NavigationError::UnknownParagraph(paragraph))?;
-    let visible_token = value
-        .tokens()
-        .get(token.checked_sub(1).unwrap_or(usize::MAX))
-        .ok_or(NavigationError::UnknownToken { paragraph, token })?;
-    Ok(StableTokenPosition {
-        paragraph_id: value.id().into(),
-        paragraph_revision: value.revision(),
-        token_id: visible_token.id().clone(),
+        .map(|_| paragraph)
+        .ok_or(NavigationError::UnknownParagraph(paragraph))
+}
+
+pub fn item_chunk(
+    document: &Document,
+    address: ChunkAddress,
+) -> Result<ChunkAddress, NavigationError> {
+    document
+        .chunk_token_count(address.paragraph, address.chunk)
+        .map(|_| address)
+        .ok_or(NavigationError::UnknownChunk {
+            paragraph: address.paragraph,
+            chunk: address.chunk,
+        })
+}
+
+pub fn item_token(
+    document: &Document,
+    address: TokenAddress,
+) -> Result<TokenAddress, NavigationError> {
+    document
+        .chunk_token(address.paragraph, address.chunk, address.token)
+        .map(|_| address)
+        .ok_or(NavigationError::UnknownToken {
+            paragraph: address.paragraph,
+            chunk: address.chunk,
+            token: address.token,
+        })
+}
+
+pub fn tokens_in_range(
+    document: &Document,
+    start: PositionAddress,
+    end: PositionAddress,
+) -> Result<Vec<TokenAddress>, NavigationError> {
+    let left = resolve_position(document, start)?;
+    let right = resolve_position(document, end)?;
+    if left > right {
+        return Err(NavigationError::ReversedRange { start, end });
+    }
+    let mut result = Vec::new();
+    let mut global_chunk = 0;
+    for (pi, paragraph) in document.paragraphs().iter().enumerate() {
+        let mut previous = 0;
+        for (ci, marker) in paragraph.chunk_boundaries().iter().enumerate() {
+            let count = marker.after_tokens() - previous;
+            for local in 0..count {
+                let token_start = Ordinal {
+                    chunk: global_chunk,
+                    token: local,
+                };
+                let token_end = if local + 1 == count {
+                    Ordinal {
+                        chunk: global_chunk + 1,
+                        token: 0,
+                    }
+                } else {
+                    Ordinal {
+                        chunk: global_chunk,
+                        token: local + 1,
+                    }
+                };
+                if token_start >= left && token_end <= right {
+                    result.push(TokenAddress {
+                        paragraph: pi + 1,
+                        chunk: ci + 1,
+                        token: local + 1,
+                    });
+                }
+            }
+            previous = marker.after_tokens();
+            global_chunk += 1;
+        }
+    }
+    Ok(result)
+}
+
+pub fn chunks_in_range(
+    document: &Document,
+    start: PositionAddress,
+    end: PositionAddress,
+) -> Result<Vec<ChunkAddress>, NavigationError> {
+    let left = resolve_position(document, start)?;
+    let right = resolve_position(document, end)?;
+    if left > right {
+        return Err(NavigationError::ReversedRange { start, end });
+    }
+    let mut result = Vec::new();
+    let mut global = 0;
+    for (pi, paragraph) in document.paragraphs().iter().enumerate() {
+        for ci in 0..paragraph.chunk_boundaries().len() {
+            if (Ordinal {
+                chunk: global,
+                token: 0,
+            }) >= left
+                && (Ordinal {
+                    chunk: global + 1,
+                    token: 0,
+                }) <= right
+            {
+                result.push(ChunkAddress {
+                    paragraph: pi + 1,
+                    chunk: ci + 1,
+                });
+            }
+            global += 1;
+        }
+    }
+    Ok(result)
+}
+
+fn chunks_before(document: &Document, paragraph_index: usize) -> usize {
+    document.paragraphs()[..paragraph_index]
+        .iter()
+        .map(|p| p.chunk_boundaries().len())
+        .sum()
+}
+
+fn resolve_position(
+    document: &Document,
+    address: PositionAddress,
+) -> Result<Ordinal, NavigationError> {
+    match address {
+        PositionAddress::Paragraph(paragraph) => {
+            if paragraph == document.paragraphs().len() + 1 && !document.paragraphs().is_empty() {
+                return Ok(Ordinal {
+                    chunk: chunks_before(document, document.paragraphs().len()),
+                    token: 0,
+                });
+            }
+            item_paragraph(document, paragraph)?;
+            Ok(Ordinal {
+                chunk: chunks_before(document, paragraph - 1),
+                token: 0,
+            })
+        }
+        PositionAddress::Chunk(address) => {
+            let p = document
+                .paragraph(address.paragraph)
+                .ok_or(NavigationError::UnknownParagraph(address.paragraph))?;
+            if address.chunk == p.chunk_boundaries().len() + 1 && !p.chunk_boundaries().is_empty() {
+                return Ok(Ordinal {
+                    chunk: chunks_before(document, address.paragraph - 1)
+                        + p.chunk_boundaries().len(),
+                    token: 0,
+                });
+            }
+            item_chunk(document, address)?;
+            Ok(Ordinal {
+                chunk: chunks_before(document, address.paragraph - 1) + address.chunk - 1,
+                token: 0,
+            })
+        }
+        PositionAddress::Token(address) => {
+            let count = document
+                .chunk_token_count(address.paragraph, address.chunk)
+                .ok_or(NavigationError::UnknownChunk {
+                    paragraph: address.paragraph,
+                    chunk: address.chunk,
+                })?;
+            if count == 0 {
+                return Err(NavigationError::ChunkHasNoTokens {
+                    paragraph: address.paragraph,
+                    chunk: address.chunk,
+                });
+            }
+            if address.token == 0 || address.token > count + 1 {
+                return Err(NavigationError::UnknownToken {
+                    paragraph: address.paragraph,
+                    chunk: address.chunk,
+                    token: address.token,
+                });
+            }
+            let global = chunks_before(document, address.paragraph - 1) + address.chunk - 1;
+            Ok(if address.token == count + 1 {
+                Ordinal {
+                    chunk: global + 1,
+                    token: 0,
+                }
+            } else {
+                Ordinal {
+                    chunk: global,
+                    token: address.token - 1,
+                }
+            })
+        }
+    }
+}
+
+fn stable_position(
+    document: &Document,
+    address: PositionAddress,
+) -> Result<StablePosition, NavigationError> {
+    resolve_position(document, address)?;
+    let (paragraph_number, chunk_number, token_number) = match address {
+        PositionAddress::Paragraph(p) => (p, None, None),
+        PositionAddress::Chunk(a) => (a.paragraph, Some(a.chunk), None),
+        PositionAddress::Token(a) => (a.paragraph, Some(a.chunk), Some(a.token)),
+    };
+    if paragraph_number == document.paragraphs().len() + 1 {
+        return Ok(StablePosition {
+            address,
+            paragraph_id: None,
+            paragraph_revision: None,
+            chunk_id: None,
+            token_id: None,
+            document_end: Some(
+                document
+                    .paragraphs()
+                    .iter()
+                    .map(|p| (p.id().into(), p.revision()))
+                    .collect(),
+            ),
+        });
+    }
+    let paragraph = document.paragraph(paragraph_number).unwrap();
+    let chunk_id = chunk_number
+        .and_then(|c| paragraph.chunk_boundaries().get(c - 1))
+        .map(|m| m.chunk_id().to_owned());
+    let token_id = match (chunk_number, token_number) {
+        (Some(c), Some(t)) => document
+            .chunk_token(paragraph_number, c, t)
+            .map(|v| v.id().clone()),
+        _ => None,
+    };
+    Ok(StablePosition {
+        address,
+        paragraph_id: Some(paragraph.id().into()),
+        paragraph_revision: Some(paragraph.revision()),
+        chunk_id,
+        token_id,
+        document_end: None,
     })
 }
 
-fn resolve_marker(
+fn resolve_stable(
     document: &Document,
-    paragraph: usize,
-    marker: usize,
-) -> Result<StableMarkerPosition, NavigationError> {
-    let value = document
-        .paragraph(paragraph)
-        .ok_or(NavigationError::UnknownParagraph(paragraph))?;
-    let chunk_marker = value
-        .chunk_boundaries()
-        .get(marker.checked_sub(1).unwrap_or(usize::MAX))
-        .ok_or(NavigationError::UnknownMarker { paragraph, marker })?;
-    Ok(StableMarkerPosition {
-        paragraph_id: value.id().into(),
-        paragraph_revision: value.revision(),
-        chunk_id: chunk_marker.chunk_id().into(),
-    })
+    stable: &StablePosition,
+) -> Result<PositionAddress, NavigationError> {
+    if let Some(shape) = &stable.document_end {
+        let current = document
+            .paragraphs()
+            .iter()
+            .map(|p| (p.id().to_owned(), p.revision()))
+            .collect::<Vec<_>>();
+        return (shape == &current)
+            .then_some(stable.address)
+            .ok_or(NavigationError::StaleSelection);
+    }
+    let paragraph_number = document
+        .paragraphs()
+        .iter()
+        .position(|p| {
+            Some(p.id()) == stable.paragraph_id.as_deref()
+                && Some(p.revision()) == stable.paragraph_revision
+        })
+        .ok_or(NavigationError::StaleSelection)?
+        + 1;
+    let current = match stable.address {
+        PositionAddress::Paragraph(_) => PositionAddress::Paragraph(paragraph_number),
+        PositionAddress::Chunk(original) => {
+            let p = document.paragraph(paragraph_number).unwrap();
+            let chunk = if let Some(id) = &stable.chunk_id {
+                p.chunk_boundaries()
+                    .iter()
+                    .position(|m| m.chunk_id() == id)
+                    .ok_or(NavigationError::StaleSelection)?
+                    + 1
+            } else if original.chunk == p.chunk_boundaries().len() + 1 {
+                original.chunk
+            } else {
+                return Err(NavigationError::StaleSelection);
+            };
+            PositionAddress::Chunk(ChunkAddress {
+                paragraph: paragraph_number,
+                chunk,
+            })
+        }
+        PositionAddress::Token(original) => {
+            let p = document.paragraph(paragraph_number).unwrap();
+            let chunk = p
+                .chunk_boundaries()
+                .iter()
+                .position(|m| Some(m.chunk_id()) == stable.chunk_id.as_deref())
+                .ok_or(NavigationError::StaleSelection)?
+                + 1;
+            let count = document.chunk_token_count(paragraph_number, chunk).unwrap();
+            let token = if let Some(id) = &stable.token_id {
+                let (first, last) = document
+                    .chunk_token_bounds(paragraph_number, chunk)
+                    .unwrap();
+                p.tokens()[first..last]
+                    .iter()
+                    .position(|t| t.id() == id)
+                    .ok_or(NavigationError::StaleSelection)?
+                    + 1
+            } else if original.token == count + 1 {
+                original.token
+            } else {
+                return Err(NavigationError::StaleSelection);
+            };
+            PositionAddress::Token(TokenAddress {
+                paragraph: paragraph_number,
+                chunk,
+                token,
+            })
+        }
+    };
+    resolve_position(document, current)?;
+    Ok(current)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        chunking::SampleRange,
-        document::Document,
-        recognition::{
-            ChunkBoundary, ChunkBoundaryReason, DecodedSegment, RecognitionChunk, RecognitionToken,
-        },
-    };
+    use serde_json::json;
+
+    fn structured_document() -> Document {
+        let token = |id: &str| json!({"id":{"kind":"pseudo","id":id},"text":id,"origin":{"kind":"pseudo","reason":"test"}});
+        serde_json::from_value(json!({
+            "schema":"rde-document/v1-experimental", "id":"document:positions",
+            "paragraphs":[
+                {"id":"p1","revision":1,"tokens":[token("a"),token("b"),token("c")],"chunk_boundaries":[
+                    {"chunk_id":"c1","after_tokens":2},
+                    {"chunk_id":"c2","after_tokens":2},
+                    {"chunk_id":"c3","after_tokens":3}
+                ]},
+                {"id":"p2","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c4","after_tokens":0}]}
+            ]
+        })).unwrap()
+    }
 
     #[test]
-    fn parses_each_address_kind() {
-        assert_eq!(parse_address("2").unwrap(), Address::Paragraph(2));
+    fn parses_hierarchical_positions_ranges_and_rejects_markers() {
+        assert_eq!(
+            parse_address("2").unwrap(),
+            Address::Position(PositionAddress::Paragraph(2))
+        );
         assert_eq!(
             parse_address("2.4").unwrap(),
-            Address::Token(TokenAddress {
+            Address::Position(PositionAddress::Chunk(ChunkAddress {
                 paragraph: 2,
-                token: 4
-            })
+                chunk: 4
+            }))
         );
         assert_eq!(
-            parse_address("2@3").unwrap(),
-            Address::Marker {
+            parse_address("2.4.9").unwrap(),
+            Address::Position(PositionAddress::Token(TokenAddress {
                 paragraph: 2,
-                marker: 3
-            }
+                chunk: 4,
+                token: 9
+            }))
         );
         assert_eq!(
-            parse_address("2.4,2.9").unwrap(),
-            Address::TokenRange {
-                start: TokenAddress {
-                    paragraph: 2,
+            parse_address("2,3.1.4").unwrap(),
+            Address::Range {
+                start: PositionAddress::Paragraph(2),
+                end: PositionAddress::Token(TokenAddress {
+                    paragraph: 3,
+                    chunk: 1,
                     token: 4
-                },
-                end: TokenAddress {
-                    paragraph: 2,
-                    token: 9
-                },
+                })
             }
         );
-        assert_eq!(
-            parse_address("1@2,2@3").unwrap(),
-            Address::MarkerRange {
-                start_paragraph: 1,
-                start_marker: 2,
-                end_paragraph: 2,
-                end_marker_exclusive: 3,
-            }
-        );
-        assert_eq!(parse_address(".").unwrap(), Address::Current);
+        assert!(matches!(
+            parse_address("2@1"),
+            Err(SyntaxError::InvalidAddress(_))
+        ));
+        assert!(matches!(
+            parse_address("0.1"),
+            Err(SyntaxError::ZeroAddress(_))
+        ));
     }
 
     #[test]
-    fn parses_attached_and_separated_commands() {
-        let expected = CommandLine::Command {
-            address: Some(Address::Marker {
-                paragraph: 2,
-                marker: 3,
-            }),
-            name: "info".into(),
-            arguments: String::new(),
-        };
-        assert_eq!(parse_line(" 2@3info ").unwrap(), expected);
-        assert_eq!(parse_line("2@3 info").unwrap(), expected);
-        assert_eq!(
-            parse_line("2.4,2.9 select").unwrap(),
-            CommandLine::Command {
-                address: Some(Address::TokenRange {
-                    start: TokenAddress {
-                        paragraph: 2,
-                        token: 4
-                    },
-                    end: TokenAddress {
-                        paragraph: 2,
-                        token: 9
-                    },
-                }),
-                name: "select".into(),
-                arguments: String::new(),
-            }
-        );
-    }
-
-    #[test]
-    fn retains_arguments_for_command_specific_parsing() {
-        assert_eq!(
-            parse_line("2.4replace some  new text  \n").unwrap(),
-            CommandLine::Command {
-                address: Some(Address::Token(TokenAddress {
-                    paragraph: 2,
-                    token: 4
-                })),
-                name: "replace".into(),
-                arguments: "some  new text  ".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn selection_uses_stable_ids_across_paragraphs() {
-        let recognition_token = |text: &str| RecognitionToken {
-            token_id: 1,
-            text: text.into(),
-            probability: 1.0,
-            is_special: false,
-            audio_range: None,
-            alternatives: Vec::new(),
-        };
-        let segments = vec![
-            DecodedSegment {
-                id: "s1".into(),
-                audio_range: SampleRange {
-                    start_sample: 0,
-                    end_sample: 1,
-                },
-                text: "one".into(),
-                no_speech_probability: 0.0,
-                tokens: vec![recognition_token("one")],
-            },
-            DecodedSegment {
-                id: "s2".into(),
-                audio_range: SampleRange {
-                    start_sample: 1,
-                    end_sample: 2,
-                },
-                text: " two".into(),
-                no_speech_probability: 0.0,
-                tokens: vec![recognition_token(" two")],
-            },
-        ];
-        let chunk = |id: &str, segment: &str, text: &str, reason| RecognitionChunk {
-            id: id.into(),
-            ordinal: 1,
-            segment_ids: vec![segment.into()],
-            audio_range: SampleRange {
-                start_sample: 0,
-                end_sample: 1,
-            },
-            text: text.into(),
-            token_count: 1,
-            boundary: ChunkBoundary {
-                reason,
-                pause_samples: None,
-            },
-        };
-        let chunks = vec![
-            chunk("c1", "s1", "one", ChunkBoundaryReason::LongPause),
-            chunk("c2", "s2", " two", ChunkBoundaryReason::SourceEnd),
-        ];
-        let document = Document::from_evidence("run", &segments, &chunks);
-        let mut state = NavigationState::new(&document);
-        let range = Address::TokenRange {
-            start: TokenAddress {
+    fn validates_each_depth_end_positions_and_per_chunk_token_numbers() {
+        let document = structured_document();
+        assert!(item_paragraph(&document, 2).is_ok());
+        assert!(resolve_position(&document, PositionAddress::Paragraph(3)).is_ok());
+        assert!(resolve_position(
+            &document,
+            PositionAddress::Chunk(ChunkAddress {
                 paragraph: 1,
-                token: 1,
-            },
-            end: TokenAddress {
-                paragraph: 2,
-                token: 1,
-            },
-        };
-
-        state.select(&document, &range).unwrap();
-
-        let Selection::Tokens {
-            start,
-            end_inclusive,
-            paragraph_revisions,
-        } = state.selection().unwrap()
-        else {
-            panic!("expected token selection");
-        };
-        assert_ne!(start.paragraph_id, end_inclusive.paragraph_id);
-        assert_eq!(paragraph_revisions.len(), 2);
-        assert_eq!(start.paragraph_revision, 1);
-        assert!(matches!(start.token_id, VisibleTokenId::Recognition { .. }));
-
-        let marker_range = Address::MarkerRange {
-            start_paragraph: 1,
-            start_marker: 1,
-            end_paragraph: 2,
-            end_marker_exclusive: 1,
-        };
-        state.select(&document, &marker_range).unwrap();
-        let Selection::MarkerRange {
-            start,
-            end_exclusive,
-            paragraph_revisions,
-        } = state.selection().unwrap()
-        else {
-            panic!("expected marker range selection");
-        };
-        assert_eq!(start.chunk_id, "c1");
-        assert_eq!(end_exclusive.chunk_id, "c2");
-        assert_eq!(paragraph_revisions.len(), 2);
+                chunk: 4
+            })
+        )
+        .is_ok());
+        assert!(resolve_position(
+            &document,
+            PositionAddress::Token(TokenAddress {
+                paragraph: 1,
+                chunk: 1,
+                token: 3
+            })
+        )
+        .is_ok());
+        assert!(item_token(
+            &document,
+            TokenAddress {
+                paragraph: 1,
+                chunk: 3,
+                token: 1
+            }
+        )
+        .is_ok());
+        assert!(matches!(
+            resolve_position(
+                &document,
+                PositionAddress::Token(TokenAddress {
+                    paragraph: 1,
+                    chunk: 2,
+                    token: 1
+                })
+            ),
+            Err(NavigationError::ChunkHasNoTokens { .. })
+        ));
+        assert!(matches!(
+            resolve_position(
+                &document,
+                PositionAddress::Token(TokenAddress {
+                    paragraph: 1,
+                    chunk: 3,
+                    token: 3
+                })
+            ),
+            Err(NavigationError::UnknownToken { .. })
+        ));
     }
 
     #[test]
-    fn rejects_invalid_addresses_and_ranges() {
+    fn half_open_mixed_depth_ranges_cover_empty_chunks_and_shared_positions() {
+        let document = structured_document();
+        let empty_start = PositionAddress::Chunk(ChunkAddress {
+            paragraph: 1,
+            chunk: 2,
+        });
+        let empty_end = PositionAddress::Chunk(ChunkAddress {
+            paragraph: 1,
+            chunk: 3,
+        });
+        assert!(tokens_in_range(&document, empty_start, empty_end)
+            .unwrap()
+            .is_empty());
         assert_eq!(
-            parse_address("0.1").unwrap_err(),
-            SyntaxError::ZeroAddress("0.1".into())
+            chunks_in_range(&document, empty_start, empty_end).unwrap(),
+            vec![ChunkAddress {
+                paragraph: 1,
+                chunk: 2
+            }]
         );
+
+        let paragraph_start = PositionAddress::Paragraph(1);
+        let token_start = PositionAddress::Token(TokenAddress {
+            paragraph: 1,
+            chunk: 1,
+            token: 1,
+        });
         assert_eq!(
-            parse_address("1.2,2.3").unwrap(),
-            Address::TokenRange {
-                start: TokenAddress {
+            resolve_position(&document, paragraph_start).unwrap(),
+            resolve_position(&document, token_start).unwrap()
+        );
+
+        let mut navigation = NavigationState::new(&document);
+        navigation
+            .select(
+                &document,
+                &Address::Range {
+                    start: PositionAddress::Token(TokenAddress {
+                        paragraph: 1,
+                        chunk: 1,
+                        token: 3,
+                    }),
+                    end: empty_start,
+                },
+            )
+            .unwrap();
+        assert!(navigation.selection_is_empty(&document).unwrap());
+        navigation
+            .select(
+                &document,
+                &Address::Range {
+                    start: empty_start,
+                    end: empty_end,
+                },
+            )
+            .unwrap();
+        assert!(!navigation.selection_is_empty(&document).unwrap());
+        assert!(matches!(
+            navigation.select(
+                &document,
+                &Address::Range {
+                    start: empty_end,
+                    end: empty_start
+                }
+            ),
+            Err(NavigationError::ReversedRange { .. })
+        ));
+    }
+
+    #[test]
+    fn stable_selections_do_not_retarget_after_an_edit() {
+        let mut document = structured_document();
+        let mut navigation = NavigationState::new(&document);
+        navigation
+            .move_to(
+                &document,
+                &Address::Position(PositionAddress::Token(TokenAddress {
                     paragraph: 1,
-                    token: 2
-                },
-                end: TokenAddress {
-                    paragraph: 2,
-                    token: 3
-                },
-            }
-        );
+                    chunk: 1,
+                    token: 2,
+                })),
+            )
+            .unwrap();
+        document.insert_text(1, 1, false, "new".into()).unwrap();
         assert_eq!(
-            parse_address("2.1,1.3").unwrap_err(),
-            SyntaxError::ReversedRange("2.1,1.3".into())
+            navigation.current_range(&document),
+            Err(NavigationError::StaleSelection)
         );
-        assert_eq!(
-            parse_address("2@1,2@1").unwrap_err(),
-            SyntaxError::ReversedMarkerRange("2@1,2@1".into())
-        );
-        assert!(matches!(
-            parse_address("1@1,1.2"),
-            Err(SyntaxError::InvalidAddress(_))
-        ));
-        assert!(matches!(
-            parse_address("1@2@3"),
-            Err(SyntaxError::InvalidAddress(_))
-        ));
-        assert_eq!(
-            parse_line("0").unwrap_err(),
-            SyntaxError::ZeroAddress("0".into())
-        );
-        assert!(matches!(
-            parse_line("1@2@3 info"),
-            Err(SyntaxError::InvalidAddress(_))
-        ));
     }
 }

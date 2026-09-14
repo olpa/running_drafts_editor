@@ -311,6 +311,64 @@ impl Document {
         self.paragraph(paragraph)?.tokens.get(token.checked_sub(1)?)
     }
 
+    /// Returns the paragraph-wide token bounds of a chunk as a half-open range.
+    pub fn chunk_token_bounds(&self, paragraph: usize, chunk: usize) -> Option<(usize, usize)> {
+        let paragraph = self.paragraph(paragraph)?;
+        let index = chunk.checked_sub(1)?;
+        let end = paragraph.chunk_boundaries.get(index)?.after_tokens;
+        let start = index.checked_sub(1).map_or(0, |previous| {
+            paragraph.chunk_boundaries[previous].after_tokens
+        });
+        Some((start, end))
+    }
+
+    pub fn chunk_token_count(&self, paragraph: usize, chunk: usize) -> Option<usize> {
+        self.chunk_token_bounds(paragraph, chunk)
+            .map(|(start, end)| end - start)
+    }
+
+    pub fn chunk_token(
+        &self,
+        paragraph: usize,
+        chunk: usize,
+        token: usize,
+    ) -> Option<&VisibleToken> {
+        let (start, end) = self.chunk_token_bounds(paragraph, chunk)?;
+        let index = start.checked_add(token.checked_sub(1)?)?;
+        (index < end).then(|| &self.paragraph(paragraph).unwrap().tokens[index])
+    }
+
+    pub fn chunk_has_tokens(&self, paragraph: usize, chunk: usize) -> Option<bool> {
+        self.chunk_token_count(paragraph, chunk)
+            .map(|count| count > 0)
+    }
+
+    pub fn paragraph_token_number(
+        &self,
+        paragraph: usize,
+        chunk: usize,
+        token: usize,
+    ) -> Option<usize> {
+        let (start, end) = self.chunk_token_bounds(paragraph, chunk)?;
+        let index = start.checked_add(token.checked_sub(1)?)?;
+        (index < end).then_some(index + 1)
+    }
+
+    pub fn chunk_token_address(&self, paragraph: usize, token: usize) -> Option<(usize, usize)> {
+        let paragraph_value = self.paragraph(paragraph)?;
+        if token == 0 || token > paragraph_value.tokens.len() {
+            return None;
+        }
+        let mut start = 0;
+        for (chunk, marker) in paragraph_value.chunk_boundaries.iter().enumerate() {
+            if token <= marker.after_tokens {
+                return Some((chunk + 1, token - start));
+            }
+            start = marker.after_tokens;
+        }
+        None
+    }
+
     pub fn chunk_marker(&self, paragraph: usize, marker: usize) -> Option<&ChunkBoundaryMarker> {
         self.paragraph(paragraph)?
             .chunk_boundaries

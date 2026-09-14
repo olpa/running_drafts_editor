@@ -35,6 +35,12 @@ changes it. The repository is one Rust package: `rde` is the executable and
 Surface conflicts between these sources. Preserve exact user-visible text and
 recoverable project data while resolving them.
 
+CLI addresses are one-based positions in document structure: `N` is before a
+paragraph, `N.M` is before a chunk, and `N.M.K` is before a token in that
+chunk. Ranges are half-open (`A,B`), and each nonempty container permits its
+one-past-the-end position. Numeric addresses are displayed coordinates, never
+stable identities.
+
 ## Working rules
 
 - Keep each change limited to its issue and the smallest supporting work.

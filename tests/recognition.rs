@@ -514,7 +514,7 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
         &mut decoder,
     )
     .unwrap();
-    let mut input = Cursor::new(b"1@1info\n1@1play\nquit\n");
+    let mut input = Cursor::new(b"1.1info\n1.1play\nquit\n");
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
@@ -535,8 +535,8 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
     assert!(output.contains("Built 1 chunks from audio.wav"));
     assert!(output.contains("source end"));
     assert!(output.contains("decoded words"));
-    assert!(output.contains("⟦1@1⟧"));
-    assert!(output.contains("1@1  00:00:00.010 – 00:00:00.030"));
+    assert!(output.contains("⟦1.1⟧"));
+    assert!(output.contains("1.1  00:00:00.010 – 00:00:00.030"));
     assert_eq!(
         player.calls,
         vec![(
@@ -563,7 +563,7 @@ fn open_audio_reports_token_fallback_and_keeps_chunk_text_selectable() {
         16_000,
         PostChunkConfig::default(),
     );
-    let mut input = Cursor::new(b"1tokens\n1.1select\nquit\n");
+    let mut input = Cursor::new(b"1tokens\n1.1.1select\nquit\n");
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
@@ -581,11 +581,11 @@ fn open_audio_reports_token_fallback_and_keeps_chunk_text_selectable() {
     .unwrap();
 
     let output = String::from_utf8(output).unwrap();
-    assert!(output.contains("1.1      -  \"visible text\""));
-    assert!(output.contains("selected 1.1"));
+    assert!(output.contains("1.1.1      -  \"visible text\""));
+    assert!(output.contains("selected 1.1.1"));
     assert_eq!(
         String::from_utf8(errors).unwrap(),
-        "token alignment unavailable for marker 1@1: normal recognition tokens do not reproduce the chunk text; using chunk text as one pseudo-token\n"
+        "token alignment unavailable for chunk 1.1: normal recognition tokens do not reproduce the chunk text; using chunk text as one pseudo-token\n"
     );
 }
 
@@ -642,7 +642,7 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
         PostChunkConfig::default(),
     );
     let mut input = Cursor::new(
-        b"2p\n2.1\n2p\n1.1,2.1select\np\n2@1\n2p\n2@1select\n2p\n2select\n2p\n2@1,2@2select\n2p\nplay\n2@1,2@2play\n2tokens\n3p\n1@1info\n2@2info\n3@1info\nquit\n",
+        b"2p\n2.1.1\n2p\n1.1.1,2.1.1select\np\n2.1\n2p\n2.1select\n2p\n2select\n2p\n2.1,2.2select\n2p\nplay\n2.2play\n2tokens\n3p\n1.1info\n2.2info\n3.1info\nquit\n",
     );
     let mut output = Vec::new();
     let mut errors = Vec::new();
@@ -661,30 +661,22 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     .unwrap();
 
     let output = String::from_utf8(output).unwrap();
-    assert!(output.contains("one ⟦1@1⟧\n\nfour-afour-b ⟦2@1⟧tail ⟦2@2⟧"));
-    assert_eq!(output.matches("four-afour-b ⟦2@1⟧tail ⟦2@2⟧").count(), 3);
-    assert!(output.contains("caret 2.1"));
-    assert!(output.contains("‹four-a›four-b ⟦2@1⟧tail ⟦2@2⟧"));
-    assert!(output.contains("selected 1.1,2.1"));
-    assert!(output.contains("⟪one ⟦1@1⟧"));
-    assert!(output.contains("four-a⟫four-b ⟦2@1⟧tail ⟦2@2⟧"));
-    assert!(output.contains("caret 2@1"));
-    assert!(output.contains("four-afour-b ‹⟦2@1⟧›tail ⟦2@2⟧"));
-    assert!(output.contains("selected 2@1"));
-    assert!(output.contains("four-afour-b ⟪⟦2@1⟧⟫tail ⟦2@2⟧"));
+    assert!(output.contains("⟦1.1⟧one\n\n⟦2.1⟧four-afour-b ⟦2.2⟧tail"));
+    assert!(output.contains("position 2.1.1"));
+    assert!(output.contains("selected 1.1.1,2.1.1"));
+    assert!(output.contains("position 2.1"));
+    assert!(output.contains("selected 2.1"));
     assert!(output.contains("selected 2"));
-    assert!(output.contains("⟪four-afour-b ⟦2@1⟧tail ⟦2@2⟧⟫"));
-    assert!(output.contains("selected 2@1,2@2"));
-    assert!(output.contains("four-afour-b ⟪⟦2@1⟧tail⟫ ⟦2@2⟧"));
-    assert!(output.contains("2.1  0.900"));
-    assert!(output.contains("2@1  marker  chunk boundary"));
-    assert!(output.contains("1@1  00:00:00.000 – 00:00:01.000"));
+    assert!(output.contains("selected 2.1,2.2"));
+    assert!(output.contains("2.1.1  0.900"));
+    assert!(output.contains("2.1  chunk  has_tokens"));
+    assert!(output.contains("1.1  00:00:00.000 – 00:00:01.000"));
     assert!(output.contains("long pause (2.000 s)"));
-    assert!(output.contains("2@2  00:00:06.600 – 00:00:07.600"));
+    assert!(output.contains("2.2  00:00:06.600 – 00:00:07.600"));
     assert!(output.contains("source end"));
     assert_eq!(
         String::from_utf8(errors).unwrap(),
-        "unknown paragraph 3\nunknown chunk marker 3@1\n"
+        "unknown paragraph 3\nunknown chunk 3.1\n"
     );
     assert_eq!(
         player.calls,
@@ -693,8 +685,8 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
                 PathBuf::from("audio.wav"),
                 16_000,
                 SampleRange {
-                    start_sample: 105_600,
-                    end_sample: 121_600
+                    start_sample: 48_000,
+                    end_sample: 92_800
                 }
             ),
             (

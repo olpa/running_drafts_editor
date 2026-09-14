@@ -176,11 +176,11 @@ impl<'a> SessionState<'a> {
                         .marker_address_for_chunk(fallback.chunk_id())
                         .map_or_else(
                             || fallback.chunk_id().to_owned(),
-                            |(paragraph, marker)| format!("{paragraph}@{marker}"),
+                            |(paragraph, chunk)| format!("{paragraph}.{chunk}"),
                         );
                     writeln!(
                         errors,
-                        "token alignment unavailable for marker {address}: {}; using chunk text as one pseudo-token",
+                        "token alignment unavailable for chunk {address}: {}; using chunk text as one pseudo-token",
                         fallback.reason()
                     )?;
                 }
@@ -303,9 +303,14 @@ impl<'a> SessionState<'a> {
                     navigation
                         .select(
                             document,
-                            &crate::navigation::Address::TokenRange {
-                                start: issue.start,
-                                end: issue.end,
+                            &crate::navigation::Address::Range {
+                                start: crate::navigation::PositionAddress::Token(issue.start),
+                                end: crate::navigation::PositionAddress::Token(
+                                    crate::navigation::TokenAddress {
+                                        token: issue.end.token + 1,
+                                        ..issue.end
+                                    },
+                                ),
                             },
                         )
                         .unwrap();
@@ -327,11 +332,11 @@ impl<'a> SessionState<'a> {
                 document.resolve_issue(selected.token_ids);
                 writeln!(
                     output,
-                    "resolved {}.{},{}.{}",
-                    selected.start.paragraph,
-                    selected.start.token,
+                    "resolved {},{}.{}.{}",
+                    selected.start,
                     selected.end.paragraph,
-                    selected.end.token
+                    selected.end.chunk,
+                    selected.end.token + 1
                 )?;
                 issues::navigate(document, navigation, *issue_thresholds, true, output)?;
             }
@@ -352,17 +357,25 @@ impl<'a> SessionState<'a> {
                 navigation
                     .select(
                         document,
-                        &crate::navigation::Address::TokenRange {
-                            start: issue.start,
-                            end: issue.end,
+                        &crate::navigation::Address::Range {
+                            start: crate::navigation::PositionAddress::Token(issue.start),
+                            end: crate::navigation::PositionAddress::Token(
+                                crate::navigation::TokenAddress {
+                                    token: issue.end.token + 1,
+                                    ..issue.end
+                                },
+                            ),
                         },
                     )
                     .unwrap();
                 document.reopen_issue(index);
                 writeln!(
                     output,
-                    "reopened {}.{},{}.{}",
-                    issue.start.paragraph, issue.start.token, issue.end.paragraph, issue.end.token
+                    "reopened {},{}.{}.{}",
+                    issue.start,
+                    issue.end.paragraph,
+                    issue.end.chunk,
+                    issue.end.token + 1
                 )?;
             }
             SessionCommand::Print(None) => render_session_document(
@@ -385,7 +398,7 @@ impl<'a> SessionState<'a> {
                 None => writeln!(errors, "unknown paragraph {number}")?,
             },
             SessionCommand::Move(address) => match navigation.move_to(document, &address) {
-                Ok(()) => writeln!(output, "caret {address}")?,
+                Ok(()) => writeln!(output, "position {address}")?,
                 Err(error) => writeln!(errors, "{error}")?,
             },
             SessionCommand::Select(address) => match navigation.select(document, &address) {
@@ -409,28 +422,23 @@ impl<'a> SessionState<'a> {
                 }
                 Err(_) => writeln!(
                     errors,
-                    "tokens requires an active token selection or a paragraph address M"
+                    "tokens requires a selection containing tokens or a paragraph position N"
                 )?,
             },
             SessionCommand::Alternatives { address } => {
                 render_alternatives(document, navigation, address, output, errors)?
             }
             SessionCommand::Mark { address, remove } => {
-                let target = if let Some(address) = address {
-                    Ok(address)
-                } else if navigation.selection().is_some() {
-                    navigation
-                        .selected_token_endpoints(document)
-                        .map(|(start, _)| start)
-                } else {
-                    navigation.current_token_address(document)
-                };
+                let target = address.map_or_else(|| navigation.current_token_address(document), Ok);
                 match target {
                     Ok(address) => {
+                        let global = document
+                            .paragraph_token_number(address.paragraph, address.chunk, address.token)
+                            .unwrap();
                         let result = if remove {
-                            document.unmark_attention(address.paragraph, address.token)
+                            document.unmark_attention(address.paragraph, global)
                         } else {
-                            document.mark_attention(address.paragraph, address.token)
+                            document.mark_attention(address.paragraph, global)
                         };
                         match result {
                             Ok(()) => writeln!(
@@ -460,8 +468,11 @@ impl<'a> SessionState<'a> {
                         return Ok(SessionControl::Continue);
                     }
                 };
+                let global = document
+                    .paragraph_token_number(address.paragraph, address.chunk, address.token)
+                    .unwrap();
                 let Some(token_id) =
-                    document.alternative_token_id(address.paragraph, address.token, candidate)
+                    document.alternative_token_id(address.paragraph, global, candidate)
                 else {
                     writeln!(
                         errors,
@@ -479,7 +490,7 @@ impl<'a> SessionState<'a> {
                     recognizer,
                     language,
                     address.paragraph,
-                    address.token,
+                    address.chunk,
                     prefix,
                     Some(token_id),
                     output,
@@ -488,6 +499,30 @@ impl<'a> SessionState<'a> {
             }
             SessionCommand::Insert { address, text } | SessionCommand::Append { address, text } => {
                 let after = append;
+                let Some(count) = document.chunk_token_count(address.paragraph, address.chunk)
+                else {
+                    writeln!(
+                        errors,
+                        "insert failed: unknown chunk {}.{}",
+                        address.paragraph, address.chunk
+                    )?;
+                    return Ok(SessionControl::Continue);
+                };
+                if count == 0 || address.token > count + 1 {
+                    writeln!(errors, "insert failed: unknown token position {address}")?;
+                    return Ok(SessionControl::Continue);
+                }
+                if after
+                    && document
+                        .chunk_token(address.paragraph, address.chunk, address.token)
+                        .is_none()
+                {
+                    writeln!(
+                        errors,
+                        "append failed: position {address} has no following token"
+                    )?;
+                    return Ok(SessionControl::Continue);
+                }
                 let through = if after {
                     address.token
                 } else {
@@ -507,7 +542,7 @@ impl<'a> SessionState<'a> {
                     recognizer,
                     language,
                     address.paragraph,
-                    address.token,
+                    address.chunk,
                     intended,
                     None,
                     output,
@@ -522,19 +557,6 @@ impl<'a> SessionState<'a> {
                         return Ok(SessionControl::Continue);
                     }
                 };
-                if document
-                    .chunk_for_token(start.paragraph, start.token)
-                    .map(|v| v.1)
-                    != document
-                        .chunk_for_token(end.paragraph, end.token)
-                        .map(|v| v.1)
-                {
-                    writeln!(
-                        errors,
-                        "edit failed: text-changing ranges cannot cross chunk boundaries"
-                    )?;
-                    return Ok(SessionControl::Continue);
-                }
                 let text = if replacement.exact_boundaries {
                     replacement.text
                 } else {
@@ -554,7 +576,7 @@ impl<'a> SessionState<'a> {
                     recognizer,
                     language,
                     start.paragraph,
-                    start.token,
+                    start.chunk,
                     intended,
                     None,
                     output,
@@ -562,7 +584,10 @@ impl<'a> SessionState<'a> {
                 )?;
             }
             SessionCommand::Delete { range } => {
-                let _ = range;
+                if let Err(error) = edit_range(document, navigation, range) {
+                    writeln!(errors, "delete failed: {error}")?;
+                    return Ok(SessionControl::Continue);
+                }
                 writeln!(
                     errors,
                     "delete is disabled; deletion of audio-backed text is not implemented"
@@ -573,10 +598,14 @@ impl<'a> SessionState<'a> {
                 let Some((paragraph, marker)) = resolved else {
                     writeln!(
                         errors,
-                        "refresh requires a token caret or token selection in one chunk"
+                        "refresh requires a current chunk or a selection covering one chunk"
                     )?;
                     return Ok(SessionControl::Continue);
                 };
+                if document.chunk_token_count(paragraph, marker).is_none() {
+                    writeln!(errors, "refresh failed: unknown chunk {paragraph}.{marker}")?;
+                    return Ok(SessionControl::Continue);
+                }
                 if !ensure_recognizer(recognizer, model_path, language, errors)? {
                     return Ok(SessionControl::Continue);
                 }
@@ -666,7 +695,7 @@ impl<'a> SessionState<'a> {
             },
             SessionCommand::Info { paragraph, chunk } => {
                 let Some(marker) = document.chunk_marker(paragraph, chunk) else {
-                    writeln!(errors, "unknown chunk marker {paragraph}@{chunk}")?;
+                    writeln!(errors, "unknown chunk {paragraph}.{chunk}")?;
                     return Ok(SessionControl::Continue);
                 };
                 if let Some(run) = recognition_run {
@@ -678,10 +707,9 @@ impl<'a> SessionState<'a> {
                         Some(recognition_chunk) => {
                             render_chunk_info(run, recognition_chunk, paragraph, chunk, output)?
                         }
-                        None => writeln!(
-                            errors,
-                            "chunk data is unavailable for marker {paragraph}@{chunk}"
-                        )?,
+                        None => {
+                            writeln!(errors, "chunk data is unavailable for {paragraph}.{chunk}")?
+                        }
                     }
                 } else {
                     writeln!(
@@ -820,8 +848,14 @@ fn render_selected_tokens(
         .iter()
         .map(|p| p.tokens().len())
         .sum::<usize>();
-    let first = offsets[start.paragraph - 1] + start.token - 1;
-    let last_exclusive = offsets[end.paragraph - 1] + end.token;
+    let first_global = document
+        .paragraph_token_number(start.paragraph, start.chunk, start.token)
+        .unwrap();
+    let last_global = document
+        .paragraph_token_number(end.paragraph, end.chunk, end.token)
+        .unwrap();
+    let first = offsets[start.paragraph - 1] + first_global - 1;
+    let last_exclusive = offsets[end.paragraph - 1] + last_global;
     let context_start = first.saturating_sub(5);
     let context_end = last_exclusive.saturating_add(5).min(total);
     for (index, paragraph) in document.paragraphs().iter().enumerate() {
@@ -964,7 +998,8 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
         "History: undo | Nundo | redo | Nredo (N is a positive maximum count)"
     )?;
     writeln!(output, "Issues: next | prev | issues | ignore | resolve | Nignore | Nresolve | Nunignore | issue-prob [red|orange VALUE]")?;
-    writeln!(output, "Token listing: Mtokens lists paragraph M; bare tokens lists the selection plus five tokens on each side")?;
+    writeln!(output, "Addresses: N is before paragraph N; N.M is before chunk M; N.M.K is before token K. Ranges A,B are half-open.")?;
+    writeln!(output, "Token listing: Ntokens lists paragraph N; bare tokens lists the selection plus five tokens on each side")?;
     writeln!(
         output,
         "Document display: print | list | show (short forms: p | l)"
@@ -972,15 +1007,15 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output, "Model loading: model [PATH] configures the path; loading waits until recognition is first used")?;
     writeln!(
         output,
-        "Alternatives: [M.N]choose N and [M.N]set N select the same candidate"
+        "Alternatives: [N.M.K]choose C and [N.M.K]set C select the same candidate"
     )?;
     writeln!(
         output,
-        "Attention: [M.N]mark | [M.N]unmark; export PATH writes clean paragraph text with flags"
+        "Attention: [N.M.K]mark | [N.M.K]unmark; export PATH writes clean paragraph text with flags"
     )?;
     writeln!(
         output,
-        "Commands:\n  p | print                  print the document\n  Mp                         print paragraph M\n  M.N                        move caret to a token\n  M@N                        move caret to a chunk marker\n  Aselect | Asel | As        select token/marker range, paragraph, or marker A\n  Mtokens                    list paragraph tokens\n  [M.N]alternatives | alts   list alternatives for one token/current token\n  [M.N]choose N              correct one token and refresh its chunk\n  M.Ninsert TEXT             correct before M.N and refresh its chunk\n  M.Nappend TEXT             correct after M.N and refresh its chunk\n  [M.N,M.U]replace TEXT      replace a one-chunk range and refresh\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [M.N,M.U]delete            disabled pending audio-backed deletion\n  [M@N]refresh               re-recognize one complete replay chunk\n  model [PATH]               show or load the session model\n  language [CODE]            show or set the session language\n  [M@N]parasplit             split paragraph after marker/current marker\n  Mmerge                     merge paragraph M with M+1 exactly\n  [A]play | [A]slowplay      play current/addressed text or chunk\n  M@N,M@Uplay                play half-open marker interval [left, right)\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  M@Ninfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
+        "Commands:\n  p | print                  print the document\n  Np                         print paragraph N\n  A                          move to position A\n  A,Bselect | sel | s        select half-open range [A, B)\n  Ntokens                    list paragraph N tokens\n  [N.M.K]alternatives | alts list alternatives for one token/current token\n  [N.M.K]choose C            correct one token and refresh its chunk\n  N.M.Kinsert TEXT           correct before a token (including its end position)\n  N.M.Kappend TEXT           correct after the following token\n  [A,B]replace TEXT          replace a supported one-chunk range and refresh\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [A,B]delete                disabled pending audio-backed deletion\n  [N.M]refresh               re-recognize one complete chunk\n  model [PATH]               show or load the session model\n  language [CODE]            show or set the session language\n  [N.M]parasplit             split paragraph before a chunk/current chunk\n  Nmerge                     merge paragraph N with N+1 exactly\n  [A]play | [A]slowplay      play current/addressed item or range\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  N.Minfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
     )
 }
 
@@ -1018,23 +1053,21 @@ mod tests {
 
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("p | print"));
-        assert!(output.contains("Mp"));
-        assert!(output.contains("M.N"));
-        assert!(output.contains("Aselect | Asel | As"));
-        assert!(output.contains("Mtokens"));
-        assert!(output.contains("[M.N,M.U]replace TEXT"));
+        assert!(output.contains("Np"));
+        assert!(output.contains("N.M.K"));
+        assert!(output.contains("A,Bselect | sel | s"));
+        assert!(output.contains("Ntokens"));
+        assert!(output.contains("[A,B]replace TEXT"));
         assert!(output.contains("unquoted keeps selected boundary whitespace"));
         assert!(output.contains("quoted \"TEXT\" controls boundaries exactly"));
         assert!(output.contains("parasplit"));
         assert!(!output.contains("isplit"));
-        assert!(!output.contains("[M.N]asplit"));
-        assert!(!output.contains("M@Nmerge"));
+        assert!(!output.contains("@"));
         assert!(output.contains("[A]play | [A]slowplay"));
-        assert!(output.contains("M@N,M@Uplay"));
         assert!(output.contains("[A]slowplay"));
         assert!(output.contains("replay"));
         assert!(output.contains("stop"));
-        assert!(output.contains("M@Ninfo"));
+        assert!(output.contains("N.Minfo"));
         assert!(output.contains("save [PATH]"));
         assert!(output.contains("load PATH"));
         assert!(output.contains("edit PATH"));
