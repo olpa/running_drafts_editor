@@ -803,9 +803,10 @@ fn resolve_stable(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::Project;
     use serde_json::json;
 
-    fn structured_document() -> Document {
+    fn structured_document() -> Project {
         let token = |id: &str| json!({"id":{"kind":"pseudo","id":id},"text":id,"origin":{"kind":"pseudo","reason":"test"}});
         serde_json::from_value(json!({
             "schema":"rde-document/v1-experimental", "id":"document:positions",

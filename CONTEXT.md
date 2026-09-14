@@ -15,7 +15,9 @@ _Avoid_: Document as a name for the complete working set.
 
 **Document**:
 The editable composition that arranges chunks into paragraphs. Its visible text
-comes from each chunk's current transcription.
+comes from each chunk's current transcription. Supporting audio, transcription
+evidence, review state, and history belong to the project rather than the
+document.
 _Avoid_: Draft, project, visible document.
 
 **Recording**:

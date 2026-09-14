@@ -8,9 +8,9 @@ use std::{
 use rustyline::{error::ReadlineError, DefaultEditor};
 
 use crate::{
-    document::Document,
     navigation::NavigationState,
-    persistence::{export_text, load_document, save_document},
+    persistence::{export_text, load_project, save_project},
+    project::Project,
     recognition::{RecognitionConfig, RecognitionRun, RecognizerSession},
 };
 
@@ -87,7 +87,7 @@ impl<'a> SessionContext<'a> {
 }
 
 struct SessionState<'a> {
-    document: Document,
+    project: Project,
     document_path: Option<std::path::PathBuf>,
     recognition_run: Option<&'a RecognitionRun>,
     start: SessionStart<'a>,
@@ -108,7 +108,7 @@ enum SessionControl {
 
 impl<'a> SessionState<'a> {
     fn new(
-        document: &Document,
+        project: &Project,
         context: SessionContext<'a>,
         output: &mut impl Write,
         errors: &mut impl Write,
@@ -121,7 +121,7 @@ impl<'a> SessionState<'a> {
             model,
             recognizer,
         } = context;
-        let document = document.clone();
+        let document = project.clone();
         let document_path = document_path.map(Path::to_path_buf);
         match start {
             SessionStart::SavedDocument => {
@@ -201,7 +201,7 @@ impl<'a> SessionState<'a> {
             })?;
         }
         Ok(Some(Self {
-            document,
+            project: document,
             document_path,
             recognition_run,
             start,
@@ -225,7 +225,7 @@ impl<'a> SessionState<'a> {
         replay_context_samples: u64,
     ) -> io::Result<SessionControl> {
         let Self {
-            document,
+            project: document,
             document_path,
             recognition_run,
             start,
@@ -724,7 +724,7 @@ impl<'a> SessionState<'a> {
                     writeln!(errors, "save requires a document path")?;
                     return Ok(SessionControl::Continue);
                 };
-                match save_document(&path, document) {
+                match save_project(&path, document) {
                     Ok(()) => {
                         *document_path = Some(path.clone());
                         writeln!(output, "saved {}", path.display())?;
@@ -737,7 +737,7 @@ impl<'a> SessionState<'a> {
                 Ok(()) => writeln!(output, "exported {}", path.display())?,
                 Err(error) => writeln!(errors, "{error}")?,
             },
-            SessionCommand::Load(path) => match load_document(&path) {
+            SessionCommand::Load(path) => match load_project(&path) {
                 Ok(loaded) => {
                     *document = loaded;
                     *document_path = Some(path);
@@ -769,7 +769,7 @@ impl<'a> SessionState<'a> {
 }
 
 fn render_session_document(
-    document: &Document,
+    document: &Project,
     navigation: Option<&NavigationState>,
     settings: IssueThresholds,
     color: bool,
@@ -827,7 +827,7 @@ fn ensure_recognizer(
 }
 
 fn render_selected_tokens(
-    document: &Document,
+    document: &Project,
     start: crate::navigation::TokenAddress,
     end: crate::navigation::TokenAddress,
     settings: IssueThresholds,
@@ -881,7 +881,7 @@ fn render_selected_tokens(
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_session(
-    document: &Document,
+    project: &Project,
     context: SessionContext<'_>,
     input: &mut impl BufRead,
     output: &mut impl Write,
@@ -889,7 +889,7 @@ pub fn run_session(
     player: &mut impl AudioPlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    let Some(mut state) = SessionState::new(document, context, output, errors, false)? else {
+    let Some(mut state) = SessionState::new(project, context, output, errors, false)? else {
         return Ok(());
     };
     loop {
@@ -917,14 +917,14 @@ pub fn run_session(
 /// Runs a terminal session with editable input and persistent command history.
 #[allow(clippy::too_many_arguments)]
 pub fn run_readline_session(
-    document: &Document,
+    project: &Project,
     context: SessionContext<'_>,
     output: &mut impl Write,
     errors: &mut impl Write,
     player: &mut impl AudioPlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    let Some(mut state) = SessionState::new(document, context, output, errors, true)? else {
+    let Some(mut state) = SessionState::new(project, context, output, errors, true)? else {
         return Ok(());
     };
     let mut editor = DefaultEditor::new().map_err(readline_io_error)?;

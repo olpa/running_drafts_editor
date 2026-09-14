@@ -2,7 +2,9 @@ use std::fs;
 
 use running_drafts_editor::{
     document::{VisibleTokenId, VisibleTokenOrigin},
-    persistence::{export_text, load_document, save_document, DocumentIoError},
+    persistence::{
+        export_text, load_document, load_project, save_document, save_project, DocumentIoError,
+    },
 };
 use serde_json::json;
 
@@ -189,6 +191,29 @@ fn missing_audio_does_not_prevent_loading_visible_text() {
 
     assert_eq!(document.paragraphs()[0].tokens().len(), 2);
     assert!(!document.audio_sources()[0].path().unwrap().exists());
+}
+
+#[test]
+fn project_exposes_a_document_without_supporting_work_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("input.json");
+    let output = directory.path().join("output.json");
+    baseline(&input, "missing.wav");
+
+    let project = load_project(&input).unwrap();
+    let document = serde_json::to_value(project.document()).unwrap();
+    assert_eq!(document["id"], "document:run");
+    assert!(document.get("paragraphs").is_some());
+    assert!(document.get("schema").is_none());
+    assert!(document.get("audio_sources").is_none());
+    assert!(document.get("recognition_token_evidence").is_none());
+    assert!(document.get("edit_history").is_none());
+
+    save_project(&output, &project).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
+    assert_eq!(saved["schema"], "rde-document/v1-experimental");
+    assert_eq!(saved["id"], "document:run");
+    assert!(saved.get("document").is_none());
 }
 
 #[test]

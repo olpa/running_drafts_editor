@@ -1,4 +1,4 @@
-//! Versioned persistence for the authoritative visible document.
+//! Versioned persistence for a project and its authoritative document.
 
 use std::{
     collections::HashSet,
@@ -7,7 +7,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::document::{Document, VisibleTokenId, DOCUMENT_SCHEMA};
+use crate::{
+    document::VisibleTokenId,
+    project::{Project, PROJECT_SCHEMA},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DocumentIoError {
@@ -18,7 +21,7 @@ pub enum DocumentIoError {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("unsupported document schema '{found}'; expected '{DOCUMENT_SCHEMA}'")]
+    #[error("unsupported project schema '{found}'; expected '{PROJECT_SCHEMA}'")]
     UnsupportedSchema { found: String },
     #[error("invalid document: {0}")]
     Invalid(String),
@@ -31,22 +34,26 @@ pub enum DocumentIoError {
     },
 }
 
-pub fn load_document(path: &Path) -> Result<Document, DocumentIoError> {
+/// Project-oriented name for the persistence error. The original name remains
+/// available because it is part of the experimental public API.
+pub type ProjectIoError = DocumentIoError;
+
+pub fn load_project(path: &Path) -> Result<Project, ProjectIoError> {
     let file = fs::File::open(path).map_err(|source| DocumentIoError::Open {
         path: path.into(),
         source,
     })?;
-    let document =
+    let project =
         serde_json::from_reader(BufReader::new(file)).map_err(|source| DocumentIoError::Read {
             path: path.into(),
             source,
         })?;
-    validate(&document)?;
-    Ok(document)
+    validate(&project)?;
+    Ok(project)
 }
 
-pub fn save_document(path: &Path, document: &Document) -> Result<(), DocumentIoError> {
-    validate(document)?;
+pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError> {
+    validate(project)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path
         .file_name()
@@ -84,7 +91,7 @@ pub fn save_document(path: &Path, document: &Document) -> Result<(), DocumentIoE
     };
     let result = (|| {
         let mut writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(&mut writer, document).map_err(|source| {
+        serde_json::to_writer_pretty(&mut writer, project).map_err(|source| {
             DocumentIoError::Encode {
                 path: path.into(),
                 source,
@@ -120,15 +127,15 @@ pub fn save_document(path: &Path, document: &Document) -> Result<(), DocumentIoE
 
 /// Write disposable plain text, including intentional attention flags but no
 /// recognition or replay metadata.
-pub fn export_text(path: &Path, document: &Document) -> Result<(), DocumentIoError> {
-    validate(document)?;
+pub fn export_text(path: &Path, project: &Project) -> Result<(), DocumentIoError> {
+    validate(project)?;
     let mut bytes = Vec::new();
-    for (paragraph_index, paragraph) in document.paragraphs().iter().enumerate() {
+    for (paragraph_index, paragraph) in project.paragraphs().iter().enumerate() {
         if paragraph_index > 0 {
             bytes.extend_from_slice(b"\n\n");
         }
         for token in paragraph.tokens() {
-            if document.is_attention_marked(token.id()) {
+            if project.is_attention_marked(token.id()) {
                 bytes.extend_from_slice("⚑".as_bytes());
             }
             bytes.extend_from_slice(token.text().as_bytes());
@@ -140,8 +147,8 @@ pub fn export_text(path: &Path, document: &Document) -> Result<(), DocumentIoErr
     })
 }
 
-pub(crate) fn validate(document: &Document) -> Result<(), DocumentIoError> {
-    if document.schema() != DOCUMENT_SCHEMA {
+pub(crate) fn validate(document: &Project) -> Result<(), DocumentIoError> {
+    if document.schema() != PROJECT_SCHEMA {
         return Err(DocumentIoError::UnsupportedSchema {
             found: document.schema().into(),
         });
@@ -420,6 +427,16 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentIoError> {
         }
     }
     Ok(())
+}
+
+/// Compatibility wrapper for the original API name.
+pub fn load_document(path: &Path) -> Result<Project, DocumentIoError> {
+    load_project(path)
+}
+
+/// Compatibility wrapper for the original API name.
+pub fn save_document(path: &Path, project: &Project) -> Result<(), DocumentIoError> {
+    save_project(path, project)
 }
 
 fn token_id_key(id: &VisibleTokenId) -> String {

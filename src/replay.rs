@@ -2,11 +2,12 @@
 
 use crate::{
     chunking::SampleRange,
-    document::{AlignmentState, Document},
+    document::AlignmentState,
     navigation::{
         chunks_in_range, item_chunk, item_paragraph, item_token, tokens_in_range, Address,
         ChunkAddress, NavigationError, NavigationState, PositionAddress, TokenAddress,
     },
+    project::Project,
 };
 use std::collections::HashSet;
 
@@ -52,7 +53,7 @@ enum ReplayTarget {
 }
 
 pub fn resolve(
-    document: &Document,
+    document: &Project,
     navigation: &NavigationState,
     address: Option<&Address>,
     context_samples: u64,
@@ -108,7 +109,7 @@ pub fn resolve(
 }
 
 fn resolve_range(
-    document: &Document,
+    document: &Project,
     start: PositionAddress,
     end: PositionAddress,
     context_samples: u64,
@@ -172,7 +173,7 @@ fn resolve_range(
 }
 
 fn resolve_chunks<'a>(
-    document: &Document,
+    document: &Project,
     ids: impl Iterator<Item = &'a str>,
 ) -> Result<ResolvedReplay, ReplayResolutionError> {
     let pieces = ids
@@ -187,7 +188,7 @@ fn resolve_chunks<'a>(
 }
 
 fn resolve_tokens(
-    document: &Document,
+    document: &Project,
     tokens: impl IntoIterator<Item = TokenAddress>,
     context_samples: u64,
 ) -> Result<ResolvedReplay, ReplayResolutionError> {
@@ -198,7 +199,7 @@ fn resolve_tokens(
 }
 
 fn token_pieces(
-    document: &Document,
+    document: &Project,
     tokens: impl IntoIterator<Item = TokenAddress>,
 ) -> Result<Vec<(String, SampleRange, AlignmentState)>, ReplayResolutionError> {
     let mut pieces = Vec::new();
@@ -226,7 +227,7 @@ fn token_pieces(
 }
 
 fn combine(
-    document: &Document,
+    document: &Project,
     pieces: Vec<(String, SampleRange, AlignmentState)>,
     partial: bool,
     context_samples: u64,
@@ -273,7 +274,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn empty_chunks() -> Document {
+    fn empty_chunks() -> Project {
         serde_json::from_value(json!({
             "schema":"rde-document/v1-experimental", "id":"document:empty",
             "paragraphs":[

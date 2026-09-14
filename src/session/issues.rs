@@ -5,8 +5,9 @@ use std::{
 };
 
 use crate::{
-    document::{Document, VisibleTokenId},
+    document::VisibleTokenId,
     navigation::{Address, NavigationState, PositionAddress, TokenAddress},
+    project::Project,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,7 +46,7 @@ impl IssueEntry {
 }
 
 pub(crate) fn confidence(
-    document: &Document,
+    document: &Project,
     id: &VisibleTokenId,
     settings: IssueThresholds,
 ) -> Option<Confidence> {
@@ -70,7 +71,7 @@ pub(crate) fn confidence(
     }
 }
 
-pub(crate) fn entries(document: &Document, settings: IssueThresholds) -> Vec<IssueEntry> {
+pub(crate) fn entries(document: &Project, settings: IssueThresholds) -> Vec<IssueEntry> {
     let resolved_ids = document
         .resolved_issues()
         .iter()
@@ -162,7 +163,7 @@ fn push_open(
         resolved_index: None,
     });
 }
-fn find_token(document: &Document, id: &VisibleTokenId) -> Option<TokenAddress> {
+fn find_token(document: &Project, id: &VisibleTokenId) -> Option<TokenAddress> {
     document
         .paragraphs()
         .iter()
@@ -184,7 +185,7 @@ fn position_cmp(a: TokenAddress, b: TokenAddress) -> Ordering {
 }
 
 pub(crate) fn list(
-    document: &Document,
+    document: &Project,
     settings: IssueThresholds,
     output: &mut impl Write,
 ) -> io::Result<()> {
@@ -212,7 +213,7 @@ pub(crate) fn list(
 }
 
 pub(crate) fn navigate(
-    document: &Document,
+    document: &Project,
     navigation: &mut NavigationState,
     settings: IssueThresholds,
     forward: bool,
@@ -273,7 +274,7 @@ pub(crate) fn navigate(
 }
 
 fn navigation_bounds(
-    document: &Document,
+    document: &Project,
     navigation: &NavigationState,
 ) -> Option<(TokenAddress, TokenAddress)> {
     navigation

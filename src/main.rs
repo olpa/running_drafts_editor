@@ -2,8 +2,8 @@ use std::{io::IsTerminal, path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
-use running_drafts_editor::document::Document;
-use running_drafts_editor::persistence::{load_document, save_document};
+use running_drafts_editor::persistence::{load_project, save_project};
+use running_drafts_editor::project::Project;
 use running_drafts_editor::recognition::{
     recognize, PostChunkConfig, RecognitionConfig, RecognizerSession, WhisperDecoder,
 };
@@ -142,8 +142,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn run_transcribe(args: TranscribeArgs) -> Result<(), Box<dyn std::error::Error>> {
     validate_output_target(&args.output)?;
     let (run, _) = recognize_audio(&args.input, &args.recognition)?;
-    let document = Document::from_run_with_source(&run, Some(&args.input));
-    save_document(&args.output, &document)?;
+    let project = Project::from_run_with_source(&run, Some(&args.input));
+    save_project(&args.output, &project)?;
     println!("saved {}", args.output.display());
     Ok(())
 }
@@ -163,7 +163,7 @@ fn validate_output_target(path: &std::path::Path) -> Result<(), Box<dyn std::err
 }
 
 fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let document = load_document(&args.document)?;
+    let project = load_project(&args.document)?;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let stderr = std::io::stderr();
@@ -173,7 +173,7 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
     let context = SessionContext::saved_document(&args.document, args.model.as_deref());
     if stdin.is_terminal() && stdout.is_terminal() {
         run_readline_session(
-            &document,
+            &project,
             context,
             &mut output,
             &mut errors,
@@ -183,7 +183,7 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let mut input = stdin.lock();
         run_session(
-            &document,
+            &project,
             context,
             &mut input,
             &mut output,
@@ -200,9 +200,9 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
         validate_output_target(path)?;
     }
     let (run, recognizer) = recognize_audio(&args.input, &args.recognition)?;
-    let document = Document::from_run_with_source(&run, Some(&args.input));
+    let project = Project::from_run_with_source(&run, Some(&args.input));
     if let Some(path) = &args.output {
-        save_document(path, &document)?;
+        save_project(path, &project)?;
         println!("saved {}", path.display());
     }
 
@@ -221,7 +221,7 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     );
     if stdin.is_terminal() && stdout.is_terminal() {
         run_readline_session(
-            &document,
+            &project,
             context,
             &mut output,
             &mut errors,
@@ -231,7 +231,7 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     } else {
         let mut input = stdin.lock();
         run_session(
-            &document,
+            &project,
             context,
             &mut input,
             &mut output,

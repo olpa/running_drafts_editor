@@ -1,9 +1,9 @@
 use crate::{
-    document::Document,
     navigation::{
         chunks_in_range, tokens_in_range, ChunkAddress, NavigationState, PositionAddress,
         TokenAddress,
     },
+    project::Project,
     recognition::{ChunkBoundaryReason, RecognitionRun},
 };
 use std::{
@@ -17,13 +17,13 @@ pub fn render_recognition_chunks(
     source: &Path,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    let document = Document::from_run(run);
+    let document = Project::from_run(run);
     render_recognition_document(run, &document, source, output)
 }
 
 pub(crate) fn render_recognition_document(
     run: &RecognitionRun,
-    document: &Document,
+    document: &Project,
     source: &Path,
     output: &mut impl Write,
 ) -> io::Result<()> {
@@ -63,7 +63,7 @@ pub(crate) fn render_paragraph(
 }
 
 pub(crate) fn render_issue_paragraph(
-    document: &Document,
+    document: &Project,
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     navigation: Option<&NavigationState>,
@@ -83,7 +83,7 @@ pub(crate) fn render_issue_paragraph(
 }
 
 fn render_paragraph_inner(
-    document: Option<&Document>,
+    document: Option<&Project>,
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     navigation: Option<&NavigationState>,
@@ -206,7 +206,7 @@ fn render_paragraph_inner(
 }
 
 pub(crate) fn render_tokens(
-    document: &Document,
+    document: &Project,
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     settings: super::issues::IssueThresholds,
@@ -227,7 +227,7 @@ pub(crate) fn render_tokens(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_token_range(
-    document: &Document,
+    document: &Project,
     paragraph: &crate::document::Paragraph,
     paragraph_number: usize,
     start: usize,

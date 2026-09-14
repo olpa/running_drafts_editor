@@ -6,8 +6,8 @@ use std::{
 
 use crate::{
     chunking::SampleRange,
-    document::Document,
     navigation::{Address, NavigationState},
+    project::Project,
     replay::{resolve as resolve_replay, ResolvedReplay},
 };
 
@@ -41,7 +41,7 @@ pub(crate) struct ReplayStart {
 }
 
 pub(crate) fn start_document_replay(
-    document: &Document,
+    document: &Project,
     navigation: &NavigationState,
     address: Option<&Address>,
     start: ReplayStart,
@@ -68,7 +68,7 @@ pub(crate) fn start_document_replay(
 }
 
 fn start_resolved(
-    document: &Document,
+    document: &Project,
     resolved: &ResolvedReplay,
     speed: PlaybackSpeed,
     require_file: bool,
@@ -126,7 +126,7 @@ fn start_resolved(
 }
 
 pub(crate) fn repeat_document_replay(
-    document: &Document,
+    document: &Project,
     last: Option<&LastPlayback>,
     speed: PlaybackSpeed,
     player: &mut impl AudioPlayer,
