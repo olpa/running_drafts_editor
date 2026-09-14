@@ -34,6 +34,9 @@ changes it. The repository is one Rust package: `rde` is the executable and
 - Project and document ownership: [ADR-0009](docs/adr/0009-separate-project-state-from-document-composition.md).
   The historical v1 schema name describes a project despite retaining
   `rde-document` in its version string.
+- Attention-mark targets: [ADR-0010](docs/adr/0010-target-attention-marks-by-chunk-and-token.md).
+  Store stable chunk and token identities and derive displayed addresses from
+  the current document structure.
 
 Surface conflicts between these sources. Preserve exact user-visible text and
 recoverable project data while resolving them.

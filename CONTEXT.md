@@ -145,8 +145,10 @@ confirmed error or proposed correction.
 _Avoid_: Review item, warning, error, suggestion.
 
 **Attention mark**:
-A user-created marker before a token indicating that nearby text should be
-reviewed later. It is distinct from a system-generated issue.
+A project-owned marker before a current token in a particular chunk, indicating
+that nearby text should be reviewed later. Moving the chunk between paragraphs
+does not change the mark; replacing the targeted token removes it, while undo
+may restore both. It is distinct from a system-generated issue.
 _Avoid_: Issue, flag.
 
 ### Interaction

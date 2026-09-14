@@ -76,6 +76,8 @@ fn attention_marks_persist_export_exactly_and_follow_history() {
 
     document.mark_attention(1, 1).unwrap();
     document.mark_attention(1, 2).unwrap();
+    assert_eq!(document.attention_marks()[0].chunk_id(), "c1");
+    assert_eq!(document.attention_marks()[1].chunk_id(), "c2");
     assert!(document
         .mark_attention(1, 1)
         .unwrap_err()
@@ -87,10 +89,16 @@ fn attention_marks_persist_export_exactly_and_follow_history() {
     );
     document.split_paragraph(1, 1).unwrap();
     assert_eq!(document.attention_marks().len(), 2);
+    assert_eq!(document.attention_marks()[0].chunk_id(), "c1");
+    assert_eq!(document.attention_marks()[1].chunk_id(), "c2");
     assert!(document.is_attention_marked(document.token(2, 1).unwrap().id()));
     document.merge_paragraphs(1).unwrap();
 
     save_document(&saved, &document).unwrap();
+    let saved_value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&saved).unwrap()).unwrap();
+    assert_eq!(saved_value["attention_marks"][0]["chunk_id"], "c1");
+    assert_eq!(saved_value["attention_marks"][1]["chunk_id"], "c2");
     let mut reopened = load_document(&saved).unwrap();
     assert_eq!(reopened.attention_marks().len(), 2);
     reopened.replace_text(1, 1, 1, 1, "fixed".into()).unwrap();
@@ -146,6 +154,52 @@ fn malformed_and_duplicate_attention_marks_are_rejected() {
         .unwrap_err()
         .to_string()
         .contains("more than one attention mark"));
+
+    value["attention_marks"] = json!([{
+        "chunk_id": "c2",
+        "token_id": {"kind":"recognition", "run_id":"run", "segment_id":"s1", "token_index":0}
+    }]);
+    fs::write(&input, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(load_document(&input)
+        .unwrap_err()
+        .to_string()
+        .contains("does not belong to its chunk"));
+}
+
+#[test]
+fn legacy_attention_marks_gain_chunk_targets_in_current_and_historical_states() {
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("legacy-marks.json");
+    let output = directory.path().join("saved.json");
+    baseline(&input, "missing.wav");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&input).unwrap()).unwrap();
+    let legacy_mark = json!({
+        "token_id": {"kind":"recognition", "run_id":"run", "segment_id":"s1", "token_index":0}
+    });
+    value["attention_marks"] = json!([legacy_mark.clone()]);
+    value["edit_history"] = json!([{"before": {
+        "paragraphs": value["paragraphs"].clone(),
+        "chunk_audio_mappings": value["chunk_audio_mappings"].clone(),
+        "token_audio_mappings": value["token_audio_mappings"].clone(),
+        "replay_chunks": [],
+        "attention_marks": [legacy_mark]
+    }}]);
+    fs::write(&input, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+    let mut project = load_project(&input).unwrap();
+    assert_eq!(project.attention_marks()[0].chunk_id(), "c1");
+    assert_eq!(project.undo(1), 1);
+    assert_eq!(project.attention_marks()[0].chunk_id(), "c1");
+    assert_eq!(project.redo(1), 1);
+    assert_eq!(project.attention_marks()[0].chunk_id(), "c1");
+
+    save_project(&output, &project).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
+    assert_eq!(saved["attention_marks"][0]["chunk_id"], "c1");
+    assert_eq!(
+        saved["edit_history"][0]["before"]["attention_marks"][0]["chunk_id"],
+        "c1"
+    );
 }
 
 #[test]

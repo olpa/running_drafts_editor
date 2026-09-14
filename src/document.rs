@@ -86,10 +86,16 @@ pub struct Document {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttentionMark {
-    token_id: VisibleTokenId,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) chunk_id: String,
+    pub(crate) token_id: VisibleTokenId,
 }
 
 impl AttentionMark {
+    pub fn chunk_id(&self) -> &str {
+        &self.chunk_id
+    }
+
     pub fn token_id(&self) -> &VisibleTokenId {
         &self.token_id
     }
@@ -475,9 +481,12 @@ impl crate::project::Project {
     }
 
     pub fn is_attention_marked(&self, token_id: &VisibleTokenId) -> bool {
+        let Some(chunk_id) = self.chunk_id_for_visible_token(token_id) else {
+            return false;
+        };
         self.attention_marks
             .iter()
-            .any(|mark| mark.token_id == *token_id)
+            .any(|mark| mark.chunk_id == chunk_id && mark.token_id == *token_id)
     }
 
     pub fn mark_attention(&mut self, paragraph: usize, token: usize) -> Result<(), String> {
@@ -486,11 +495,17 @@ impl crate::project::Project {
             .ok_or_else(|| format!("unknown token {paragraph}.{token}"))?
             .id()
             .clone();
+        let chunk_id = self
+            .chunk_for_token(paragraph, token)
+            .expect("a current token belongs to a chunk")
+            .1
+            .to_owned();
         if self.is_attention_marked(&token_id) {
             return Err(format!("token {paragraph}.{token} is already marked"));
         }
         self.remember_editable_state();
-        self.attention_marks.push(AttentionMark { token_id });
+        self.attention_marks
+            .push(AttentionMark { chunk_id, token_id });
         Ok(())
     }
 
@@ -500,10 +515,15 @@ impl crate::project::Project {
             .ok_or_else(|| format!("unknown token {paragraph}.{token}"))?
             .id()
             .clone();
+        let chunk_id = self
+            .chunk_for_token(paragraph, token)
+            .expect("a current token belongs to a chunk")
+            .1
+            .to_owned();
         let Some(index) = self
             .attention_marks
             .iter()
-            .position(|mark| mark.token_id == token_id)
+            .position(|mark| mark.chunk_id == chunk_id && mark.token_id == token_id)
         else {
             return Err(format!("token {paragraph}.{token} is not marked"));
         };
@@ -604,6 +624,22 @@ impl crate::project::Project {
             .map(|(index, marker)| (index + 1, marker.chunk_id.as_str()))
     }
 
+    fn chunk_id_for_visible_token(&self, token_id: &VisibleTokenId) -> Option<&str> {
+        for paragraph in &self.paragraphs {
+            let mut start = 0;
+            for marker in &paragraph.chunk_boundaries {
+                if paragraph.tokens[start..marker.after_tokens]
+                    .iter()
+                    .any(|token| token.id == *token_id)
+                {
+                    return Some(&marker.chunk_id);
+                }
+                start = marker.after_tokens;
+            }
+        }
+        None
+    }
+
     pub fn install_chunk_recognition(
         &mut self,
         paragraph_number: usize,
@@ -679,7 +715,7 @@ impl crate::project::Project {
         self.resolved_issues
             .retain(|issue| !issue.token_ids.iter().any(|id| removed.contains(id)));
         self.attention_marks
-            .retain(|mark| !removed.contains(&mark.token_id));
+            .retain(|mark| mark.chunk_id != chunk_id || !removed.contains(&mark.token_id));
         let new_ids = tokens.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
         let delta = tokens.len() as isize - (end - start) as isize;
         let paragraph = &mut self.document.paragraphs[paragraph_number - 1];
@@ -1835,6 +1871,7 @@ mod tests {
         let initial = run("initial", "stable", "s1", "old");
         let mut document = Project::from_run(&initial);
         let mapping = document.chunk_audio_mapping("stable").unwrap().clone();
+        document.mark_attention(1, 1).unwrap();
 
         document
             .install_chunk_recognition(1, 1, run("refresh", "ignored", "s2", "new"))
@@ -1846,6 +1883,12 @@ mod tests {
             "stable"
         );
         assert_eq!(document.chunk_audio_mapping("stable"), Some(&mapping));
+        assert!(document.attention_marks().is_empty());
+        assert_eq!(document.undo(1), 1);
+        assert_eq!(document.attention_marks()[0].chunk_id(), "stable");
+        assert!(document.is_attention_marked(document.token(1, 1).unwrap().id()));
+        assert_eq!(document.redo(1), 1);
+        assert!(document.attention_marks().is_empty());
     }
 
     #[test]
@@ -1867,6 +1910,21 @@ mod tests {
         document.insert_text(1, 1, false, "new ".into()).unwrap();
         assert_eq!(document.redo_history_len(), 0);
         assert_eq!(document.redo(5), 0);
+    }
+
+    #[test]
+    fn attention_mark_address_is_derived_after_an_insertion() {
+        let segments = vec![segment("s1", "a b", vec![token("a"), token(" b")])];
+        let chunks = vec![chunk("stable", "s1", "a b", ChunkBoundaryReason::SourceEnd)];
+        let mut project = Project::from_evidence("run", &segments, &chunks);
+        let marked_id = project.token(1, 2).unwrap().id().clone();
+        project.mark_attention(1, 2).unwrap();
+
+        project.insert_text(1, 1, false, "new ".into()).unwrap();
+
+        assert_eq!(project.attention_marks()[0].chunk_id(), "stable");
+        assert_eq!(project.token(1, 3).unwrap().id(), &marked_id);
+        assert!(project.is_attention_marked(project.token(1, 3).unwrap().id()));
     }
 
     #[test]
