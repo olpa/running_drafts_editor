@@ -1,4 +1,4 @@
-use running_drafts_editor::document::{Document, VisibleTokenId};
+use running_drafts_editor::{document::VisibleTokenId, project::Project};
 use serde_json::json;
 
 #[test]
@@ -8,7 +8,7 @@ fn editing_a_resolved_token_invalidates_resolution_and_undo_restores_it() {
         segment_id: "segment".into(),
         token_index,
     };
-    let mut document: Document = serde_json::from_value(json!({
+    let mut document: Project = serde_json::from_value(json!({
         "schema":"rde-document/v1-experimental",
         "id":"document:issues",
         "paragraphs":[{"id":"p","revision":1,"tokens":[

@@ -15,7 +15,9 @@ _Avoid_: Document as a name for the complete working set.
 
 **Document**:
 The editable composition that arranges chunks into paragraphs. Its visible text
-comes from each chunk's current transcription.
+comes from each chunk's current transcription. Supporting audio, transcription
+evidence, review state, and history belong to the project rather than the
+document.
 _Avoid_: Draft, project, visible document.
 
 **Recording**:
@@ -143,8 +145,10 @@ confirmed error or proposed correction.
 _Avoid_: Review item, warning, error, suggestion.
 
 **Attention mark**:
-A user-created marker before a token indicating that nearby text should be
-reviewed later. It is distinct from a system-generated issue.
+A project-owned marker before a current token in a particular chunk, indicating
+that nearby text should be reviewed later. Moving the chunk between paragraphs
+does not change the mark; replacing the targeted token removes it, while undo
+may restore both. It is distinct from a system-generated issue.
 _Avoid_: Issue, flag.
 
 ### Interaction

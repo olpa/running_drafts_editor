@@ -4,13 +4,13 @@ use std::io::{self, Write};
 
 use crate::{
     chunking::{read_canonical_wav, SourceFacts},
-    document::Document,
     navigation::{tokens_in_range, Address, NavigationState, PositionAddress, TokenAddress},
+    project::Project,
     recognition::{ChunkRefreshRequest, RecognizerSession},
 };
 
 pub(crate) fn preserve_boundary_whitespace(
-    document: &Document,
+    document: &Project,
     start: TokenAddress,
     end: TokenAddress,
     replacement: String,
@@ -49,7 +49,7 @@ pub(crate) fn preserve_boundary_whitespace(
 }
 
 pub(crate) fn apply_history(
-    document: &mut Document,
+    document: &mut Project,
     navigation: &mut NavigationState,
     count: usize,
     redo: bool,
@@ -74,7 +74,7 @@ pub(crate) fn apply_history(
 }
 
 pub(crate) fn render_alternatives(
-    document: &Document,
+    document: &Project,
     navigation: &NavigationState,
     addressed: Option<TokenAddress>,
     output: &mut impl Write,
@@ -105,7 +105,7 @@ pub(crate) fn render_alternatives(
 }
 
 pub(crate) fn alternative_address(
-    document: &Document,
+    document: &Project,
     navigation: &NavigationState,
     addressed: Option<TokenAddress>,
 ) -> Result<TokenAddress, String> {
@@ -121,7 +121,7 @@ pub(crate) fn alternative_address(
 }
 
 pub(crate) fn edit_range(
-    document: &Document,
+    document: &Project,
     navigation: &NavigationState,
     addressed: Option<Address>,
 ) -> Result<(TokenAddress, TokenAddress), crate::navigation::NavigationError> {
@@ -143,7 +143,7 @@ pub(crate) fn edit_range(
 }
 
 pub(crate) fn chunk_prefix(
-    document: &Document,
+    document: &Project,
     address: TokenAddress,
     through: usize,
 ) -> Option<String> {
@@ -161,7 +161,7 @@ pub(crate) fn chunk_prefix(
 }
 
 pub(crate) fn resolve_current_chunk(
-    document: &Document,
+    document: &Project,
     navigation: &NavigationState,
 ) -> Option<(usize, usize)> {
     let address = navigation.current_chunk_address(document).ok()?;
@@ -170,7 +170,7 @@ pub(crate) fn resolve_current_chunk(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_corrected_refresh(
-    document: &mut Document,
+    document: &mut Project,
     navigation: &mut NavigationState,
     recognizer: &mut Option<RecognizerSession>,
     language: &str,
@@ -217,7 +217,7 @@ fn prepend_beginning_timestamp(forced: &mut Vec<i32>, beginning_timestamp: i32) 
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_refresh(
-    document: &mut Document,
+    document: &mut Project,
     navigation: &mut NavigationState,
     recognizer: &mut Option<RecognizerSession>,
     language: &str,
@@ -332,7 +332,7 @@ pub(crate) fn run_refresh(
 }
 
 pub(crate) fn apply_paragraph_split(
-    document: &mut Document,
+    document: &mut Project,
     navigation: &mut NavigationState,
     addressed: Option<(usize, usize)>,
     output: &mut impl Write,
@@ -386,7 +386,7 @@ pub(crate) fn apply_paragraph_split(
 }
 
 pub(crate) fn apply_paragraph_merge(
-    document: &mut Document,
+    document: &mut Project,
     navigation: &mut NavigationState,
     paragraph: usize,
     output: &mut impl Write,
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn all_whitespace_selection_does_not_contribute_boundaries() {
-        let document: Document = serde_json::from_value(json!({
+        let document: Project = serde_json::from_value(json!({
             "schema": "rde-document/v1-experimental",
             "id": "document:test",
             "paragraphs": [{
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn replacement_keeps_unicode_boundary_whitespace() {
-        let document: Document = serde_json::from_value(json!({
+        let document: Project = serde_json::from_value(json!({
             "schema": "rde-document/v1-experimental",
             "id": "document:test",
             "paragraphs": [{

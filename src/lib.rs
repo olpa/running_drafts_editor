@@ -4,6 +4,7 @@ pub mod chunking;
 pub mod document;
 pub mod navigation;
 pub mod persistence;
+pub mod project;
 pub mod recognition;
 pub mod replay;
 pub mod session;

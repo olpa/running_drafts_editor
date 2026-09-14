@@ -1,4 +1,4 @@
-//! Versioned persistence for the authoritative visible document.
+//! Versioned persistence for a project and its authoritative document.
 
 use std::{
     collections::HashSet,
@@ -7,7 +7,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::document::{Document, VisibleTokenId, DOCUMENT_SCHEMA};
+use crate::{
+    document::VisibleTokenId,
+    project::{Project, PROJECT_SCHEMA},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DocumentIoError {
@@ -18,7 +21,7 @@ pub enum DocumentIoError {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("unsupported document schema '{found}'; expected '{DOCUMENT_SCHEMA}'")]
+    #[error("unsupported project schema '{found}'; expected '{PROJECT_SCHEMA}'")]
     UnsupportedSchema { found: String },
     #[error("invalid document: {0}")]
     Invalid(String),
@@ -31,22 +34,27 @@ pub enum DocumentIoError {
     },
 }
 
-pub fn load_document(path: &Path) -> Result<Document, DocumentIoError> {
+/// Project-oriented name for the persistence error. The original name remains
+/// available because it is part of the experimental public API.
+pub type ProjectIoError = DocumentIoError;
+
+pub fn load_project(path: &Path) -> Result<Project, ProjectIoError> {
     let file = fs::File::open(path).map_err(|source| DocumentIoError::Open {
         path: path.into(),
         source,
     })?;
-    let document =
+    let mut project =
         serde_json::from_reader(BufReader::new(file)).map_err(|source| DocumentIoError::Read {
             path: path.into(),
             source,
         })?;
-    validate(&document)?;
-    Ok(document)
+    migrate_legacy_attention_marks(&mut project)?;
+    validate(&project)?;
+    Ok(project)
 }
 
-pub fn save_document(path: &Path, document: &Document) -> Result<(), DocumentIoError> {
-    validate(document)?;
+pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError> {
+    validate(project)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path
         .file_name()
@@ -84,7 +92,7 @@ pub fn save_document(path: &Path, document: &Document) -> Result<(), DocumentIoE
     };
     let result = (|| {
         let mut writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(&mut writer, document).map_err(|source| {
+        serde_json::to_writer_pretty(&mut writer, project).map_err(|source| {
             DocumentIoError::Encode {
                 path: path.into(),
                 source,
@@ -120,15 +128,15 @@ pub fn save_document(path: &Path, document: &Document) -> Result<(), DocumentIoE
 
 /// Write disposable plain text, including intentional attention flags but no
 /// recognition or replay metadata.
-pub fn export_text(path: &Path, document: &Document) -> Result<(), DocumentIoError> {
-    validate(document)?;
+pub fn export_text(path: &Path, project: &Project) -> Result<(), DocumentIoError> {
+    validate(project)?;
     let mut bytes = Vec::new();
-    for (paragraph_index, paragraph) in document.paragraphs().iter().enumerate() {
+    for (paragraph_index, paragraph) in project.paragraphs().iter().enumerate() {
         if paragraph_index > 0 {
             bytes.extend_from_slice(b"\n\n");
         }
         for token in paragraph.tokens() {
-            if document.is_attention_marked(token.id()) {
+            if project.is_attention_marked(token.id()) {
                 bytes.extend_from_slice("⚑".as_bytes());
             }
             bytes.extend_from_slice(token.text().as_bytes());
@@ -140,8 +148,8 @@ pub fn export_text(path: &Path, document: &Document) -> Result<(), DocumentIoErr
     })
 }
 
-pub(crate) fn validate(document: &Document) -> Result<(), DocumentIoError> {
-    if document.schema() != DOCUMENT_SCHEMA {
+pub(crate) fn validate(document: &Project) -> Result<(), DocumentIoError> {
+    if document.schema() != PROJECT_SCHEMA {
         return Err(DocumentIoError::UnsupportedSchema {
             found: document.schema().into(),
         });
@@ -282,11 +290,31 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentIoError> {
                 "attention mark refers to an unknown visible token".into(),
             ));
         }
-        if !marked_tokens.insert(key) {
+        if !chunk_ids.contains(mark.chunk_id()) {
+            return Err(DocumentIoError::Invalid(format!(
+                "attention mark refers to unknown chunk '{}'",
+                mark.chunk_id()
+            )));
+        }
+        if chunk_id_for_token(document.paragraphs(), mark.token_id()) != Some(mark.chunk_id()) {
+            return Err(DocumentIoError::Invalid(
+                "attention mark token does not belong to its chunk".into(),
+            ));
+        }
+        if !marked_tokens.insert((mark.chunk_id(), key)) {
             return Err(DocumentIoError::Invalid(
                 "visible token has more than one attention mark".into(),
             ));
         }
+    }
+    for entry in &document.edit_history {
+        validate_historical_attention_marks(
+            &entry.before.paragraphs,
+            &entry.before.attention_marks,
+        )?;
+    }
+    for state in &document.redo_history {
+        validate_historical_attention_marks(&state.paragraphs, &state.attention_marks)?;
     }
     if !document.replay_chunks().is_empty() {
         let mut replay_chunk_ids = HashSet::new();
@@ -420,6 +448,83 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentIoError> {
         }
     }
     Ok(())
+}
+
+fn migrate_legacy_attention_marks(project: &mut Project) -> Result<(), DocumentIoError> {
+    migrate_marks(&project.document.paragraphs, &mut project.attention_marks)?;
+    for entry in &mut project.edit_history {
+        migrate_marks(&entry.before.paragraphs, &mut entry.before.attention_marks)?;
+    }
+    for state in &mut project.redo_history {
+        migrate_marks(&state.paragraphs, &mut state.attention_marks)?;
+    }
+    Ok(())
+}
+
+fn migrate_marks(
+    paragraphs: &[crate::document::Paragraph],
+    marks: &mut [crate::document::AttentionMark],
+) -> Result<(), DocumentIoError> {
+    for mark in marks.iter_mut().filter(|mark| mark.chunk_id.is_empty()) {
+        mark.chunk_id = chunk_id_for_token(paragraphs, &mark.token_id)
+            .ok_or_else(|| {
+                DocumentIoError::Invalid("attention mark refers to an unknown visible token".into())
+            })?
+            .to_owned();
+    }
+    Ok(())
+}
+
+fn chunk_id_for_token<'a>(
+    paragraphs: &'a [crate::document::Paragraph],
+    token_id: &VisibleTokenId,
+) -> Option<&'a str> {
+    for paragraph in paragraphs {
+        let mut start = 0;
+        for marker in paragraph.chunk_boundaries() {
+            let tokens = paragraph.tokens().get(start..marker.after_tokens())?;
+            if tokens.iter().any(|token| token.id() == token_id) {
+                return Some(marker.chunk_id());
+            }
+            start = marker.after_tokens();
+        }
+    }
+    None
+}
+
+fn validate_historical_attention_marks(
+    paragraphs: &[crate::document::Paragraph],
+    marks: &[crate::document::AttentionMark],
+) -> Result<(), DocumentIoError> {
+    let mut targets = HashSet::new();
+    for mark in marks {
+        let Some(actual_chunk_id) = chunk_id_for_token(paragraphs, mark.token_id()) else {
+            return Err(DocumentIoError::Invalid(
+                "historical attention mark refers to an unknown visible token".into(),
+            ));
+        };
+        if actual_chunk_id != mark.chunk_id() {
+            return Err(DocumentIoError::Invalid(
+                "historical attention mark token does not belong to its chunk".into(),
+            ));
+        }
+        if !targets.insert((mark.chunk_id(), token_id_key(mark.token_id()))) {
+            return Err(DocumentIoError::Invalid(
+                "historical visible token has more than one attention mark".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Compatibility wrapper for the original API name.
+pub fn load_document(path: &Path) -> Result<Project, DocumentIoError> {
+    load_project(path)
+}
+
+/// Compatibility wrapper for the original API name.
+pub fn save_document(path: &Path, project: &Project) -> Result<(), DocumentIoError> {
+    save_project(path, project)
 }
 
 fn token_id_key(id: &VisibleTokenId) -> String {

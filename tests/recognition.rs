@@ -6,8 +6,8 @@ use std::{
 
 use running_drafts_editor::{
     chunking::{SampleRange, SourceFacts},
-    document::Document,
     persistence::load_document,
+    project::Project,
     recognition::{
         recognize, AdvanceReason, ChunkBoundaryReason, PostChunkConfig, RecognitionConfig,
         RecognitionStatus, RecognitionToken, RecognizerIdentity, WindowDecoder, WindowSegment,
@@ -26,7 +26,7 @@ fn open_audio(
     player: &mut FakePlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    let document = Document::from_run_with_source(run, Some(source));
+    let document = Project::from_run_with_source(run, Some(source));
     run_session(
         &document,
         SessionContext::recognized_audio(run, source, document_path, None),
