@@ -9,7 +9,7 @@ use std::{
 use serde_json::json;
 
 #[test]
-fn attention_commands_use_addresses_caret_and_selection_start() {
+fn attention_commands_use_hierarchical_addresses_and_selection() {
     let directory = tempfile::tempdir().unwrap();
     let document = directory.path().join("attention.json");
     let exported = directory.path().join("attention.txt");
@@ -29,7 +29,7 @@ fn attention_commands_use_addresses_caret_and_selection_start() {
         .spawn()
         .unwrap();
     let commands = format!(
-        "1.2mark\n1.2mark\n1.1,1.3select\nmark\nundo\nredo\np\n1@1\nmark\n1select\nunmark\n1.1unmark\nexport {}\nsave\nq\n",
+        "1.1.2mark\n1.1.2mark\n1.1.1,1.1.2select\nmark\nundo\nredo\np\n1.1\nmark\n1select\nunmark\n1.1.1unmark\nexport {}\nsave\nq\n",
         exported.display()
     );
     child
@@ -42,7 +42,7 @@ fn attention_commands_use_addresses_caret_and_selection_start() {
     assert!(result.status.success());
     let output = String::from_utf8(result.stdout).unwrap();
     let errors = String::from_utf8(result.stderr).unwrap();
-    assert!(output.contains("marked 1.1"));
+    assert!(output.contains("marked 1.1.1"));
     assert!(output.contains("⚑one"));
     assert!(output.contains("⚑ two"));
     assert!(errors.contains("token 1.2 is already marked"));
@@ -90,7 +90,7 @@ fn edit_defers_loading_a_configured_model_until_recognition_is_used() {
         .unwrap()
         .contains("could not load model"));
 
-    let used = run(b"1@1refresh\nq\n");
+    let used = run(b"1.1refresh\nq\n");
     assert!(used.status.success());
     assert!(String::from_utf8(used.stderr)
         .unwrap()
@@ -125,19 +125,18 @@ fn confidence_issues_navigate_resolve_persist_and_undo_without_color_on_redirect
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(b"issues\nnext\nnext\nnext\nprev\n1.1,1.2select\nresolve\nissues\nundo\nissues\nredo\nissues\n1unignore\nissue-prob red 0.1\nissues\nissue-prob orange 0.1\nissue-prob\n1resolve\nsave\nq\n").unwrap();
+    child.stdin.take().unwrap().write_all(b"issues\nnext\nnext\nnext\nprev\n1.1.1,1.1.3select\nresolve\nissues\nundo\nissues\nredo\nissues\n1unignore\nissue-prob red 0.1\nissues\nissue-prob orange 0.1\nissue-prob\n1resolve\nsave\nq\n").unwrap();
     let result = child.wait_with_output().unwrap();
     assert!(result.status.success());
     let output = String::from_utf8(result.stdout).unwrap();
     let errors = String::from_utf8(result.stderr).unwrap();
     assert!(output.contains("1  open  \"bad\\ntwo\""));
-    assert!(output.contains("selected 1.4,1.4"));
-    assert!(output.matches("selected 1.4,1.4").count() >= 2);
-    assert!(output.contains("selected 1.1,1.2"));
-    assert!(output.contains("selected 1.1,1.2 (wrapped)"));
-    assert!(output.contains("selected 2.1,2.1 (wrapped)"));
+    assert!(output.contains("selected 1.2.1,1.2.2"));
+    assert!(output.matches("selected 1.2.1,1.2.2").count() >= 2);
+    assert!(output.contains("selected 1.1.1,1.1.3"));
+    assert!(output.contains("selected 2.1.1,2.1.2 (wrapped)"));
     assert!(output.contains("1  resolved  \"bad\\ntwo\""));
-    assert!(output.contains("reopened 1.1,1.2"));
+    assert!(output.contains("reopened 1.1.1,1.1.3"));
     assert!(output.contains("issue-prob red 0.1 orange 0.5"));
     assert!(!output.contains("\u{1b}["));
     assert!(errors.contains("issue-prob red must be less than orange"));
@@ -190,7 +189,7 @@ fn lists_every_alternative_but_requires_a_model_before_choose() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"1.1alts\n1.1choose 3\n1.1alts\nsave\nq\n")
+        .write_all(b"1.1.1alts\n1.1.1choose 3\n1.1.1alts\nsave\nq\n")
         .unwrap();
     let result = child.wait_with_output().unwrap();
     assert!(result.status.success());
@@ -243,7 +242,7 @@ fn edit_opens_prints_and_navigates_without_audio_or_recognition() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"1.2\np\nsave\nq\n")
+        .write_all(b"1.1.2\np\nsave\nq\n")
         .unwrap();
     let result = child.wait_with_output().unwrap();
 
@@ -256,7 +255,7 @@ fn edit_opens_prints_and_navigates_without_audio_or_recognition() {
     let output = String::from_utf8(result.stdout).unwrap();
     let errors = String::from_utf8(result.stderr).unwrap();
     assert!(output.contains("hello world"));
-    assert!(output.contains("caret 1.2"));
+    assert!(output.contains("position 1.1.2"));
     assert!(output.contains(&format!("saved {}", document.display())));
     assert!(errors.contains("text remains editable"));
 }
@@ -292,17 +291,19 @@ fn bare_tokens_lists_the_selection_with_five_tokens_of_numbered_context() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"tokens\n1.7,2.2select\ntokens\nq\n")
+        .write_all(b"tokens\n1.1.7,2.1.3select\ntokens\nq\n")
         .unwrap();
     let result = child.wait_with_output().unwrap();
     assert!(result.status.success());
     let output = String::from_utf8(result.stdout).unwrap();
     let errors = String::from_utf8(result.stderr).unwrap();
-    assert!(errors.contains("tokens requires an active token selection or a paragraph address M"));
-    assert!(output.contains("1.2      -"));
-    assert!(output.contains("2.7      -"));
-    assert!(!output.contains("1.1      -"));
-    assert!(!output.contains("2.8      -"));
+    assert!(
+        errors.contains("tokens requires a selection containing tokens or a paragraph position N")
+    );
+    assert!(output.contains("1.1.2      -"));
+    assert!(output.contains("2.1.7      -"));
+    assert!(!output.contains("1.1.1      -"));
+    assert!(!output.contains("2.1.8      -"));
 }
 
 #[test]
@@ -430,7 +431,7 @@ fn session_edits_exact_pseudo_tokens_preserves_mappings_and_rejects_cross_paragr
         .take()
         .unwrap()
         .write_all(
-            b"1.2insert inserted words\n1.3append appended words\n1.2,1.4replace \" exact text  \"\n1.3,2.1replace forbidden\n1.3,1.3delete\nsave\nq\n",
+            b"1.2.1insert inserted words\n1.2.2append appended words\n1.2.1,1.2.3replace \" exact text  \"\n1.2.2,2.1.1replace forbidden\n1.2.1,1.2.2delete\nsave\nq\n",
         )
         .unwrap();
     let result = child.wait_with_output().unwrap();
@@ -493,7 +494,7 @@ fn unaddressed_replace_requires_a_model_and_keeps_the_selection_text() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"1.1,1.2select\nreplace Oleg\nsave\nq\n")
+        .write_all(b"1.1.1,1.1.2select\nreplace Oleg\nsave\nq\n")
         .unwrap();
     let result = child.wait_with_output().unwrap();
 
@@ -540,7 +541,7 @@ fn replacement_without_a_model_does_not_change_boundary_whitespace() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"1.2,1.2replace new text\np\n1.2,1.2replace \"tight\"\nsave\nq\n")
+        .write_all(b"1.1.2,1.1.3replace new text\np\n1.1.2,1.1.3replace \"tight\"\nsave\nq\n")
         .unwrap();
     let result = child.wait_with_output().unwrap();
 
@@ -620,7 +621,7 @@ fn rejected_chunk_commands_do_not_mutate_and_paragraph_commands_preserve_chunks(
         .take()
         .unwrap()
         .write_all(
-            b"split\n1.2split\nisplit\n1.2isplit\nasplit\n1.2asplit\n1@1merge\n1@1parasplit\n1merge\n9undo\n9redo\nsave\nq\n",
+            b"split\n1.2split\nisplit\n1.2isplit\nasplit\n1.2asplit\n1.1merge\n1.2parasplit\n1merge\n9undo\n9redo\nsave\nq\n",
         )
         .unwrap();
     let result = child.wait_with_output().unwrap();
@@ -632,13 +633,13 @@ fn rejected_chunk_commands_do_not_mutate_and_paragraph_commands_preserve_chunks(
         String::from_utf8_lossy(&result.stderr)
     );
     let output = String::from_utf8(result.stdout).unwrap();
-    assert!(output.contains("split paragraph 1 after 1@1"));
+    assert!(output.contains("split paragraph 1 before 1.2"));
     assert!(output.contains("merged paragraphs 1 and 2"));
     assert!(output.contains("undid 2 edits"));
     assert!(output.contains("redid 2 edits"));
     let errors = String::from_utf8(result.stderr).unwrap();
     assert_eq!(errors.matches("unknown command").count(), 6);
-    assert!(errors.contains("merge does not accept address '1@1'; expected a paragraph M address"));
+    assert!(errors.contains("merge does not accept address '1.1'; expected a paragraph position N"));
 
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(saved["paragraphs"].as_array().unwrap().len(), 1);

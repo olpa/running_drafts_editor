@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     document::{Document, VisibleTokenId},
-    navigation::{Address, Caret, NavigationState, Selection, TokenAddress},
+    navigation::{Address, NavigationState, PositionAddress, TokenAddress},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -79,7 +79,7 @@ pub(crate) fn entries(document: &Document, settings: IssueThresholds) -> Vec<Iss
     let mut result = Vec::new();
     for (pi, paragraph) in document.paragraphs().iter().enumerate() {
         let mut chunk_start = 0;
-        for marker in paragraph.chunk_boundaries() {
+        for (chunk_index, marker) in paragraph.chunk_boundaries().iter().enumerate() {
             let mut open_start = None;
             for ti in chunk_start..marker.after_tokens() {
                 let token = &paragraph.tokens()[ti];
@@ -90,12 +90,28 @@ pub(crate) fn entries(document: &Document, settings: IssueThresholds) -> Vec<Iss
                 }
                 if !red {
                     if let Some(start) = open_start.take() {
-                        push_open(&mut result, paragraph, pi, start, ti - 1);
+                        push_open(
+                            &mut result,
+                            paragraph,
+                            pi,
+                            chunk_index,
+                            chunk_start,
+                            start,
+                            ti - 1,
+                        );
                     }
                 }
             }
             if let Some(start) = open_start {
-                push_open(&mut result, paragraph, pi, start, marker.after_tokens() - 1);
+                push_open(
+                    &mut result,
+                    paragraph,
+                    pi,
+                    chunk_index,
+                    chunk_start,
+                    start,
+                    marker.after_tokens() - 1,
+                );
             }
             chunk_start = marker.after_tokens();
         }
@@ -123,17 +139,21 @@ fn push_open(
     out: &mut Vec<IssueEntry>,
     paragraph: &crate::document::Paragraph,
     pi: usize,
+    chunk_index: usize,
+    chunk_start: usize,
     start: usize,
     end: usize,
 ) {
     out.push(IssueEntry {
         start: TokenAddress {
             paragraph: pi + 1,
-            token: start + 1,
+            chunk: chunk_index + 1,
+            token: start - chunk_start + 1,
         },
         end: TokenAddress {
             paragraph: pi + 1,
-            token: end + 1,
+            chunk: chunk_index + 1,
+            token: end - chunk_start + 1,
         },
         token_ids: paragraph.tokens()[start..=end]
             .iter()
@@ -148,17 +168,19 @@ fn find_token(document: &Document, id: &VisibleTokenId) -> Option<TokenAddress> 
         .iter()
         .enumerate()
         .find_map(|(pi, p)| {
-            p.tokens()
-                .iter()
-                .position(|t| t.id() == id)
-                .map(|ti| TokenAddress {
-                    paragraph: pi + 1,
-                    token: ti + 1,
-                })
+            p.tokens().iter().position(|t| t.id() == id).and_then(|ti| {
+                document
+                    .chunk_token_address(pi + 1, ti + 1)
+                    .map(|(chunk, token)| TokenAddress {
+                        paragraph: pi + 1,
+                        chunk,
+                        token,
+                    })
+            })
         })
 }
 fn position_cmp(a: TokenAddress, b: TokenAddress) -> Ordering {
-    (a.paragraph, a.token).cmp(&(b.paragraph, b.token))
+    (a.paragraph, a.chunk, a.token).cmp(&(b.paragraph, b.chunk, b.token))
 }
 
 pub(crate) fn list(
@@ -206,10 +228,12 @@ pub(crate) fn navigate(
     let (low, high) = navigation_bounds(document, navigation).unwrap_or((
         TokenAddress {
             paragraph: 0,
+            chunk: 0,
             token: 0,
         },
         TokenAddress {
             paragraph: 0,
+            chunk: 0,
             token: 0,
         },
     ));
@@ -228,19 +252,22 @@ pub(crate) fn navigate(
     navigation
         .select(
             document,
-            &Address::TokenRange {
-                start: issue.start,
-                end: issue.end,
+            &Address::Range {
+                start: PositionAddress::Token(issue.start),
+                end: PositionAddress::Token(TokenAddress {
+                    token: issue.end.token + 1,
+                    ..issue.end
+                }),
             },
         )
         .expect("current issue addresses resolve");
     writeln!(
         output,
-        "selected {}.{},{}.{}{}",
-        issue.start.paragraph,
-        issue.start.token,
+        "selected {},{}.{}.{}{}",
+        issue.start,
         issue.end.paragraph,
-        issue.end.token,
+        issue.end.chunk,
+        issue.end.token + 1,
         if wrapped { " (wrapped)" } else { "" }
     )
 }
@@ -249,70 +276,13 @@ fn navigation_bounds(
     document: &Document,
     navigation: &NavigationState,
 ) -> Option<(TokenAddress, TokenAddress)> {
-    match navigation.selection() {
-        Some(Selection::Tokens {
-            start,
-            end_inclusive,
-            ..
-        }) => Some((
-            find_token(document, &start.token_id)?,
-            find_token(document, &end_inclusive.token_id)?,
-        )),
-        Some(Selection::Paragraph { paragraph_id, .. }) => {
-            let p = document
-                .paragraphs()
-                .iter()
-                .position(|p| p.id() == paragraph_id)?
-                + 1;
-            Some((
-                TokenAddress {
-                    paragraph: p,
-                    token: 0,
-                },
-                TokenAddress {
-                    paragraph: p,
-                    token: usize::MAX,
-                },
-            ))
-        }
-        Some(Selection::Marker(m)) => marker_bounds(document, &m.paragraph_id, &m.chunk_id),
-        Some(Selection::MarkerRange {
-            start,
-            end_exclusive,
-            ..
-        }) => Some((
-            marker_bounds(document, &start.paragraph_id, &start.chunk_id)?.0,
-            marker_bounds(
-                document,
-                &end_exclusive.paragraph_id,
-                &end_exclusive.chunk_id,
-            )?
-            .1,
-        )),
-        None => match navigation.caret()? {
-            Caret::Token(t) => find_token(document, &t.token_id).map(|a| (a, a)),
-            Caret::Marker(m) => marker_bounds(document, &m.paragraph_id, &m.chunk_id),
-        },
-    }
-}
-fn marker_bounds(
-    document: &Document,
-    pid: &str,
-    cid: &str,
-) -> Option<(TokenAddress, TokenAddress)> {
-    let (pi, p) = document
-        .paragraphs()
-        .iter()
-        .enumerate()
-        .find(|(_, p)| p.id() == pid)?;
-    let n = p
-        .chunk_boundaries()
-        .iter()
-        .find(|m| m.chunk_id() == cid)?
-        .after_tokens();
-    let a = TokenAddress {
-        paragraph: pi + 1,
-        token: n,
-    };
-    Some((a, a))
+    navigation
+        .selected_token_endpoints(document)
+        .ok()
+        .or_else(|| {
+            navigation
+                .current_token_address(document)
+                .ok()
+                .map(|a| (a, a))
+        })
 }
