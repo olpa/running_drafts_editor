@@ -146,6 +146,73 @@ fn confidence_issues_navigate_resolve_persist_and_undo_without_color_on_redirect
 }
 
 #[test]
+fn issue_commands_recalculate_addresses_after_a_chunk_moves_to_another_paragraph() {
+    let directory = tempfile::tempdir().unwrap();
+    let document = directory.path().join("moved-issue.rde.json");
+    let rid = |token_index| {
+        json!({
+            "kind":"recognition", "run_id":"run", "segment_id":"segment",
+            "token_index":token_index
+        })
+    };
+    let token = |token_index, text: &str| {
+        json!({
+            "id":rid(token_index), "text":text, "origin":{"kind":"recognition"}
+        })
+    };
+    let value = json!({
+        "schema":"rde-document/v1-experimental", "id":"document:moved-issue",
+        "paragraphs":[{
+            "id":"paragraph", "revision":1,
+            "tokens":[token(0, "clear"), token(1, " uncertain")],
+            "chunk_boundaries":[
+                {"chunk_id":"clear-chunk", "after_tokens":1},
+                {"chunk_id":"issue-chunk", "after_tokens":2}
+            ]
+        }],
+        "recognition_token_evidence":[
+            {"token_id":rid(0), "recognition_token_id":1, "probability":0.9,
+             "alternatives":[]},
+            {"token_id":rid(1), "recognition_token_id":2, "probability":0.01,
+             "alternatives":[]}
+        ]
+    });
+    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
+        .args(["edit", document.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"issues\n1.2parasplit\nissues\nnext\nresolve\nissues\n1unignore\nissues\nq\n")
+        .unwrap();
+    let result = child.wait_with_output().unwrap();
+
+    assert!(
+        result.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let output = String::from_utf8(result.stdout).unwrap();
+    assert_eq!(
+        output.matches("1  open  \" uncertain\"").count(),
+        3,
+        "{output}"
+    );
+    assert!(output.contains("selected 2.1.1,2.1.2"));
+    assert!(output.contains("resolved 2.1.1,2.1.2"));
+    assert!(output.contains("1  resolved  \" uncertain\""));
+    assert!(output.contains("reopened 2.1.1,2.1.2"));
+}
+
+#[test]
 fn lists_every_alternative_but_requires_a_model_before_choose() {
     let directory = tempfile::tempdir().unwrap();
     let document = directory.path().join("alternatives.rde.json");

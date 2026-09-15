@@ -1,3 +1,9 @@
+//! Short-lived projections of issues in the current document structure.
+//!
+//! Durable dismissed-issue state stores stable token identities. Build these
+//! entries when a command needs them, and do not retain an entry across a
+//! project mutation. See ADR-0011.
+
 use std::{
     cmp::Ordering,
     collections::HashSet,
@@ -198,7 +204,7 @@ pub(crate) fn list(
             .token_ids
             .iter()
             .filter_map(|id| find_token(document, id))
-            .filter_map(|a| document.token(a.paragraph, a.token))
+            .filter_map(|a| document.chunk_token(a.paragraph, a.chunk, a.token))
             .map(|t| t.text())
             .collect::<String>();
         writeln!(
