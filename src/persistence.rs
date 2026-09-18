@@ -7,13 +7,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{
-    document::VisibleTokenId,
-    project::{Project, PROJECT_SCHEMA},
-};
+use crate::project::{Project, PROJECT_SCHEMA};
 
 #[derive(Debug, thiserror::Error)]
-pub enum DocumentIoError {
+pub enum ProjectIoError {
     #[error("could not open document '{}': {source}", path.display())]
     Open { path: PathBuf, source: io::Error },
     #[error("could not read document '{}': {source}", path.display())]
@@ -34,21 +31,16 @@ pub enum DocumentIoError {
     },
 }
 
-/// Project-oriented name for the persistence error. The original name remains
-/// available because it is part of the experimental public API.
-pub type ProjectIoError = DocumentIoError;
-
 pub fn load_project(path: &Path) -> Result<Project, ProjectIoError> {
-    let file = fs::File::open(path).map_err(|source| DocumentIoError::Open {
+    let file = fs::File::open(path).map_err(|source| ProjectIoError::Open {
         path: path.into(),
         source,
     })?;
-    let mut project =
-        serde_json::from_reader(BufReader::new(file)).map_err(|source| DocumentIoError::Read {
+    let project =
+        serde_json::from_reader(BufReader::new(file)).map_err(|source| ProjectIoError::Read {
             path: path.into(),
             source,
         })?;
-    migrate_legacy_attention_marks(&mut project)?;
     validate(&project)?;
     Ok(project)
 }
@@ -74,7 +66,7 @@ pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(source) => {
-                return Err(DocumentIoError::Save {
+                return Err(ProjectIoError::Save {
                     path: path.into(),
                     source,
                 })
@@ -82,7 +74,7 @@ pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError
         }
     }
     let Some((temporary_path, file)) = temporary else {
-        return Err(DocumentIoError::Save {
+        return Err(ProjectIoError::Save {
             path: path.into(),
             source: io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -93,29 +85,29 @@ pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError
     let result = (|| {
         let mut writer = BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, project).map_err(|source| {
-            DocumentIoError::Encode {
+            ProjectIoError::Encode {
                 path: path.into(),
                 source,
             }
         })?;
         writer
             .write_all(b"\n")
-            .map_err(|source| DocumentIoError::Save {
+            .map_err(|source| ProjectIoError::Save {
                 path: path.into(),
                 source,
             })?;
-        writer.flush().map_err(|source| DocumentIoError::Save {
+        writer.flush().map_err(|source| ProjectIoError::Save {
             path: path.into(),
             source,
         })?;
         writer
             .get_ref()
             .sync_all()
-            .map_err(|source| DocumentIoError::Save {
+            .map_err(|source| ProjectIoError::Save {
                 path: path.into(),
                 source,
             })?;
-        fs::rename(&temporary_path, path).map_err(|source| DocumentIoError::Save {
+        fs::rename(&temporary_path, path).map_err(|source| ProjectIoError::Save {
             path: path.into(),
             source,
         })
@@ -127,413 +119,268 @@ pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError
 }
 
 /// Write disposable plain text, including intentional attention flags but no
-/// recognition or replay metadata.
-pub fn export_text(path: &Path, project: &Project) -> Result<(), DocumentIoError> {
+/// transcription or replay metadata.
+pub fn export_text(path: &Path, project: &Project) -> Result<(), ProjectIoError> {
     validate(project)?;
     let mut bytes = Vec::new();
     for (paragraph_index, paragraph) in project.paragraphs().iter().enumerate() {
         if paragraph_index > 0 {
             bytes.extend_from_slice(b"\n\n");
         }
-        for token in paragraph.tokens() {
-            if project.is_attention_marked(token.id()) {
-                bytes.extend_from_slice("⚑".as_bytes());
+        let mut start = 0;
+        for chunk in paragraph.chunk_boundaries() {
+            if chunk.after_tokens() == start {
+                bytes.extend_from_slice(chunk.text().as_bytes());
+            } else {
+                for token in &paragraph.tokens()[start..chunk.after_tokens()] {
+                    if project.is_attention_marked(token.id()) {
+                        bytes.extend_from_slice("⚑".as_bytes());
+                    }
+                    bytes.extend_from_slice(token.text().as_bytes());
+                }
             }
-            bytes.extend_from_slice(token.text().as_bytes());
+            start = chunk.after_tokens();
         }
     }
-    fs::write(path, bytes).map_err(|source| DocumentIoError::Save {
+    fs::write(path, bytes).map_err(|source| ProjectIoError::Save {
         path: path.into(),
         source,
     })
 }
 
-pub(crate) fn validate(document: &Project) -> Result<(), DocumentIoError> {
-    if document.schema() != PROJECT_SCHEMA {
-        return Err(DocumentIoError::UnsupportedSchema {
-            found: document.schema().into(),
+pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
+    if project.schema() != PROJECT_SCHEMA {
+        return Err(ProjectIoError::UnsupportedSchema {
+            found: project.schema().into(),
         });
     }
-    if document.id().is_empty() {
-        return Err(DocumentIoError::Invalid("document ID is empty".into()));
+    let invalid = |message: &str| ProjectIoError::Invalid(message.into());
+    if project.id().is_empty() {
+        return Err(invalid("document ID is empty"));
     }
-    let mut paragraph_ids = HashSet::new();
-    let mut token_ids = HashSet::new();
-    let mut chunk_ids = HashSet::new();
-    let mut evidence_ids = HashSet::new();
-    let mut run_ids = HashSet::new();
-    for run in document.recognition_runs() {
-        if run.id.is_empty() || !run_ids.insert(run.id.as_str()) {
-            return Err(DocumentIoError::Invalid(
-                "recognition run IDs must be nonempty and unique".into(),
+    let mut ids = HashSet::new();
+    for t in project.transcriptions() {
+        if t.id.is_empty() || t.chunk_id.is_empty() || !ids.insert(&t.id) {
+            return Err(invalid(
+                "transcription identities must be nonempty and unique",
             ));
         }
-    }
-    for evidence in document.recognition_token_evidence() {
-        if !matches!(evidence.token_id(), VisibleTokenId::Recognition { .. }) {
-            return Err(DocumentIoError::Invalid(
-                "recognition evidence refers to a pseudo-token".into(),
-            ));
-        }
-        if !run_ids.is_empty() {
-            let VisibleTokenId::Recognition {
-                run_id,
-                segment_id,
-                token_index,
-            } = evidence.token_id()
-            else {
-                unreachable!()
-            };
-            let run = document
-                .recognition_runs()
-                .iter()
-                .find(|run| &run.id == run_id)
-                .ok_or_else(|| {
-                    DocumentIoError::Invalid("recognition evidence refers to an unknown run".into())
-                })?;
-            if run
-                .segments
-                .iter()
-                .find(|segment| &segment.id == segment_id)
-                .and_then(|segment| segment.tokens.get(*token_index))
-                .is_none()
-            {
-                return Err(DocumentIoError::Invalid(
-                    "recognition evidence refers to an unknown run token".into(),
-                ));
-            }
-        }
-        if !evidence_ids.insert(token_id_key(evidence.token_id())) {
-            return Err(DocumentIoError::Invalid(
-                "duplicate recognition token evidence".into(),
-            ));
-        }
-    }
-    for paragraph in document.paragraphs() {
-        if !paragraph_ids.insert(paragraph.id()) {
-            return Err(DocumentIoError::Invalid(format!(
-                "duplicate paragraph ID '{}'",
-                paragraph.id()
-            )));
-        }
-        if paragraph.revision() == 0 {
-            return Err(DocumentIoError::Invalid(format!(
-                "paragraph '{}' has revision zero",
-                paragraph.id()
-            )));
-        }
-        for token in paragraph.tokens() {
-            if !token_ids.insert(token_id_key(token.id())) {
-                return Err(DocumentIoError::Invalid(
-                    "duplicate visible token ID".into(),
-                ));
-            }
-            if !run_ids.is_empty() {
-                if let VisibleTokenId::Recognition { run_id, .. } = token.id() {
-                    if !run_ids.contains(run_id.as_str()) {
-                        return Err(DocumentIoError::Invalid(
-                            "visible recognition token refers to an unknown run".into(),
-                        ));
-                    }
-                }
-            }
-        }
-        let mut previous = 0;
-        for marker in paragraph.chunk_boundaries() {
-            if marker.after_tokens() < previous || marker.after_tokens() > paragraph.tokens().len()
-            {
-                return Err(DocumentIoError::Invalid(format!(
-                    "chunk marker '{}' has an invalid token position",
-                    marker.chunk_id()
-                )));
-            }
-            if !chunk_ids.insert(marker.chunk_id()) {
-                return Err(DocumentIoError::Invalid(format!(
-                    "duplicate chunk marker ID '{}'",
-                    marker.chunk_id()
-                )));
-            }
-            previous = marker.after_tokens();
-        }
-        if paragraph
-            .chunk_boundaries()
-            .last()
-            .is_some_and(|m| m.after_tokens() != paragraph.tokens().len())
+        if t.source.sample_rate_hz != 16_000
+            || t.source.channels != 1
+            || t.audio_range.is_empty()
+            || t.audio_range.end_sample > t.source.decoded_sample_count
         {
-            return Err(DocumentIoError::Invalid(format!(
-                "paragraph '{}' does not end at a chunk boundary",
-                paragraph.id()
-            )));
+            return Err(invalid("invalid transcription audio coordinates"));
         }
-    }
-    for issue in document.resolved_issues() {
-        if issue.token_ids().is_empty() {
-            return Err(DocumentIoError::Invalid(
-                "resolved issue has no tokens".into(),
-            ));
-        }
-        if issue
-            .token_ids()
-            .iter()
-            .any(|id| !token_ids.contains(&token_id_key(id)))
-        {
-            return Err(DocumentIoError::Invalid(
-                "resolved issue refers to an unknown visible token".into(),
-            ));
-        }
-    }
-    let mut marked_tokens = HashSet::new();
-    for mark in document.attention_marks() {
-        let key = token_id_key(mark.token_id());
-        if !token_ids.contains(&key) {
-            return Err(DocumentIoError::Invalid(
-                "attention mark refers to an unknown visible token".into(),
-            ));
-        }
-        if !chunk_ids.contains(mark.chunk_id()) {
-            return Err(DocumentIoError::Invalid(format!(
-                "attention mark refers to unknown chunk '{}'",
-                mark.chunk_id()
-            )));
-        }
-        if chunk_id_for_token(document.paragraphs(), mark.token_id()) != Some(mark.chunk_id()) {
-            return Err(DocumentIoError::Invalid(
-                "attention mark token does not belong to its chunk".into(),
-            ));
-        }
-        if !marked_tokens.insert((mark.chunk_id(), key)) {
-            return Err(DocumentIoError::Invalid(
-                "visible token has more than one attention mark".into(),
-            ));
-        }
-    }
-    for entry in &document.edit_history {
-        validate_historical_attention_marks(
-            &entry.before.paragraphs,
-            &entry.before.attention_marks,
-        )?;
-    }
-    for state in &document.redo_history {
-        validate_historical_attention_marks(&state.paragraphs, &state.attention_marks)?;
-    }
-    if !document.replay_chunks().is_empty() {
-        let mut replay_chunk_ids = HashSet::new();
-        for chunk in document.replay_chunks() {
-            if chunk.id().is_empty() || !replay_chunk_ids.insert(chunk.id()) {
-                return Err(DocumentIoError::Invalid(
-                    "derived replay chunk IDs must be nonempty and unique".into(),
-                ));
-            }
-        }
-        if let Some(missing) = chunk_ids.iter().find(|id| !replay_chunk_ids.contains(*id)) {
-            return Err(DocumentIoError::Invalid(format!(
-                "chunk marker '{missing}' has no replay chunk record"
-            )));
-        }
-        for paragraph in document.paragraphs() {
-            let mut start = 0;
-            for marker in paragraph.chunk_boundaries() {
-                let chunk = document
-                    .replay_chunks()
-                    .iter()
-                    .find(|chunk| chunk.id() == marker.chunk_id())
-                    .expect("current marker record was checked above");
-                let expected = paragraph.tokens()[start..marker.after_tokens()]
-                    .iter()
-                    .map(|token| token.id())
-                    .collect::<Vec<_>>();
-                if chunk.token_ids().iter().collect::<Vec<_>>() != expected {
-                    return Err(DocumentIoError::Invalid(format!(
-                        "replay chunk '{}' has stale token membership",
-                        chunk.id()
-                    )));
-                }
-                start = marker.after_tokens();
+        let mut segments = HashSet::new();
+        for s in &t.segments {
+            if s.id.is_empty() || !segments.insert(&s.id) {
+                return Err(invalid("duplicate or empty segment identity"));
             }
         }
     }
-    let source_ids = document
+    for (index, t) in project.transcriptions().iter().enumerate() {
+        if let Some(previous) = &t.previous_id {
+            if !project.transcriptions()[..index].iter().any(|p| {
+                p.id == *previous && p.chunk_id == t.chunk_id && p.audio_range == t.audio_range
+            }) {
+                return Err(invalid("transcription predecessor must identify an earlier proposal for the same chunk"));
+            }
+        }
+    }
+    let sources = project
         .audio_sources()
         .iter()
         .map(|s| s.id())
         .collect::<HashSet<_>>();
-    let mut mapped_chunks = HashSet::new();
-    for mapping in document.chunk_audio_mappings() {
-        if !chunk_ids.contains(mapping.chunk_id()) {
-            return Err(DocumentIoError::Invalid(format!(
-                "audio mapping refers to unknown chunk '{}'",
-                mapping.chunk_id()
-            )));
-        }
-        if !source_ids.contains(mapping.source_id()) {
-            return Err(DocumentIoError::Invalid(format!(
-                "audio mapping refers to unknown source '{}'",
-                mapping.source_id()
-            )));
-        }
-        if mapping.range().start_sample >= mapping.range().end_sample {
-            return Err(DocumentIoError::Invalid(format!(
-                "audio mapping for '{}' has an empty or reversed range",
-                mapping.chunk_id()
-            )));
-        }
-        if document
-            .audio_source(mapping.source_id())
-            .and_then(|s| s.canonical_sample_count())
-            .is_some_and(|n| mapping.range().end_sample > n)
+    if sources.len() != project.audio_sources().len() {
+        return Err(invalid("duplicate audio source identity"));
+    }
+    validate_state(
+        project,
+        &project.document.paragraphs,
+        &project.chunk_audio_mappings,
+        &project.token_audio_mappings,
+        &project.attention_marks,
+        &project.resolved_issues,
+        &sources,
+    )?;
+    for state in project
+        .edit_history
+        .iter()
+        .map(|e| &e.before)
+        .chain(project.redo_history.iter())
+    {
+        validate_state(
+            project,
+            &state.paragraphs,
+            &state.chunk_audio_mappings,
+            &state.token_audio_mappings,
+            &state.attention_marks,
+            &state.resolved_issues,
+            &sources,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_state(
+    project: &Project,
+    paragraphs: &[crate::document::Paragraph],
+    chunks: &[crate::document::ChunkAudioMapping],
+    mappings: &[crate::document::TokenAudioMapping],
+    marks: &[crate::document::AttentionMark],
+    issues: &[crate::document::ResolvedIssue],
+    sources: &HashSet<&str>,
+) -> Result<(), ProjectIoError> {
+    let invalid = |message: &str| ProjectIoError::Invalid(message.into());
+    let mut paragraph_ids = HashSet::new();
+    let mut chunk_ids = HashSet::new();
+    let mut token_ids = HashSet::new();
+    for p in paragraphs {
+        if p.id().is_empty()
+            || p.revision() == 0
+            || !paragraph_ids.insert(p.id())
+            || p.chunk_boundaries().is_empty()
         {
-            return Err(DocumentIoError::Invalid(
-                "chunk audio mapping exceeds its source bounds".into(),
+            return Err(invalid(
+                "invalid paragraph identity, revision, or composition",
             ));
         }
-        if !mapped_chunks.insert(mapping.chunk_id()) {
-            return Err(DocumentIoError::Invalid(format!(
-                "chunk '{}' has more than one audio mapping",
-                mapping.chunk_id()
-            )));
+        let mut start = 0;
+        for c in p.chunk_boundaries() {
+            if !chunk_ids.insert(c.chunk_id()) {
+                return Err(invalid("duplicate chunk identity"));
+            }
+            let t = project
+                .transcriptions()
+                .iter()
+                .find(|t| t.id == c.transcription_id())
+                .ok_or_else(|| invalid("composition refers to an unknown transcription"))?;
+            if t.chunk_id != c.chunk_id() || t.text != c.text() {
+                return Err(invalid(
+                    "current text or chunk identity differs from its transcription",
+                ));
+            }
+            let real = t
+                .segments
+                .iter()
+                .flat_map(|s| {
+                    s.tokens
+                        .iter()
+                        .enumerate()
+                        .map(move |(i, token)| (s, i, token))
+                })
+                .filter(|(_, _, token)| !token.is_special)
+                .collect::<Vec<_>>();
+            let text = real
+                .iter()
+                .map(|(_, _, token)| token.text.as_str())
+                .collect::<String>();
+            let expected = if text == t.text { real.as_slice() } else { &[] };
+            let current = p
+                .tokens()
+                .get(start..c.after_tokens())
+                .ok_or_else(|| invalid("invalid chunk token bounds"))?;
+            if current.len() != expected.len() {
+                return Err(invalid("chunk exposes invented or missing tokens"));
+            }
+            for (token, (segment, index, real)) in current.iter().zip(expected) {
+                if token.id().transcription_id != t.id
+                    || token.id().segment_id != segment.id
+                    || token.id().token_index != *index
+                    || token.text() != real.text
+                    || token.vocabulary_id() != real.token_id
+                    || !token_ids.insert(token.id())
+                {
+                    return Err(invalid("text token differs from its Whisper evidence"));
+                }
+            }
+            start = c.after_tokens();
+        }
+        if start != p.tokens().len() {
+            return Err(invalid("tokens lie outside chunks"));
+        }
+    }
+    let mut mapped_chunks = HashSet::new();
+    for c in chunks {
+        if !chunk_ids.contains(c.chunk_id())
+            || !sources.contains(c.source_id())
+            || !mapped_chunks.insert(c.chunk_id())
+        {
+            return Err(invalid(
+                "chunk audio mapping has an unknown or duplicate target",
+            ));
+        }
+        validate_audio_range(project, c.source_id(), c.range())?;
+        if project
+            .transcriptions()
+            .iter()
+            .filter(|t| t.chunk_id == c.chunk_id())
+            .any(|t| t.audio_range != c.range())
+        {
+            return Err(invalid("finalized chunk audio boundaries changed"));
         }
     }
     let mut mapped_tokens = HashSet::new();
-    for mapping in document.token_audio_mappings() {
-        let Some(paragraph) = document
-            .paragraphs()
+    for m in mappings {
+        let p = paragraphs
             .iter()
-            .find(|paragraph| paragraph.id() == mapping.paragraph_id())
-        else {
-            return Err(DocumentIoError::Invalid(format!(
-                "token audio mapping refers to unknown paragraph '{}'",
-                mapping.paragraph_id()
-            )));
-        };
-        if paragraph.revision() != mapping.paragraph_revision() {
-            return Err(DocumentIoError::Invalid(format!(
-                "token audio mapping for paragraph '{}' has a stale revision",
-                mapping.paragraph_id()
-            )));
-        }
-        let key = token_id_key(mapping.token_id());
-        if !paragraph
-            .tokens()
-            .iter()
-            .any(|token| token_id_key(token.id()) == key)
+            .find(|p| p.id() == m.paragraph_id())
+            .ok_or_else(|| invalid("unknown mapped paragraph"))?;
+        if p.revision() != m.paragraph_revision()
+            || !p.tokens().iter().any(|t| t.id() == m.token_identity())
+            || !sources.contains(m.source_id())
+            || !mapped_tokens.insert(m.token_identity())
         {
-            return Err(DocumentIoError::Invalid(
-                "token audio mapping refers to an unknown visible token".into(),
-            ));
+            return Err(invalid("unknown, stale, or duplicate token audio mapping"));
         }
-        if !source_ids.contains(mapping.source_id()) {
-            return Err(DocumentIoError::Invalid(format!(
-                "token audio mapping refers to unknown source '{}'",
-                mapping.source_id()
-            )));
-        }
-        if mapping.range().start_sample >= mapping.range().end_sample {
-            return Err(DocumentIoError::Invalid(
-                "token audio mapping has an empty or reversed range".into(),
-            ));
-        }
-        if document
-            .audio_source(mapping.source_id())
-            .and_then(|s| s.canonical_sample_count())
-            .is_some_and(|n| mapping.range().end_sample > n)
-        {
-            return Err(DocumentIoError::Invalid(
-                "token audio mapping exceeds its source bounds".into(),
-            ));
-        }
-        if !mapped_tokens.insert(key) {
-            return Err(DocumentIoError::Invalid(
-                "visible token has more than one audio mapping".into(),
-            ));
-        }
+        validate_audio_range(project, m.source_id(), m.range())?;
     }
-    Ok(())
-}
-
-fn migrate_legacy_attention_marks(project: &mut Project) -> Result<(), DocumentIoError> {
-    migrate_marks(&project.document.paragraphs, &mut project.attention_marks)?;
-    for entry in &mut project.edit_history {
-        migrate_marks(&entry.before.paragraphs, &mut entry.before.attention_marks)?;
-    }
-    for state in &mut project.redo_history {
-        migrate_marks(&state.paragraphs, &mut state.attention_marks)?;
-    }
-    Ok(())
-}
-
-fn migrate_marks(
-    paragraphs: &[crate::document::Paragraph],
-    marks: &mut [crate::document::AttentionMark],
-) -> Result<(), DocumentIoError> {
-    for mark in marks.iter_mut().filter(|mark| mark.chunk_id.is_empty()) {
-        mark.chunk_id = chunk_id_for_token(paragraphs, &mark.token_id)
-            .ok_or_else(|| {
-                DocumentIoError::Invalid("attention mark refers to an unknown visible token".into())
-            })?
-            .to_owned();
-    }
-    Ok(())
-}
-
-fn chunk_id_for_token<'a>(
-    paragraphs: &'a [crate::document::Paragraph],
-    token_id: &VisibleTokenId,
-) -> Option<&'a str> {
-    for paragraph in paragraphs {
-        let mut start = 0;
-        for marker in paragraph.chunk_boundaries() {
-            let tokens = paragraph.tokens().get(start..marker.after_tokens())?;
-            if tokens.iter().any(|token| token.id() == token_id) {
-                return Some(marker.chunk_id());
-            }
-            start = marker.after_tokens();
-        }
-    }
-    None
-}
-
-fn validate_historical_attention_marks(
-    paragraphs: &[crate::document::Paragraph],
-    marks: &[crate::document::AttentionMark],
-) -> Result<(), DocumentIoError> {
-    let mut targets = HashSet::new();
+    let mut marked = HashSet::new();
     for mark in marks {
-        let Some(actual_chunk_id) = chunk_id_for_token(paragraphs, mark.token_id()) else {
-            return Err(DocumentIoError::Invalid(
-                "historical attention mark refers to an unknown visible token".into(),
-            ));
-        };
-        if actual_chunk_id != mark.chunk_id() {
-            return Err(DocumentIoError::Invalid(
-                "historical attention mark token does not belong to its chunk".into(),
-            ));
+        let valid = paragraphs.iter().any(|p| {
+            let mut start = 0;
+            p.chunk_boundaries().iter().any(|c| {
+                let contains = c.chunk_id() == mark.chunk_id()
+                    && p.tokens()[start..c.after_tokens()]
+                        .iter()
+                        .any(|t| t.id() == mark.token_identity());
+                start = c.after_tokens();
+                contains
+            })
+        });
+        if !valid || !marked.insert(mark.token_identity()) {
+            return Err(invalid("unknown or duplicate attention-mark target"));
         }
-        if !targets.insert((mark.chunk_id(), token_id_key(mark.token_id()))) {
-            return Err(DocumentIoError::Invalid(
-                "historical visible token has more than one attention mark".into(),
-            ));
+    }
+    for issue in issues {
+        if issue.token_identities().is_empty()
+            || issue
+                .token_identities()
+                .iter()
+                .any(|id| !token_ids.contains(id))
+        {
+            return Err(invalid("resolved issue refers to an unknown token"));
         }
     }
     Ok(())
 }
 
-/// Compatibility wrapper for the original API name.
-pub fn load_document(path: &Path) -> Result<Project, DocumentIoError> {
-    load_project(path)
-}
-
-/// Compatibility wrapper for the original API name.
-pub fn save_document(path: &Path, project: &Project) -> Result<(), DocumentIoError> {
-    save_project(path, project)
-}
-
-fn token_id_key(id: &VisibleTokenId) -> String {
-    match id {
-        VisibleTokenId::Recognition {
-            run_id,
-            segment_id,
-            token_index,
-        } => format!("recognition\0{run_id}\0{segment_id}\0{token_index}"),
-        VisibleTokenId::Pseudo { id } => format!("pseudo\0{id}"),
+fn validate_audio_range(
+    project: &Project,
+    source: &str,
+    range: crate::chunking::SampleRange,
+) -> Result<(), ProjectIoError> {
+    if range.is_empty()
+        || project
+            .audio_source(source)
+            .and_then(|s| s.canonical_sample_count())
+            .is_some_and(|n| range.end_sample > n)
+    {
+        return Err(ProjectIoError::Invalid(
+            "audio mapping exceeds source bounds or has an empty range".into(),
+        ));
     }
+    Ok(())
 }

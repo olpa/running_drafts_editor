@@ -88,7 +88,8 @@ A transcription that no reachable project history state can restore through
 undo or redo.
 
 **Current text**:
-The text supplied by a chunk's current transcription.
+The text supplied by a chunk's current transcription, whether or not it exposes
+addressable Whisper tokens.
 
 **Transcription cleanup**:
 The user's job of turning an imperfect transcription into usable text through
@@ -99,9 +100,8 @@ operation or transcription.
 A user-authored text change supplied when producing another transcription.
 
 **User action**:
-An action initiated by the user, such as editing text, changing the language or
-model, or requesting another transcription. Several user actions may contribute
-to one later transcription.
+An action initiated by the user, such as supplying an edit or changing the
+language or model, that contributes to another transcription.
 
 ### Transcription data
 

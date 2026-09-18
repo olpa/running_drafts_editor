@@ -1,3 +1,5 @@
+//! Initial transcription, provisional evidence, and chunk presentation.
+
 use std::{
     collections::VecDeque,
     io::{self, Cursor},
@@ -6,30 +8,31 @@ use std::{
 
 use running_drafts_editor::{
     chunking::{SampleRange, SourceFacts},
-    persistence::load_document,
+    persistence::load_project,
     project::Project,
-    recognition::{
-        recognize, AdvanceReason, ChunkBoundaryReason, PostChunkConfig, RecognitionConfig,
-        RecognitionStatus, RecognitionToken, RecognizerIdentity, WindowDecoder, WindowSegment,
-    },
     session::{run_session, AudioPlayer, PlaybackError, SessionContext},
+    transcription::{
+        transcribe_initial, AdvanceReason, ChunkBoundaryReason, PostChunkConfig,
+        TranscriberIdentity, TranscriptionConfig, TranscriptionStatus, WhisperToken, WindowDecoder,
+        WindowSegment,
+    },
 };
 
 #[allow(clippy::too_many_arguments)]
 fn open_audio(
-    run: &running_drafts_editor::recognition::RecognitionRun,
+    run: &running_drafts_editor::transcription::InitialTranscriptionResult,
     source: &Path,
-    document_path: Option<&Path>,
+    project_path: Option<&Path>,
     input: &mut impl io::BufRead,
     output: &mut impl io::Write,
     errors: &mut impl io::Write,
     player: &mut FakePlayer,
     replay_context_samples: u64,
 ) -> io::Result<()> {
-    let document = Project::from_run_with_source(run, Some(source));
+    let document = Project::from_initial_transcription_with_source(run, Some(source));
     run_session(
         &document,
-        SessionContext::recognized_audio(run, source, document_path, None),
+        SessionContext::transcribed_audio(run, source, project_path, None),
         input,
         output,
         errors,
@@ -45,8 +48,8 @@ struct FakeDecoder {
 }
 
 impl WindowDecoder for FakeDecoder {
-    fn identity(&self) -> RecognizerIdentity {
-        RecognizerIdentity {
+    fn identity(&self) -> TranscriberIdentity {
+        TranscriberIdentity {
             name: "fake".into(),
             implementation: "test".into(),
             model_sha256: "00".repeat(32),
@@ -78,7 +81,7 @@ fn segment_with_tokens(start: u64, end: u64, text: &str, token_ids: &[i32]) -> W
         tokens: token_ids
             .iter()
             .enumerate()
-            .map(|(index, token_id)| RecognitionToken {
+            .map(|(index, token_id)| WhisperToken {
                 token_id: *token_id,
                 text: if index == 0 {
                     text.into()
@@ -109,7 +112,7 @@ fn segment_with_token_kinds(
         no_speech_probability: 0.1,
         tokens: tokens
             .iter()
-            .map(|(token_id, is_special)| RecognitionToken {
+            .map(|(token_id, is_special)| WhisperToken {
                 token_id: *token_id,
                 text: format!("token-{token_id}"),
                 probability: 0.9,
@@ -136,19 +139,19 @@ fn token_ids(count: usize, first: i32) -> Vec<i32> {
         .collect()
 }
 
-fn recognize_post_chunks(
+fn transcribe_initial_post_chunks(
     segments: Vec<WindowSegment>,
     total: u64,
     post_chunking: PostChunkConfig,
-) -> running_drafts_editor::recognition::RecognitionRun {
+) -> running_drafts_editor::transcription::InitialTranscriptionResult {
     let mut decoder = FakeDecoder {
         results: VecDeque::from([Ok(segments)]),
         ..FakeDecoder::default()
     };
-    recognize(
+    transcribe_initial(
         source(total),
         &vec![0.0; usize::try_from(total).unwrap()],
-        RecognitionConfig {
+        TranscriptionConfig {
             max_window_samples: total,
             target_core_samples: total,
             left_context_samples: 0,
@@ -161,8 +164,8 @@ fn recognize_post_chunks(
     .unwrap()
 }
 
-fn small_config() -> RecognitionConfig {
-    RecognitionConfig {
+fn small_config() -> TranscriptionConfig {
+    TranscriptionConfig {
         max_window_samples: 30,
         target_core_samples: 24,
         left_context_samples: 3,
@@ -209,9 +212,9 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
         ..FakeDecoder::default()
     };
 
-    let run = recognize(source(70), &[0.0; 70], small_config(), &mut decoder).unwrap();
+    let run = transcribe_initial(source(70), &[0.0; 70], small_config(), &mut decoder).unwrap();
 
-    assert_eq!(run.status, RecognitionStatus::Succeeded);
+    assert_eq!(run.status, TranscriptionStatus::Succeeded);
     assert_eq!(
         decoder.calls,
         vec![(27, vec![]), (30, vec![30, 31]), (20, vec![40, 41, 42])]
@@ -309,7 +312,7 @@ fn latest_timestamp_in_search_area_wins_and_early_timestamp_does_not_shorten_cor
         ..FakeDecoder::default()
     };
 
-    let run = recognize(source(50), &[0.0; 50], small_config(), &mut decoder).unwrap();
+    let run = transcribe_initial(source(50), &[0.0; 50], small_config(), &mut decoder).unwrap();
 
     assert_eq!(
         run.windows
@@ -336,7 +339,7 @@ fn latest_timestamp_in_search_area_wins_and_early_timestamp_does_not_shorten_cor
         results: VecDeque::from([Ok(vec![segment(0, 2, "early")]), Ok(Vec::new())]),
         ..FakeDecoder::default()
     };
-    let run = recognize(source(50), &[0.0; 50], small_config(), &mut early_only).unwrap();
+    let run = transcribe_initial(source(50), &[0.0; 50], small_config(), &mut early_only).unwrap();
 
     assert_eq!(run.windows[0].core.end_sample, 24);
     assert_eq!(
@@ -352,9 +355,9 @@ fn decode_failures_still_create_complete_bounded_core_coverage() {
         ..FakeDecoder::default()
     };
 
-    let run = recognize(source(55), &[0.0; 55], small_config(), &mut decoder).unwrap();
+    let run = transcribe_initial(source(55), &[0.0; 55], small_config(), &mut decoder).unwrap();
 
-    assert_eq!(run.status, RecognitionStatus::Failed);
+    assert_eq!(run.status, TranscriptionStatus::Failed);
     assert!(run.segments.is_empty());
     assert_eq!(
         run.windows
@@ -386,7 +389,7 @@ fn long_pause_splits_without_minimum_tokens_and_strong_pause_respects_minimum() 
     let one = token_ids(1, 10);
     let four_a = token_ids(4, 20);
     let four_b = token_ids(4, 30);
-    let run = recognize_post_chunks(
+    let run = transcribe_initial_post_chunks(
         vec![
             segment_with_tokens(0, 16_000, "one", &one),
             segment_with_tokens(48_000, 64_000, "four-a", &four_a),
@@ -419,7 +422,7 @@ fn usable_pauses_are_scored_near_target_and_maximum_uses_whole_segment_boundary(
     let twenty = token_ids(20, 100);
     let ten = token_ids(10, 200);
     let two = token_ids(2, 300);
-    let run = recognize_post_chunks(
+    let run = transcribe_initial_post_chunks(
         vec![
             segment_with_tokens(0, 16_000, "a", &twenty),
             segment_with_tokens(24_000, 40_000, "b", &ten),
@@ -441,7 +444,7 @@ fn usable_pauses_are_scored_near_target_and_maximum_uses_whole_segment_boundary(
     let twenty_b = token_ids(20, 500);
     let twenty_c = token_ids(20, 600);
     let twenty_d = token_ids(20, 700);
-    let run = recognize_post_chunks(
+    let run = transcribe_initial_post_chunks(
         vec![
             segment_with_tokens(0, 16_000, "a", &twenty_a),
             segment_with_tokens(16_000, 32_000, "b", &twenty_b),
@@ -467,7 +470,7 @@ fn post_chunk_settings_must_be_ordered() {
     config.post_chunking.target_tokens = 32;
     let mut decoder = FakeDecoder::default();
 
-    let error = recognize(source(1), &[0.0], config, &mut decoder).unwrap_err();
+    let error = transcribe_initial(source(1), &[0.0], config, &mut decoder).unwrap_err();
 
     assert!(error.to_string().contains("token limits"));
 }
@@ -501,10 +504,10 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
         )])]),
         ..FakeDecoder::default()
     };
-    let run = recognize(
+    let run = transcribe_initial(
         source(640),
         &[0.0; 640],
-        RecognitionConfig {
+        TranscriptionConfig {
             max_window_samples: 640,
             target_core_samples: 640,
             left_context_samples: 0,
@@ -552,8 +555,8 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
 }
 
 #[test]
-fn open_audio_reports_token_fallback_and_keeps_chunk_text_selectable() {
-    let run = recognize_post_chunks(
+fn open_audio_retains_text_without_inventing_addressable_tokens() {
+    let run = transcribe_initial_post_chunks(
         vec![segment_with_token_kinds(
             0,
             16_000,
@@ -563,7 +566,7 @@ fn open_audio_reports_token_fallback_and_keeps_chunk_text_selectable() {
         16_000,
         PostChunkConfig::default(),
     );
-    let mut input = Cursor::new(b"1tokens\n1.1.1select\nquit\n");
+    let mut input = Cursor::new(b"1tokens\n1.1.1select\n1.1,1.2select\nquit\n");
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
@@ -581,23 +584,24 @@ fn open_audio_reports_token_fallback_and_keeps_chunk_text_selectable() {
     .unwrap();
 
     let output = String::from_utf8(output).unwrap();
-    assert!(output.contains("1.1.1      -  \"visible text\""));
-    assert!(output.contains("selected 1.1.1"));
+    assert!(output.contains("1.1  chunk  no tokens"));
+    assert!(output.contains("visible text"));
+    assert!(output.contains("selected 1.1,1.2"));
     assert_eq!(
         String::from_utf8(errors).unwrap(),
-        "token alignment unavailable for chunk 1.1: normal recognition tokens do not reproduce the chunk text; using chunk text as one pseudo-token\n"
+        "token alignment unavailable for chunk 1.1: normal transcription tokens do not reproduce the chunk text; preserving transcription text without token positions\nchunk 1.1 has no token positions\n"
     );
 }
 
 #[test]
 fn open_audio_output_becomes_the_default_session_save_path() {
-    let run = recognize_post_chunks(
+    let run = transcribe_initial_post_chunks(
         vec![segment_with_tokens(0, 16_000, "visible text", &[1])],
         16_000,
         PostChunkConfig::default(),
     );
     let directory = tempfile::tempdir().unwrap();
-    let document_path = directory.path().join("draft.rde.json");
+    let project_path = directory.path().join("draft.rde.json");
     let mut input = Cursor::new(b"save\nquit\n");
     let mut output = Vec::new();
     let mut errors = Vec::new();
@@ -606,7 +610,7 @@ fn open_audio_output_becomes_the_default_session_save_path() {
     open_audio(
         &run,
         Path::new("audio.wav"),
-        Some(&document_path),
+        Some(&project_path),
         &mut input,
         &mut output,
         &mut errors,
@@ -615,14 +619,14 @@ fn open_audio_output_becomes_the_default_session_save_path() {
     )
     .unwrap();
 
-    let saved = load_document(&document_path).unwrap();
+    let saved = load_project(&project_path).unwrap();
     assert_eq!(
         saved.paragraph(1).unwrap().tokens()[0].text(),
         "visible text"
     );
     assert!(String::from_utf8(output)
         .unwrap()
-        .contains(&format!("saved {}", document_path.display())));
+        .contains(&format!("saved {}", project_path.display())));
     assert!(errors.is_empty(), "{}", String::from_utf8_lossy(&errors));
 }
 
@@ -631,7 +635,7 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     let one = token_ids(1, 10);
     let four_a = token_ids(4, 20);
     let four_b = token_ids(4, 30);
-    let run = recognize_post_chunks(
+    let run = transcribe_initial_post_chunks(
         vec![
             segment_with_tokens(0, 16_000, "one", &one),
             segment_with_tokens(48_000, 64_000, "four-a", &four_a),

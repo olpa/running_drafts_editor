@@ -4,7 +4,7 @@ use crate::{
         TokenAddress,
     },
     project::Project,
-    recognition::{ChunkBoundaryReason, RecognitionRun},
+    transcription::{ChunkBoundaryReason, InitialTranscriptionResult},
 };
 use std::{
     fmt,
@@ -12,17 +12,17 @@ use std::{
     path::Path,
 };
 
-pub fn render_recognition_chunks(
-    run: &RecognitionRun,
+pub fn render_transcription_chunks(
+    run: &InitialTranscriptionResult,
     source: &Path,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    let document = Project::from_run(run);
-    render_recognition_document(run, &document, source, output)
+    let document = Project::from_initial_transcription(run);
+    render_transcription_document(run, &document, source, output)
 }
 
-pub(crate) fn render_recognition_document(
-    run: &RecognitionRun,
+pub(crate) fn render_transcription_document(
+    run: &InitialTranscriptionResult,
     document: &Project,
     source: &Path,
     output: &mut impl Write,
@@ -148,6 +148,9 @@ fn render_paragraph_inner(
         }
         let chunk_start = paragraph_token;
         let chunk_count = marker.after_tokens() - chunk_start;
+        if chunk_count == 0 {
+            write!(output, "{}", marker.text())?;
+        }
         for local in 0..chunk_count {
             let token = &paragraph.tokens()[paragraph_token];
             let address = TokenAddress {
@@ -257,9 +260,7 @@ pub(crate) fn render_token_range(
             }
             let token = &paragraph.tokens()[global];
             let probability = document
-                .recognition_token_evidence()
-                .iter()
-                .find(|e| e.token_id() == token.id())
+                .token_evidence(token.id())
                 .map(|e| format!("{:.3}", e.probability()))
                 .unwrap_or_else(|| "-".into());
             write!(
@@ -302,9 +303,43 @@ pub(crate) fn render_token_range(
     Ok(())
 }
 
-pub(crate) fn render_chunk_info(
-    run: &RecognitionRun,
-    chunk: &crate::recognition::RecognitionChunk,
+pub(crate) fn render_transcription_info(
+    t: &crate::transcription::Transcription,
+    paragraph: usize,
+    chunk_number: usize,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    let chunk = crate::transcription::TranscriptionChunk {
+        id: t.chunk_id.clone(),
+        ordinal: 1,
+        segment_ids: t.segments.iter().map(|s| s.id.clone()).collect(),
+        audio_range: t.audio_range,
+        text: t.text.clone(),
+        token_count: t
+            .segments
+            .iter()
+            .flat_map(|s| &s.tokens)
+            .filter(|t| !t.is_special)
+            .count(),
+        boundary: t.boundary.clone(),
+    };
+    let run = InitialTranscriptionResult {
+        id: t.id.clone(),
+        revision: 0,
+        source: t.source.clone(),
+        transcriber: t.transcriber.clone(),
+        config: t.config.clone(),
+        status: crate::transcription::TranscriptionStatus::Succeeded,
+        windows: Vec::new(),
+        segments: Vec::new(),
+        chunks: Vec::new(),
+    };
+    render_chunk_info(&run, &chunk, paragraph, chunk_number, output)
+}
+
+fn render_chunk_info(
+    run: &InitialTranscriptionResult,
+    chunk: &crate::transcription::TranscriptionChunk,
     paragraph: usize,
     chunk_number: usize,
     output: &mut impl Write,
@@ -324,7 +359,7 @@ pub(crate) fn render_chunk_info(
 }
 
 fn chunk_boundary_label(
-    chunk: &crate::recognition::RecognitionChunk,
+    chunk: &crate::transcription::TranscriptionChunk,
     sample_rate_hz: u32,
 ) -> String {
     let reason = match chunk.boundary.reason {

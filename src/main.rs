@@ -4,10 +4,10 @@ use clap::{Args, Parser, Subcommand};
 use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
 use running_drafts_editor::persistence::{load_project, save_project};
 use running_drafts_editor::project::Project;
-use running_drafts_editor::recognition::{
-    recognize, PostChunkConfig, RecognitionConfig, RecognizerSession, WhisperDecoder,
-};
 use running_drafts_editor::session::{run_readline_session, run_session, Ffplay, SessionContext};
+use running_drafts_editor::transcription::{
+    transcribe_initial, PostChunkConfig, TranscriberSession, TranscriptionConfig, WhisperDecoder,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -23,11 +23,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Transcribe audio to a saved document and exit.
+    /// Transcribe audio to a saved project and exit.
     Transcribe(TranscribeArgs),
     /// Transcribe audio and open the resulting document for editing.
     OpenAudio(OpenAudioArgs),
-    /// Open a saved visible document without running recognition.
+    /// Open a saved project without running transcription.
     Edit(EditArgs),
 }
 
@@ -42,14 +42,14 @@ struct TranscribeArgs {
     #[arg(long)]
     output: PathBuf,
     #[command(flatten)]
-    recognition: RecognitionArgs,
+    transcription: TranscriptionArgs,
 }
 
 #[derive(Debug, Args)]
 struct EditArgs {
-    /// Versioned JSON document to open and save.
+    /// JSON project to open and save.
     document: PathBuf,
-    /// Whisper ggml model used for correction and refresh.
+    /// Request this Whisper model for the current chunk; a change transcribes it.
     #[arg(long)]
     model: Option<PathBuf>,
     /// ffplay-compatible playback executable.
@@ -62,14 +62,14 @@ struct EditArgs {
 
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Example:\n  rde open-audio recording.wav --model ggml-tiny.bin --language de\n\nAfter recognition, type 'help' at the 'rde>' prompt to see session commands."
+    after_help = "Example:\n  rde open-audio recording.wav --model ggml-tiny.bin --language de\n\nAfter transcription, type 'help' at the 'rde>' prompt to see session commands."
 )]
 struct OpenAudioArgs {
     /// PCM WAV audio; channels and sample rate are converted automatically.
     input: PathBuf,
     #[command(flatten)]
-    recognition: RecognitionArgs,
-    /// Save the recognized visible document before entering the session.
+    transcription: TranscriptionArgs,
+    /// Save the transcribed project before entering the session.
     #[arg(long)]
     output: Option<PathBuf>,
     /// ffplay-compatible playback executable.
@@ -81,7 +81,7 @@ struct OpenAudioArgs {
 }
 
 #[derive(Debug, Args)]
-struct RecognitionArgs {
+struct TranscriptionArgs {
     /// Whisper ggml model.
     #[arg(long)]
     model: PathBuf,
@@ -141,8 +141,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_transcribe(args: TranscribeArgs) -> Result<(), Box<dyn std::error::Error>> {
     validate_output_target(&args.output)?;
-    let (run, _) = recognize_audio(&args.input, &args.recognition)?;
-    let project = Project::from_run_with_source(&run, Some(&args.input));
+    let (run, _) = transcribe_audio(&args.input, &args.transcription)?;
+    let mut project = Project::from_initial_transcription_with_source(&run, Some(&args.input));
+    project.configure_initial_settings(
+        Some(args.transcription.model.clone()),
+        args.transcription.language.clone(),
+    )?;
     save_project(&args.output, &project)?;
     println!("saved {}", args.output.display());
     Ok(())
@@ -170,7 +174,7 @@ fn run_edit(args: EditArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    let context = SessionContext::saved_document(&args.document, args.model.as_deref());
+    let context = SessionContext::saved_project(&args.document, args.model.as_deref());
     if stdin.is_terminal() && stdout.is_terminal() {
         run_readline_session(
             &project,
@@ -199,8 +203,12 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     if let Some(path) = &args.output {
         validate_output_target(path)?;
     }
-    let (run, recognizer) = recognize_audio(&args.input, &args.recognition)?;
-    let project = Project::from_run_with_source(&run, Some(&args.input));
+    let (run, transcriber) = transcribe_audio(&args.input, &args.transcription)?;
+    let mut project = Project::from_initial_transcription_with_source(&run, Some(&args.input));
+    project.configure_initial_settings(
+        Some(args.transcription.model.clone()),
+        args.transcription.language.clone(),
+    )?;
     if let Some(path) = &args.output {
         save_project(path, &project)?;
         println!("saved {}", path.display());
@@ -212,12 +220,12 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    let context = SessionContext::recognized_audio_with_recognizer(
+    let context = SessionContext::transcribed_audio_with_transcriber(
         &run,
         &args.input,
         args.output.as_deref(),
-        Some(&args.recognition.model),
-        recognizer,
+        Some(&args.transcription.model),
+        transcriber,
     );
     if stdin.is_terminal() && stdout.is_terminal() {
         run_readline_session(
@@ -243,13 +251,13 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-fn recognize_audio(
+fn transcribe_audio(
     input: &std::path::Path,
-    args: &RecognitionArgs,
+    args: &TranscriptionArgs,
 ) -> Result<
     (
-        running_drafts_editor::recognition::RecognitionRun,
-        RecognizerSession,
+        running_drafts_editor::transcription::InitialTranscriptionResult,
+        TranscriberSession,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -260,7 +268,7 @@ fn recognize_audio(
         channels: wav.channels,
         decoded_sample_count: u64::try_from(wav.samples.len())?,
     };
-    let config = RecognitionConfig {
+    let config = TranscriptionConfig {
         target_core_samples: args.target_core_samples,
         left_context_samples: args.left_context_samples,
         right_context_samples: args.right_context_samples,
@@ -276,12 +284,12 @@ fn recognize_audio(
             long_pause_ms: args.chunk_long_pause_ms,
             distance_penalty_ms: args.chunk_distance_penalty_ms,
         },
-        ..RecognitionConfig::default()
+        ..TranscriptionConfig::default()
     };
     let mut decoder = WhisperDecoder::load(&args.model, &config)?;
-    let run = recognize(source, &wav.samples, config, &mut decoder)?;
-    let recognizer = RecognizerSession::from_decoder(decoder, &args.model);
-    Ok((run, recognizer))
+    let run = transcribe_initial(source, &wav.samples, config, &mut decoder)?;
+    let transcriber = TranscriberSession::from_decoder(decoder, &args.model);
+    Ok((run, transcriber))
 }
 
 #[cfg(test)]
@@ -300,20 +308,20 @@ mod tests {
         assert_eq!(args.input, PathBuf::from("audio.wav"));
         assert_eq!(args.player, PathBuf::from("ffplay"));
         assert_eq!(args.output, None);
-        assert_eq!(args.recognition.model, PathBuf::from("whisper.bin"));
-        assert_eq!(args.recognition.language, "auto");
-        assert_eq!(args.recognition.threads, 4);
-        assert_eq!(args.recognition.target_core_samples, 384_000);
-        assert_eq!(args.recognition.left_context_samples, 48_000);
-        assert_eq!(args.recognition.right_context_samples, 48_000);
-        assert_eq!(args.recognition.top_candidates, 20);
-        assert_eq!(args.recognition.chunk_minimum_tokens, 8);
-        assert_eq!(args.recognition.chunk_target_tokens, 32);
-        assert_eq!(args.recognition.chunk_maximum_tokens, 64);
-        assert_eq!(args.recognition.chunk_usable_pause_ms, 300);
-        assert_eq!(args.recognition.chunk_strong_pause_ms, 800);
-        assert_eq!(args.recognition.chunk_long_pause_ms, 2_000);
-        assert_eq!(args.recognition.chunk_distance_penalty_ms, 20);
+        assert_eq!(args.transcription.model, PathBuf::from("whisper.bin"));
+        assert_eq!(args.transcription.language, "auto");
+        assert_eq!(args.transcription.threads, 4);
+        assert_eq!(args.transcription.target_core_samples, 384_000);
+        assert_eq!(args.transcription.left_context_samples, 48_000);
+        assert_eq!(args.transcription.right_context_samples, 48_000);
+        assert_eq!(args.transcription.top_candidates, 20);
+        assert_eq!(args.transcription.chunk_minimum_tokens, 8);
+        assert_eq!(args.transcription.chunk_target_tokens, 32);
+        assert_eq!(args.transcription.chunk_maximum_tokens, 64);
+        assert_eq!(args.transcription.chunk_usable_pause_ms, 300);
+        assert_eq!(args.transcription.chunk_strong_pause_ms, 800);
+        assert_eq!(args.transcription.chunk_long_pause_ms, 2_000);
+        assert_eq!(args.transcription.chunk_distance_penalty_ms, 20);
         assert_eq!(args.replay_context_ms, 750);
     }
 
@@ -334,12 +342,12 @@ mod tests {
         };
         assert_eq!(args.input, PathBuf::from("audio.wav"));
         assert_eq!(args.output, PathBuf::from("draft.rde.json"));
-        assert_eq!(args.recognition.model, PathBuf::from("whisper.bin"));
+        assert_eq!(args.transcription.model, PathBuf::from("whisper.bin"));
         assert!(Cli::try_parse_from(["rde", "transcribe", "audio.wav"]).is_err());
     }
 
     #[test]
-    fn transcribe_output_is_checked_before_recognition() {
+    fn transcribe_output_is_checked_before_transcription() {
         let directory = tempfile::tempdir().unwrap();
         let missing_parent = directory.path().join("missing/draft.rde.json");
         assert!(validate_output_target(&missing_parent)
@@ -373,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_opens_a_document_without_recognition_arguments() {
+    fn edit_opens_a_document_without_transcription_arguments() {
         let cli = Cli::try_parse_from(["rde", "edit", "draft.rde.json"]).unwrap();
         let Command::Edit(args) = cli.command else {
             panic!("expected edit");

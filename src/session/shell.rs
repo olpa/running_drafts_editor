@@ -11,93 +11,115 @@ use crate::{
     navigation::NavigationState,
     persistence::{export_text, load_project, save_project},
     project::Project,
-    recognition::{RecognitionConfig, RecognitionRun, RecognizerSession},
+    transcription::{
+        ChunkTranscriber, InitialTranscriptionResult, TranscriberSession, TranscriptionConfig,
+        TranscriptionError,
+    },
 };
 
 use super::{
     command::{parse_command, SessionCommand},
     editing::{
         alternative_address, apply_history, apply_paragraph_merge, apply_paragraph_split,
-        chunk_prefix, edit_range, preserve_boundary_whitespace, render_alternatives,
-        resolve_current_chunk, run_corrected_refresh, run_refresh,
+        chunk_prefix, edit_range, preserve_boundary_whitespace, preserve_text_boundary_whitespace,
+        render_alternatives, resolve_current_chunk, run_correction, run_transcription,
     },
     issues::{self, IssueThresholds},
     playback::{repeat_document_replay, start_document_replay, AudioPlayer, ReplayStart},
     render::{
-        render_chunk_info, render_issue_paragraph, render_recognition_document, render_token_range,
-        render_tokens,
+        render_issue_paragraph, render_token_range, render_tokens, render_transcription_document,
     },
 };
 
+trait TranscriberFactory {
+    fn load(
+        &mut self,
+        model: &Path,
+        config: &TranscriptionConfig,
+    ) -> Result<Box<dyn ChunkTranscriber>, TranscriptionError>;
+}
+struct WhisperFactory;
+impl TranscriberFactory for WhisperFactory {
+    fn load(
+        &mut self,
+        model: &Path,
+        config: &TranscriptionConfig,
+    ) -> Result<Box<dyn ChunkTranscriber>, TranscriptionError> {
+        TranscriberSession::load(model, config).map(|s| Box::new(s) as Box<dyn ChunkTranscriber>)
+    }
+}
+
 pub struct SessionContext<'a> {
-    document_path: Option<&'a Path>,
-    recognition_run: Option<&'a RecognitionRun>,
+    project_path: Option<&'a Path>,
+    initial_result: Option<&'a InitialTranscriptionResult>,
     start: SessionStart<'a>,
     model: Option<&'a Path>,
-    recognizer: Option<RecognizerSession>,
+    transcriber: Option<Box<dyn ChunkTranscriber>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SessionStart<'a> {
     SavedDocument,
-    RecognizedAudio { source: &'a Path },
+    TranscribedAudio { source: &'a Path },
 }
 
 impl<'a> SessionContext<'a> {
-    pub fn saved_document(document_path: &'a Path, model: Option<&'a Path>) -> Self {
+    pub fn saved_project(project_path: &'a Path, model: Option<&'a Path>) -> Self {
         Self {
-            document_path: Some(document_path),
-            recognition_run: None,
+            project_path: Some(project_path),
+            initial_result: None,
             start: SessionStart::SavedDocument,
             model,
-            recognizer: None,
+            transcriber: None,
         }
     }
 
-    pub fn recognized_audio(
-        recognition_run: &'a RecognitionRun,
+    pub fn transcribed_audio(
+        initial_result: &'a InitialTranscriptionResult,
         source: &'a Path,
-        document_path: Option<&'a Path>,
+        project_path: Option<&'a Path>,
         model: Option<&'a Path>,
     ) -> Self {
         Self {
-            document_path,
-            recognition_run: Some(recognition_run),
-            start: SessionStart::RecognizedAudio { source },
+            project_path,
+            initial_result: Some(initial_result),
+            start: SessionStart::TranscribedAudio { source },
             model,
-            recognizer: None,
+            transcriber: None,
         }
     }
 
-    pub fn recognized_audio_with_recognizer(
-        recognition_run: &'a RecognitionRun,
+    pub fn transcribed_audio_with_transcriber(
+        initial_result: &'a InitialTranscriptionResult,
         source: &'a Path,
-        document_path: Option<&'a Path>,
+        project_path: Option<&'a Path>,
         model: Option<&'a Path>,
-        recognizer: RecognizerSession,
+        transcriber: TranscriberSession,
     ) -> Self {
         Self {
-            document_path,
-            recognition_run: Some(recognition_run),
-            start: SessionStart::RecognizedAudio { source },
+            project_path,
+            initial_result: Some(initial_result),
+            start: SessionStart::TranscribedAudio { source },
             model,
-            recognizer: Some(recognizer),
+            transcriber: Some(Box::new(transcriber)),
         }
     }
 }
 
 struct SessionState<'a> {
     project: Project,
-    document_path: Option<std::path::PathBuf>,
-    recognition_run: Option<&'a RecognitionRun>,
+    project_path: Option<std::path::PathBuf>,
+    initial_result: Option<&'a InitialTranscriptionResult>,
     start: SessionStart<'a>,
     navigation: NavigationState,
     last_playback: Option<super::playback::LastPlayback>,
     language: String,
-    recognizer: Option<RecognizerSession>,
+    transcriber: Option<Box<dyn ChunkTranscriber>>,
     model_path: Option<PathBuf>,
     issue_thresholds: IssueThresholds,
     color: bool,
+    factory: Box<dyn TranscriberFactory>,
+    startup_model: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -115,14 +137,19 @@ impl<'a> SessionState<'a> {
         color: bool,
     ) -> io::Result<Option<Self>> {
         let SessionContext {
-            document_path,
-            recognition_run,
+            project_path,
+            initial_result,
             start,
             model,
-            recognizer,
+            transcriber,
         } = context;
         let document = project.clone();
-        let document_path = document_path.map(Path::to_path_buf);
+        let initial_model = document.settings().model.clone();
+        let startup_model = model
+            .map(Path::to_path_buf)
+            .filter(|path| Some(path) != initial_model.as_ref());
+        let initial_language = document.settings().language.clone();
+        let project_path = project_path.map(Path::to_path_buf);
         match start {
             SessionStart::SavedDocument => {
                 render_session_document(
@@ -149,8 +176,9 @@ impl<'a> SessionState<'a> {
                     }
                 }
             }
-            SessionStart::RecognizedAudio { source } => {
-                let run = recognition_run.expect("recognized-audio context has a recognition run");
+            SessionStart::TranscribedAudio { source } => {
+                let run = initial_result
+                    .expect("transcribed-audio context has an initial transcription result");
                 if color {
                     writeln!(
                         output,
@@ -169,19 +197,19 @@ impl<'a> SessionState<'a> {
                         )?;
                     }
                 } else {
-                    render_recognition_document(run, &document, source, output)?;
+                    render_transcription_document(run, &document, source, output)?;
                 }
-                for fallback in document.token_fallbacks() {
+                for failure in document.token_alignment_failures() {
                     let address = document
-                        .marker_address_for_chunk(fallback.chunk_id())
+                        .marker_address_for_chunk(failure.chunk_id())
                         .map_or_else(
-                            || fallback.chunk_id().to_owned(),
+                            || failure.chunk_id().to_owned(),
                             |(paragraph, chunk)| format!("{paragraph}.{chunk}"),
                         );
                     writeln!(
                         errors,
-                        "token alignment unavailable for chunk {address}: {}; using chunk text as one pseudo-token",
-                        fallback.reason()
+                        "token alignment unavailable for chunk {address}: {}; preserving transcription text without token positions",
+                        failure.reason()
                     )?;
                 }
                 if run.chunks.is_empty() {
@@ -191,27 +219,21 @@ impl<'a> SessionState<'a> {
         }
         writeln!(output, "Type 'help' for session commands.")?;
         let navigation = NavigationState::new(&document);
-        let model_path = model.map(Path::to_path_buf);
-        if let Some(path) = &model_path {
-            std::fs::File::open(path).map_err(|error| {
-                io::Error::other(format!(
-                    "could not open model '{}': {error}",
-                    path.display()
-                ))
-            })?;
-        }
+        let model_path = initial_model;
         Ok(Some(Self {
             project: document,
-            document_path,
-            recognition_run,
+            project_path,
+            initial_result,
             start,
             navigation,
             last_playback: None,
-            language: "auto".to_string(),
-            recognizer,
+            language: initial_language,
+            transcriber,
             model_path,
             issue_thresholds: IssueThresholds::default(),
             color,
+            factory: Box::new(WhisperFactory),
+            startup_model,
         }))
     }
 
@@ -224,18 +246,21 @@ impl<'a> SessionState<'a> {
         player: &mut impl AudioPlayer,
         replay_context_samples: u64,
     ) -> io::Result<SessionControl> {
+        self.sync_settings();
         let Self {
             project: document,
-            document_path,
-            recognition_run,
+            project_path,
+            initial_result,
             start,
             navigation,
             last_playback,
             language,
-            recognizer,
+            transcriber,
             model_path,
             issue_thresholds,
             color,
+            factory,
+            startup_model: _,
         } = self;
         let append = matches!(&command, SessionCommand::Append { .. });
         match command {
@@ -329,7 +354,7 @@ impl<'a> SessionState<'a> {
                     };
                     issue
                 };
-                document.resolve_issue(selected.token_ids);
+                document.resolve_issue(selected.token_identities);
                 writeln!(
                     output,
                     "resolved {},{}.{}.{}",
@@ -481,13 +506,14 @@ impl<'a> SessionState<'a> {
                     return Ok(SessionControl::Continue);
                 };
                 let prefix = chunk_prefix(document, address, address.token - 1).unwrap();
-                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                if !ensure_transcriber(transcriber, model_path, language, factory.as_mut(), errors)?
+                {
                     return Ok(SessionControl::Continue);
                 }
-                run_corrected_refresh(
+                run_correction(
                     document,
                     navigation,
-                    recognizer,
+                    transcriber,
                     language,
                     address.paragraph,
                     address.chunk,
@@ -533,13 +559,14 @@ impl<'a> SessionState<'a> {
                     chunk_prefix(document, address, through).unwrap_or_default(),
                     text
                 );
-                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                if !ensure_transcriber(transcriber, model_path, language, factory.as_mut(), errors)?
+                {
                     return Ok(SessionControl::Continue);
                 }
-                run_corrected_refresh(
+                run_correction(
                     document,
                     navigation,
-                    recognizer,
+                    transcriber,
                     language,
                     address.paragraph,
                     address.chunk,
@@ -550,6 +577,58 @@ impl<'a> SessionState<'a> {
                 )?;
             }
             SessionCommand::Replace { range, replacement } => {
+                let structural = match &range {
+                    Some(crate::navigation::Address::Range { start, end }) => Some((*start, *end)),
+                    None => navigation.current_range(document).ok(),
+                    _ => None,
+                };
+                let full = structural
+                    .filter(|(a, b)| {
+                        crate::navigation::tokens_in_range(document, *a, *b)
+                            .is_ok_and(|tokens| tokens.is_empty())
+                    })
+                    .and_then(|(a, b)| crate::navigation::chunks_in_range(document, a, b).ok())
+                    .filter(|chunks| chunks.len() == 1)
+                    .and_then(|chunks| {
+                        let c = chunks[0];
+                        (!document.chunk_has_tokens(c.paragraph, c.chunk)?).then_some(c)
+                    });
+                if let Some(c) = full {
+                    let intended = if replacement.exact_boundaries {
+                        replacement.text
+                    } else {
+                        preserve_text_boundary_whitespace(
+                            &document
+                                .current_transcription(c.paragraph, c.chunk)
+                                .unwrap()
+                                .text,
+                            replacement.text,
+                        )
+                    };
+                    if !ensure_transcriber(
+                        transcriber,
+                        model_path,
+                        language,
+                        factory.as_mut(),
+                        errors,
+                    )? {
+                        return Ok(SessionControl::Continue);
+                    }
+                    run_correction(
+                        document,
+                        navigation,
+                        transcriber,
+                        language,
+                        c.paragraph,
+                        c.chunk,
+                        intended,
+                        None,
+                        output,
+                        errors,
+                    )?;
+                    return Ok(SessionControl::Continue);
+                }
+
                 let (start, end) = match edit_range(document, navigation, range) {
                     Ok(v) => v,
                     Err(e) => {
@@ -567,13 +646,14 @@ impl<'a> SessionState<'a> {
                     chunk_prefix(document, start, start.token - 1).unwrap_or_default(),
                     text
                 );
-                if !ensure_recognizer(recognizer, model_path, language, errors)? {
+                if !ensure_transcriber(transcriber, model_path, language, factory.as_mut(), errors)?
+                {
                     return Ok(SessionControl::Continue);
                 }
-                run_corrected_refresh(
+                run_correction(
                     document,
                     navigation,
-                    recognizer,
+                    transcriber,
                     language,
                     start.paragraph,
                     start.chunk,
@@ -593,64 +673,65 @@ impl<'a> SessionState<'a> {
                     "delete is disabled; deletion of audio-backed text is not implemented"
                 )?
             }
-            SessionCommand::Refresh { marker } => {
-                let resolved = marker.or_else(|| resolve_current_chunk(document, navigation));
-                let Some((paragraph, marker)) = resolved else {
+            SessionCommand::Model(None) => writeln!(
+                output,
+                "model {}",
+                model_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(none)".into())
+            )?,
+            SessionCommand::Language(None) => writeln!(output, "language {language}")?,
+            SessionCommand::Model(Some(_)) | SessionCommand::Language(Some(_)) => {
+                let Some((paragraph, chunk)) = resolve_current_chunk(document, navigation) else {
+                    writeln!(errors, "setting change requires exactly one current chunk")?;
+                    return Ok(SessionControl::Continue);
+                };
+                let mut settings = document.settings().clone();
+                match command {
+                    SessionCommand::Model(Some(path)) => settings.model = Some(path),
+                    SessionCommand::Language(Some(value)) => settings.language = value,
+                    _ => unreachable!(),
+                }
+                if &settings == document.settings() {
+                    writeln!(output, "transcription settings unchanged")?;
+                    return Ok(SessionControl::Continue);
+                }
+                let Some(path) = settings.model.as_ref() else {
                     writeln!(
                         errors,
-                        "refresh requires a current chunk or a selection covering one chunk"
+                        "transcription requires a model: start with --model MODEL"
                     )?;
                     return Ok(SessionControl::Continue);
                 };
-                if document.chunk_token_count(paragraph, marker).is_none() {
-                    writeln!(errors, "refresh failed: unknown chunk {paragraph}.{marker}")?;
-                    return Ok(SessionControl::Continue);
+                let config = TranscriptionConfig {
+                    language: settings.language.clone(),
+                    ..TranscriptionConfig::default()
+                };
+                match factory.load(path, &config) {
+                    Err(error) => writeln!(errors, "could not load model: {error}")?,
+                    Ok(engine) => {
+                        let mut candidate = Some(engine);
+                        let history = document.edit_history_len();
+                        run_transcription(
+                            document,
+                            navigation,
+                            &mut candidate,
+                            &settings,
+                            paragraph,
+                            chunk,
+                            Vec::new(),
+                            output,
+                            errors,
+                        )?;
+                        if document.edit_history_len() > history {
+                            *model_path = settings.model;
+                            *language = settings.language;
+                            *transcriber = candidate;
+                        }
+                    }
                 }
-                if !ensure_recognizer(recognizer, model_path, language, errors)? {
-                    return Ok(SessionControl::Continue);
-                }
-                run_refresh(
-                    document,
-                    navigation,
-                    recognizer,
-                    language,
-                    paragraph,
-                    marker,
-                    Vec::new(),
-                    output,
-                    errors,
-                )?;
             }
-            SessionCommand::Model(path) => match path {
-                None => writeln!(
-                    output,
-                    "model {}",
-                    model_path
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "(none)".into())
-                )?,
-                Some(path) => match std::fs::File::open(&path) {
-                    Ok(_) => {
-                        *recognizer = None;
-                        *model_path = Some(path.clone());
-                        writeln!(output, "model {} (loads on first use)", path.display())?;
-                    }
-                    Err(error) => {
-                        writeln!(errors, "could not open model '{}': {error}", path.display())?
-                    }
-                },
-            },
-            SessionCommand::Language(value) => match value {
-                None => writeln!(output, "language {language}")?,
-                Some(value) => {
-                    *language = value;
-                    if let Some(r) = recognizer {
-                        r.set_language(language.clone());
-                    }
-                    writeln!(output, "language {language}")?;
-                }
-            },
             SessionCommand::SplitParagraph { marker } => {
                 apply_paragraph_split(document, navigation, marker, output, errors)?
             }
@@ -698,35 +779,22 @@ impl<'a> SessionState<'a> {
                     writeln!(errors, "unknown chunk {paragraph}.{chunk}")?;
                     return Ok(SessionControl::Continue);
                 };
-                if let Some(run) = recognition_run {
-                    match run
-                        .chunks
-                        .iter()
-                        .find(|candidate| candidate.id == marker.chunk_id())
-                    {
-                        Some(recognition_chunk) => {
-                            render_chunk_info(run, recognition_chunk, paragraph, chunk, output)?
-                        }
-                        None => {
-                            writeln!(errors, "chunk data is unavailable for {paragraph}.{chunk}")?
-                        }
-                    }
+                let _ = marker;
+                if let Some(t) = document.current_transcription(paragraph, chunk) {
+                    super::render::render_transcription_info(t, paragraph, chunk, output)?;
                 } else {
-                    writeln!(
-                        errors,
-                        "recognition information is not stored in this document baseline"
-                    )?;
+                    writeln!(errors, "transcription information unavailable")?;
                 }
             }
             SessionCommand::Save(path) => {
-                let path = path.or_else(|| document_path.clone());
+                let path = path.or_else(|| project_path.clone());
                 let Some(path) = path else {
                     writeln!(errors, "save requires a document path")?;
                     return Ok(SessionControl::Continue);
                 };
                 match save_project(&path, document) {
                     Ok(()) => {
-                        *document_path = Some(path.clone());
+                        *project_path = Some(path.clone());
                         writeln!(output, "saved {}", path.display())?;
                     }
 
@@ -740,15 +808,15 @@ impl<'a> SessionState<'a> {
             SessionCommand::Load(path) => match load_project(&path) {
                 Ok(loaded) => {
                     *document = loaded;
-                    *document_path = Some(path);
-                    *recognition_run = None;
+                    *project_path = Some(path);
+                    *initial_result = None;
                     *start = SessionStart::SavedDocument;
                     *navigation = NavigationState::new(document);
                     *last_playback = None;
                     writeln!(
                         output,
                         "loaded {}",
-                        document_path.as_ref().unwrap().display()
+                        project_path.as_ref().unwrap().display()
                     )?;
                     render_session_document(
                         document,
@@ -765,6 +833,15 @@ impl<'a> SessionState<'a> {
             SessionCommand::Empty => {}
         }
         Ok(SessionControl::Continue)
+    }
+
+    fn sync_settings(&mut self) {
+        let settings = self.project.settings();
+        if self.model_path != settings.model || self.language != settings.language {
+            self.transcriber = None;
+            self.model_path = settings.model.clone();
+            self.language = settings.language.clone();
+        }
     }
 }
 
@@ -792,31 +869,32 @@ fn render_session_document(
     Ok(())
 }
 
-fn ensure_recognizer(
-    recognizer: &mut Option<RecognizerSession>,
+fn ensure_transcriber(
+    transcriber: &mut Option<Box<dyn ChunkTranscriber>>,
     model_path: &Option<PathBuf>,
     language: &str,
+    factory: &mut dyn TranscriberFactory,
     errors: &mut impl Write,
 ) -> io::Result<bool> {
-    if recognizer.is_some() {
+    if transcriber.is_some() {
         return Ok(true);
     }
     let Some(path) = model_path else {
         writeln!(
             errors,
-            "recognition requires a model: start with --model MODEL or use: model PATH"
+            "transcription requires a model: start with --model MODEL or use: model PATH"
         )?;
         return Ok(false);
     };
-    match RecognizerSession::load(
+    match factory.load(
         path,
-        &RecognitionConfig {
+        &TranscriptionConfig {
             language: language.into(),
-            ..RecognitionConfig::default()
+            ..TranscriptionConfig::default()
         },
     ) {
         Ok(session) => {
-            *recognizer = Some(session);
+            *transcriber = Some(session);
             Ok(true)
         }
         Err(error) => {
@@ -892,6 +970,15 @@ pub fn run_session(
     let Some(mut state) = SessionState::new(project, context, output, errors, false)? else {
         return Ok(());
     };
+    if let Some(model) = state.startup_model.take() {
+        state.execute(
+            SessionCommand::Model(Some(model)),
+            output,
+            errors,
+            player,
+            replay_context_samples,
+        )?;
+    }
     loop {
         write!(output, "rde> ")?;
         output.flush()?;
@@ -927,6 +1014,15 @@ pub fn run_readline_session(
     let Some(mut state) = SessionState::new(project, context, output, errors, true)? else {
         return Ok(());
     };
+    if let Some(model) = state.startup_model.take() {
+        state.execute(
+            SessionCommand::Model(Some(model)),
+            output,
+            errors,
+            player,
+            replay_context_samples,
+        )?;
+    }
     let mut editor = DefaultEditor::new().map_err(readline_io_error)?;
     let history_path = history_path();
     if let Some(path) = &history_path {
@@ -1004,7 +1100,7 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
         output,
         "Document display: print | list | show (short forms: p | l)"
     )?;
-    writeln!(output, "Model loading: model [PATH] configures the path; loading waits until recognition is first used")?;
+    writeln!(output, "Model loading: model [PATH] configures the path; startup model loads on first correction; model/language changes transcribe one current chunk")?;
     writeln!(
         output,
         "Alternatives: [N.M.K]choose C and [N.M.K]set C select the same candidate"
@@ -1015,7 +1111,7 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         output,
-        "Commands:\n  p | print                  print the document\n  Np                         print paragraph N\n  A                          move to position A\n  A,Bselect | sel | s        select half-open range [A, B)\n  Ntokens                    list paragraph N tokens\n  [N.M.K]alternatives | alts list alternatives for one token/current token\n  [N.M.K]choose C            correct one token and refresh its chunk\n  N.M.Kinsert TEXT           correct before a token (including its end position)\n  N.M.Kappend TEXT           correct after the following token\n  [A,B]replace TEXT          replace a supported one-chunk range and refresh\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [A,B]delete                disabled pending audio-backed deletion\n  [N.M]refresh               re-recognize one complete chunk\n  model [PATH]               show or load the session model\n  language [CODE]            show or set the session language\n  [N.M]parasplit             split paragraph before a chunk/current chunk\n  Nmerge                     merge paragraph N with N+1 exactly\n  [A]play | [A]slowplay      play current/addressed item or range\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  N.Minfo                    report recognition information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
+        "Commands:\n  p | print                  print the document\n  Np                         print paragraph N\n  A                          move to position A\n  A,Bselect | sel | s        select half-open range [A, B)\n  Ntokens                    list paragraph N tokens\n  [N.M.K]alternatives | alts list alternatives for one token/current token\n  [N.M.K]choose C            correct one token and produce another chunk transcription\n  N.M.Kinsert TEXT           correct before a token (including its end position)\n  N.M.Kappend TEXT           correct after the following token\n  [A,B]replace TEXT          replace a supported one-chunk range and produce another transcription\n                              unquoted keeps selected boundary whitespace\n                              quoted \"TEXT\" controls boundaries exactly\n  [A,B]delete                disabled pending audio-backed deletion\n  model [PATH]               show model; changing it transcribes the current chunk\n  language [CODE]            show language; changing it transcribes the current chunk\n  [N.M]parasplit             split paragraph before a chunk/current chunk\n  Nmerge                     merge paragraph N with N+1 exactly\n  [A]play | [A]slowplay      play current/addressed item or range\n  replay | slowreplay        repeat the last audio range\n  stop                       stop active playback\n  N.Minfo                    report transcription information availability\n  save [PATH]                save atomically; default is the opened file\n  load PATH | edit PATH      replace the current document and reset navigation\n  h | help                   show this help\n  q | quit                   leave the session"
     )
 }
 
@@ -1023,7 +1119,372 @@ pub(crate) fn render_help(output: &mut impl Write) -> io::Result<()> {
 mod tests {
     use std::{ffi::OsString, path::PathBuf};
 
-    use super::{history_path_from, render_help};
+    use super::*;
+    use std::{cell::RefCell, rc::Rc};
+    type LoadLog = Rc<RefCell<Vec<(PathBuf, String)>>>;
+
+    struct FakeFactory {
+        loads: LoadLog,
+        fail_load: bool,
+        fail_decode: bool,
+    }
+    impl TranscriberFactory for FakeFactory {
+        fn load(
+            &mut self,
+            model: &Path,
+            config: &TranscriptionConfig,
+        ) -> Result<Box<dyn ChunkTranscriber>, TranscriptionError> {
+            self.loads
+                .borrow_mut()
+                .push((model.into(), config.language.clone()));
+            if self.fail_load {
+                return Err(TranscriptionError::Model("synthetic load failure".into()));
+            }
+            Ok(Box::new(FakeEngine {
+                model: model.into(),
+                fail: self.fail_decode,
+            }))
+        }
+    }
+    struct FakeEngine {
+        model: PathBuf,
+        fail: bool,
+    }
+    impl ChunkTranscriber for FakeEngine {
+        fn tokenize(&self, text: &str) -> Result<Vec<i32>, TranscriptionError> {
+            Ok(text.chars().map(|c| c as i32).collect())
+        }
+        fn render_tokens(&self, tokens: &[i32]) -> Result<String, TranscriptionError> {
+            Ok(tokens
+                .iter()
+                .filter_map(|id| char::from_u32(*id as u32))
+                .collect())
+        }
+        fn beginning_timestamp_token(&self) -> i32 {
+            0
+        }
+        fn transcribe_chunk(
+            &mut self,
+            request: crate::transcription::ChunkTranscriptionRequest,
+            _: &[f32],
+        ) -> Result<crate::transcription::Transcription, TranscriptionError> {
+            if self.fail {
+                return Err(TranscriptionError::Model("synthetic decode failure".into()));
+            }
+            let text = if request.forced_tokens.is_empty() {
+                format!("{}:{}", self.model.display(), request.language)
+            } else {
+                format!(
+                    "{} suffix",
+                    self.render_tokens(&request.forced_tokens[1..])?
+                )
+            };
+            let mut result =
+                crate::test_support::batch(&format!("decode-{}", request.revision), &[&text]);
+            result.source = request.source;
+            result.config.language = request.language;
+            result.chunks[0].audio_range = request.chunk_range;
+            result.segments[0].audio_range = request.chunk_range;
+            result.segments[0].tokens[0].audio_range = Some(request.chunk_range);
+            if !request.forced_tokens.is_empty() {
+                result.segments[0].tokens = request
+                    .forced_tokens
+                    .iter()
+                    .map(|id| crate::transcription::WhisperToken {
+                        token_id: *id,
+                        text: if *id == 0 {
+                            String::new()
+                        } else {
+                            char::from_u32(*id as u32).unwrap().to_string()
+                        },
+                        probability: 0.1,
+                        is_special: *id == 0,
+                        audio_range: Some(request.chunk_range),
+                        alternatives: Vec::new(),
+                    })
+                    .collect();
+                result.segments[0]
+                    .tokens
+                    .push(crate::transcription::WhisperToken {
+                        token_id: 999,
+                        text: " suffix".into(),
+                        probability: 0.1,
+                        is_special: false,
+                        audio_range: Some(request.chunk_range),
+                        alternatives: Vec::new(),
+                    });
+            }
+            result.windows[0].hypotheses = result.segments.clone();
+            result.windows[0].prompt_token_ids = request.forced_tokens;
+            Ok(result.transcription_for(
+                &result.chunks[0],
+                &request.chunk_id,
+                Some(request.previous_id),
+            ))
+        }
+    }
+    #[derive(Default)]
+    struct SilentPlayer;
+    impl AudioPlayer for SilentPlayer {
+        fn play(
+            &mut self,
+            _: &Path,
+            _: u32,
+            _: crate::chunking::SampleRange,
+        ) -> Result<(), super::super::playback::PlaybackError> {
+            Ok(())
+        }
+    }
+    fn state(texts: &[&str]) -> (tempfile::TempDir, SessionState<'static>, LoadLog) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for _ in 0..texts.len() * 100 {
+            writer.write_sample(0i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        let wav = crate::chunking::read_canonical_wav(&path).unwrap();
+        let mut batch = crate::test_support::batch("initial", texts);
+        batch.source.sha256 = wav.source_sha256;
+        batch.config.language = "en".into();
+        let mut project = Project::from_initial_transcription_with_source(&batch, Some(&path));
+        project
+            .configure_initial_settings(Some("old-model".into()), "en".into())
+            .unwrap();
+        let mut state = SessionState::new(
+            &project,
+            SessionContext::saved_project(Path::new("unused"), None),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let loads = Rc::new(RefCell::new(Vec::new()));
+        state.factory = Box::new(FakeFactory {
+            loads: loads.clone(),
+            fail_load: false,
+            fail_decode: false,
+        });
+        (dir, state, loads)
+    }
+    fn execute(state: &mut SessionState<'_>, command: &str) -> String {
+        let mut errors = Vec::new();
+        state
+            .execute(
+                parse_command(command).unwrap(),
+                &mut Vec::new(),
+                &mut errors,
+                &mut SilentPlayer,
+                0,
+            )
+            .unwrap();
+        String::from_utf8(errors).unwrap()
+    }
+
+    #[test]
+    fn model_and_language_changes_install_one_transaction_and_history_restores_settings_without_decoding(
+    ) {
+        let (_dir, mut state, loads) = state(&["old"]);
+        assert!(execute(&mut state, "language de").is_empty());
+        assert_eq!(state.project.edit_history_len(), 1);
+        assert_eq!(state.project.paragraph(1).unwrap().text(), "old-model:de");
+        assert_eq!(
+            state
+                .project
+                .current_transcription(1, 1)
+                .unwrap()
+                .config
+                .language,
+            "de"
+        );
+        assert!(execute(&mut state, "model new-model").is_empty());
+        assert_eq!(
+            state.project.settings().model.as_deref(),
+            Some(Path::new("new-model"))
+        );
+        assert_eq!(state.project.edit_history_len(), 2);
+        execute(&mut state, "2undo");
+        assert_eq!(state.project.settings().language, "en");
+        assert_eq!(
+            state.project.settings().model.as_deref(),
+            Some(Path::new("old-model"))
+        );
+        assert_eq!(state.project.paragraph(1).unwrap().text(), "old");
+        execute(&mut state, "2redo");
+        assert_eq!(state.project.settings().language, "de");
+        assert_eq!(
+            state.project.settings().model.as_deref(),
+            Some(Path::new("new-model"))
+        );
+        assert_eq!(loads.borrow().len(), 2);
+    }
+
+    #[test]
+    fn load_and_decode_failures_preserve_settings_text_selection_and_redo() {
+        for fail_load in [true, false] {
+            let (_dir, mut state, loads) = state(&["old", "two"]);
+            state.project.split_paragraph(1, 1).unwrap();
+            state.project.undo(1);
+            state.navigation = NavigationState::new(&state.project);
+            let project = state.project.clone();
+            let navigation = state.navigation.clone();
+            state.factory = Box::new(FakeFactory {
+                loads,
+                fail_load,
+                fail_decode: !fail_load,
+            });
+            let errors = execute(&mut state, "language de");
+            assert!(errors.contains("failure"), "{errors}");
+            assert_eq!(state.project, project);
+            assert_eq!(state.navigation, navigation);
+        }
+    }
+
+    #[test]
+    fn unchanged_settings_are_not_a_standalone_transcription_request() {
+        let (_dir, mut state, loads) = state(&["old"]);
+        let before = state.project.clone();
+        assert!(execute(&mut state, "language en").is_empty());
+        assert!(execute(&mut state, "model old-model").is_empty());
+        assert_eq!(state.project, before);
+        assert!(loads.borrow().is_empty());
+    }
+
+    #[test]
+    fn startup_model_override_is_a_normal_atomic_model_change() {
+        let (_dir, state, loads) = state(&["old"]);
+        let context =
+            SessionContext::saved_project(Path::new("unused"), Some(Path::new("new-model")));
+        let mut reopened = SessionState::new(
+            &state.project,
+            context,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(reopened.project, state.project);
+        let model = reopened.startup_model.take().unwrap();
+        reopened.factory = Box::new(FakeFactory {
+            loads: loads.clone(),
+            fail_load: false,
+            fail_decode: false,
+        });
+        assert!(execute(&mut reopened, &format!("model {}", model.display())).is_empty());
+        assert_eq!(
+            reopened.project.settings().model.as_deref(),
+            Some(Path::new("new-model"))
+        );
+        assert_eq!(reopened.project.edit_history_len(), 1);
+        execute(&mut reopened, "undo");
+        assert_eq!(
+            reopened.project.settings().model.as_deref(),
+            Some(Path::new("old-model"))
+        );
+        assert_eq!(loads.borrow().len(), 1);
+    }
+
+    #[test]
+    fn choosing_a_whisper_alternative_forces_its_vocabulary_id_and_undo_restores_the_mark() {
+        let (_dir, mut state, _) = state(&["old"]);
+        let source = state.project.transcriptions()[0].source.clone();
+        let path = state.project.audio_sources()[0]
+            .path()
+            .unwrap()
+            .to_path_buf();
+        let mut batch = crate::test_support::batch("alternatives", &["old"]);
+        batch.source = source;
+        batch.config.language = "en".into();
+        batch.segments[0].tokens[0]
+            .alternatives
+            .push(crate::transcription::TokenAlternative {
+                token_id: 90,
+                text: "Z".into(),
+                probability: 0.2,
+            });
+        state.project = Project::from_initial_transcription_with_source(&batch, Some(&path));
+        state
+            .project
+            .configure_initial_settings(Some("old-model".into()), "en".into())
+            .unwrap();
+        state.navigation = NavigationState::new(&state.project);
+        execute(&mut state, "mark");
+        let marked = state.project.attention_marks()[0].clone();
+        assert!(execute(&mut state, "choose 1").is_empty());
+        assert_eq!(state.project.paragraph(1).unwrap().text(), "Z suffix");
+        assert_eq!(
+            state
+                .project
+                .current_transcription(1, 1)
+                .unwrap()
+                .forced_token_ids,
+            vec![0, 90]
+        );
+        assert!(state.project.attention_marks().is_empty());
+        execute(&mut state, "undo");
+        assert_eq!(state.project.attention_marks(), &[marked]);
+    }
+
+    #[test]
+    fn partially_crossing_a_second_chunk_is_not_a_single_chunk_setting_target() {
+        let (_dir, mut state, loads) = state(&["one", "two"]);
+        execute(&mut state, "1.1,1.2.1select");
+        // Boundary before the second chunk still describes one complete chunk.
+        assert!(execute(&mut state, "language de").is_empty());
+        execute(&mut state, "1.1.1,1.2.2select");
+        let before = state.project.clone();
+        assert!(execute(&mut state, "language fr").contains("exactly one current chunk"));
+        assert_eq!(state.project, before);
+        assert_eq!(loads.borrow().len(), 1);
+    }
+
+    #[test]
+    fn complete_chunk_correction_without_token_alignment_produces_only_whisper_tokens() {
+        let (_dir, mut state, _) = state(&["old"]);
+        // Build the same valid mismatch through the public initial-transcription path.
+        let source = state.project.transcriptions()[0].source.clone();
+        let path = state.project.audio_sources()[0]
+            .path()
+            .unwrap()
+            .to_path_buf();
+        let mut batch = crate::test_support::batch("mismatch", &["old"]);
+        batch.source = source;
+        batch.config.language = "en".into();
+        batch.segments[0].tokens[0].text = "different evidence".into();
+        state.project = Project::from_initial_transcription_with_source(&batch, Some(&path));
+        state
+            .project
+            .configure_initial_settings(Some("old-model".into()), "en".into())
+            .unwrap();
+        state.navigation = NavigationState::new(&state.project);
+        assert_eq!(state.project.chunk_has_tokens(1, 1), Some(false));
+        execute(&mut state, "1.1,1.2select");
+        assert!(execute(&mut state, "replace corrected").is_empty());
+        assert_eq!(
+            state.project.paragraph(1).unwrap().text(),
+            "corrected suffix"
+        );
+        assert_eq!(state.project.chunk_has_tokens(1, 1), Some(true));
+        assert_eq!(
+            state
+                .project
+                .current_transcription(1, 1)
+                .unwrap()
+                .forced_token_ids[0],
+            0
+        );
+        execute(&mut state, "undo");
+        assert_eq!(state.project.paragraph(1).unwrap().text(), "old");
+        assert_eq!(state.project.chunk_has_tokens(1, 1), Some(false));
+    }
 
     #[test]
     fn command_history_uses_xdg_state_home_when_set() {

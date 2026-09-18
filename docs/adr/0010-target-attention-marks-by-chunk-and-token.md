@@ -10,7 +10,6 @@ irrelevant to the mark, prevents a new transcription from inheriting a mark
 only because similar text occupies the same position, and lets undo restore
 the mark with the exact chunk transcription state in which it was created.
 
-Legacy marks that store only a token identity gain their chunk target from the
-current or historical document state that contains them when the project is
-loaded. A mark whose target cannot be resolved is invalid rather than silently
-retargeted.
+Every stored mark includes both targets. A mark whose target cannot be resolved
+in its current or historical state is invalid rather than silently retargeted.
+Issue #57 dropped the earlier unreleased format and its mark migration.

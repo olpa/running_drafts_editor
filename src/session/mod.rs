@@ -8,5 +8,5 @@ mod render;
 mod shell;
 
 pub use playback::{AudioPlayer, Ffplay, PlaybackError, PlaybackSpeed};
-pub use render::render_recognition_chunks;
+pub use render::render_transcription_chunks;
 pub use shell::{run_readline_session, run_session, SessionContext};

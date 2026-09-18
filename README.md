@@ -47,6 +47,17 @@ Use `cargo run -- --help` and the session `help` command for the current command
 reference. Model binaries, recordings, and generated project files remain
 external to the repository.
 
+Model and language changes in the editor immediately transcribe exactly one
+current chunk. Undo and redo restore those settings together with the current
+transcription. Corrections also produce completed transcriptions; there is no
+standalone `refresh` command.
+An `edit --model PATH` override uses the same transaction as `model PATH`;
+opening without an override keeps the saved model reference and language.
+
+Only Whisper tokens receive token-level addresses. Text without matching token
+evidence stays visible and can be selected, played, or corrected as a complete
+chunk. Earlier unreleased saved formats are not supported.
+
 ## Project information
 
 - [`docs/product.md`](docs/product.md) records product intent and interaction

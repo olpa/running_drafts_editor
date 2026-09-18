@@ -10,47 +10,12 @@ use serde::{Deserialize, Serialize};
 use crate::chunking::SampleRange;
 
 use crate::project::{EditHistoryEntry, EditableProjectState};
-use crate::recognition::{ChunkBoundaryReason, DecodedSegment, RecognitionChunk, RecognitionRun};
+use crate::transcription::{
+    ChunkBoundaryReason, DecodedSegment, InitialTranscriptionResult, TranscriptionChunk,
+};
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EditedTokenPosition {
-    pub paragraph: usize,
-    pub token: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum DocumentEditError {
-    #[error("inserted or replacement text cannot be empty")]
-    EmptyText,
-    #[error("unknown paragraph {0}")]
-    UnknownParagraph(usize),
-    #[error("unknown token {paragraph}.{token}")]
-    UnknownToken { paragraph: usize, token: usize },
-    #[error("text-edit ranges cannot cross paragraph boundaries")]
-    CrossParagraphRange,
-    #[error("token range '{start_paragraph}.{start_token},{end_paragraph}.{end_token}' ends before it starts")]
-    ReversedRange {
-        start_paragraph: usize,
-        start_token: usize,
-        end_paragraph: usize,
-        end_token: usize,
-    },
-    #[error("paragraph revision cannot be increased")]
-    RevisionOverflow,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum AlternativeEditError {
-    #[error(transparent)]
-    Edit(#[from] DocumentEditError),
-    #[error("recognition alternatives are unavailable for this token")]
-    Unavailable,
-    #[error("unknown alternative {0}")]
-    UnknownCandidate(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +33,7 @@ pub struct ParagraphMergeOutcome {
 pub enum StructureEditError {
     #[error("unknown paragraph {0}")]
     UnknownParagraph(usize),
-    #[error("unknown chunk marker {paragraph}@{marker}")]
+    #[error("unknown chunk {paragraph}.{marker}")]
     UnknownMarker { paragraph: usize, marker: usize },
     #[error("paragraph {0} has no following paragraph")]
     NoFollowingParagraph(usize),
@@ -86,9 +51,8 @@ pub struct Document {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttentionMark {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) chunk_id: String,
-    pub(crate) token_id: VisibleTokenId,
+    pub(crate) token_identity: TokenIdentity,
 }
 
 impl AttentionMark {
@@ -96,19 +60,19 @@ impl AttentionMark {
         &self.chunk_id
     }
 
-    pub fn token_id(&self) -> &VisibleTokenId {
-        &self.token_id
+    pub fn token_identity(&self) -> &TokenIdentity {
+        &self.token_identity
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedIssue {
-    token_ids: Vec<VisibleTokenId>,
+    token_identities: Vec<TokenIdentity>,
 }
 
 impl ResolvedIssue {
-    pub fn token_ids(&self) -> &[VisibleTokenId] {
-        &self.token_ids
+    pub fn token_identities(&self) -> &[TokenIdentity] {
+        &self.token_identities
     }
 }
 
@@ -125,7 +89,7 @@ impl Document {
         self.paragraphs.get(paragraph.checked_sub(1)?)
     }
 
-    pub fn token(&self, paragraph: usize, token: usize) -> Option<&VisibleToken> {
+    pub fn token(&self, paragraph: usize, token: usize) -> Option<&TextToken> {
         self.paragraph(paragraph)?.tokens.get(token.checked_sub(1)?)
     }
 
@@ -145,12 +109,7 @@ impl Document {
             .map(|(start, end)| end - start)
     }
 
-    pub fn chunk_token(
-        &self,
-        paragraph: usize,
-        chunk: usize,
-        token: usize,
-    ) -> Option<&VisibleToken> {
+    pub fn chunk_token(&self, paragraph: usize, chunk: usize, token: usize) -> Option<&TextToken> {
         let (start, end) = self.chunk_token_bounds(paragraph, chunk)?;
         let index = start.checked_add(token.checked_sub(1)?)?;
         (index < end).then(|| &self.paragraph(paragraph).unwrap().tokens[index])
@@ -305,11 +264,14 @@ impl Document {
 // history state belong to `Project`. The implementation remains in this file
 // temporarily so the visible projection and its migration helpers stay close.
 impl crate::project::Project {
-    pub fn from_run(run: &RecognitionRun) -> Self {
-        Self::from_run_with_source(run, None::<&Path>)
+    pub fn from_initial_transcription(run: &InitialTranscriptionResult) -> Self {
+        Self::from_initial_transcription_with_source(run, None::<&Path>)
     }
 
-    pub fn from_run_with_source(run: &RecognitionRun, path: Option<impl AsRef<Path>>) -> Self {
+    pub fn from_initial_transcription_with_source(
+        run: &InitialTranscriptionResult,
+        path: Option<impl AsRef<Path>>,
+    ) -> Self {
         let mut document = Self::from_evidence(&run.id, &run.segments, &run.chunks);
         let source_id = format!("audio:{}", run.source.sha256);
         document.audio_sources.push(AudioSource {
@@ -333,14 +295,11 @@ impl crate::project::Project {
             .iter()
             .flat_map(|paragraph| {
                 paragraph.tokens.iter().filter_map(|visible| {
-                    let VisibleTokenId::Recognition {
+                    let TokenIdentity {
                         segment_id,
                         token_index,
                         ..
-                    } = &visible.id
-                    else {
-                        return None;
-                    };
+                    } = &visible.id;
                     let range = run
                         .segments
                         .iter()
@@ -351,7 +310,7 @@ impl crate::project::Project {
                     Some(TokenAudioMapping {
                         paragraph_id: paragraph.id.clone(),
                         paragraph_revision: paragraph.revision,
-                        token_id: visible.id.clone(),
+                        token_identity: visible.id.clone(),
                         source_id: source_id.clone(),
                         range,
                         alignment: AlignmentState::Exact,
@@ -359,42 +318,20 @@ impl crate::project::Project {
                 })
             })
             .collect();
-        document.recognition_token_evidence = run
-            .segments
+        document.transcriptions = run
+            .chunks
             .iter()
-            .flat_map(|segment| {
-                segment
-                    .tokens
-                    .iter()
-                    .enumerate()
-                    .map(|(token_index, token)| RecognitionTokenEvidence {
-                        token_id: VisibleTokenId::Recognition {
-                            run_id: run.id.clone(),
-                            segment_id: segment.id.clone(),
-                            token_index,
-                        },
-                        recognition_token_id: token.token_id,
-                        probability: token.probability,
-                        alternatives: token
-                            .alternatives
-                            .iter()
-                            .map(|candidate| RecognitionAlternative {
-                                token_id: candidate.token_id,
-                                text: candidate.text.clone(),
-                                probability: candidate.probability,
-                            })
-                            .collect(),
-                    })
-            })
+            .map(|c| run.transcription_for(c, &c.id, None))
             .collect();
-        document.recognition_runs.push(run.clone());
+        document.initial_evidence = Some(run.evidence());
+        document.settings.language = run.config.language.clone();
         document
     }
 
     pub(crate) fn from_evidence(
         run_id: &str,
         segments: &[DecodedSegment],
-        chunks: &[RecognitionChunk],
+        chunks: &[TranscriptionChunk],
     ) -> Self {
         let segments = segments
             .iter()
@@ -402,7 +339,6 @@ impl crate::project::Project {
             .collect::<HashMap<_, _>>();
         let mut paragraphs = Vec::new();
         let mut paragraph_chunks = Vec::new();
-        let mut token_fallbacks = Vec::new();
 
         for chunk in chunks {
             paragraph_chunks.push(chunk);
@@ -410,22 +346,12 @@ impl crate::project::Project {
                 chunk.boundary.reason,
                 ChunkBoundaryReason::LongPause | ChunkBoundaryReason::SourceEnd
             ) {
-                paragraphs.push(Paragraph::from_chunks(
-                    run_id,
-                    &paragraph_chunks,
-                    &segments,
-                    &mut token_fallbacks,
-                ));
+                paragraphs.push(Paragraph::from_chunks(run_id, &paragraph_chunks, &segments));
                 paragraph_chunks.clear();
             }
         }
         if !paragraph_chunks.is_empty() {
-            paragraphs.push(Paragraph::from_chunks(
-                run_id,
-                &paragraph_chunks,
-                &segments,
-                &mut token_fallbacks,
-            ));
+            paragraphs.push(Paragraph::from_chunks(run_id, &paragraph_chunks, &segments));
         }
 
         Self {
@@ -438,19 +364,38 @@ impl crate::project::Project {
             audio_sources: Vec::new(),
             chunk_audio_mappings: Vec::new(),
             token_audio_mappings: Vec::new(),
-            replay_chunks: Vec::new(),
-            recognition_token_evidence: Vec::new(),
-            recognition_runs: Vec::new(),
+            transcriptions: Vec::new(),
+            initial_evidence: None,
+            settings: crate::project::TranscriptionSettings::default(),
             resolved_issues: Vec::new(),
             attention_marks: Vec::new(),
             edit_history: Vec::new(),
             redo_history: Vec::new(),
-            token_fallbacks,
         }
     }
 
-    pub fn token_fallbacks(&self) -> &[TokenFallback] {
-        &self.token_fallbacks
+    pub fn token_alignment_failures(&self) -> Vec<TokenAlignmentFailure> {
+        self.paragraphs()
+            .iter()
+            .flat_map(|p| p.chunk_boundaries())
+            .filter_map(|c| {
+                let t = self
+                    .transcriptions
+                    .iter()
+                    .find(|t| t.id == c.transcription_id())?;
+                let text = t
+                    .segments
+                    .iter()
+                    .flat_map(|s| &s.tokens)
+                    .filter(|t| !t.is_special)
+                    .map(|t| t.text.as_str())
+                    .collect::<String>();
+                (text != t.text).then(|| TokenAlignmentFailure {
+                    chunk_id: c.chunk_id.clone(),
+                    reason: "normal transcription tokens do not reproduce the chunk text".into(),
+                })
+            })
+            .collect()
     }
 
     pub fn audio_sources(&self) -> &[AudioSource] {
@@ -464,14 +409,33 @@ impl crate::project::Project {
     pub fn token_audio_mappings(&self) -> &[TokenAudioMapping] {
         &self.token_audio_mappings
     }
-    pub fn replay_chunks(&self) -> &[ReplayChunk] {
-        &self.replay_chunks
+    pub fn token_evidence(
+        &self,
+        id: &TokenIdentity,
+    ) -> Option<&crate::transcription::WhisperToken> {
+        self.transcriptions
+            .iter()
+            .find(|t| t.id == id.transcription_id)?
+            .segments
+            .iter()
+            .find(|s| s.id == id.segment_id)?
+            .tokens
+            .get(id.token_index)
     }
-    pub fn recognition_token_evidence(&self) -> &[RecognitionTokenEvidence] {
-        &self.recognition_token_evidence
+    pub fn transcriptions(&self) -> &[crate::transcription::Transcription] {
+        &self.transcriptions
     }
-    pub fn recognition_runs(&self) -> &[RecognitionRun] {
-        &self.recognition_runs
+    pub fn current_transcription(
+        &self,
+        paragraph: usize,
+        chunk: usize,
+    ) -> Option<&crate::transcription::Transcription> {
+        let id = self
+            .paragraph(paragraph)?
+            .chunk_boundaries
+            .get(chunk.checked_sub(1)?)?
+            .transcription_id();
+        self.transcriptions.iter().find(|t| t.id == id)
     }
     pub fn resolved_issues(&self) -> &[ResolvedIssue] {
         &self.resolved_issues
@@ -480,17 +444,17 @@ impl crate::project::Project {
         &self.attention_marks
     }
 
-    pub fn is_attention_marked(&self, token_id: &VisibleTokenId) -> bool {
-        let Some(chunk_id) = self.chunk_id_for_visible_token(token_id) else {
+    pub fn is_attention_marked(&self, token_identity: &TokenIdentity) -> bool {
+        let Some(chunk_id) = self.chunk_id_for_token(token_identity) else {
             return false;
         };
         self.attention_marks
             .iter()
-            .any(|mark| mark.chunk_id == chunk_id && mark.token_id == *token_id)
+            .any(|mark| mark.chunk_id == chunk_id && mark.token_identity == *token_identity)
     }
 
     pub fn mark_attention(&mut self, paragraph: usize, token: usize) -> Result<(), String> {
-        let token_id = self
+        let token_identity = self
             .token(paragraph, token)
             .ok_or_else(|| format!("unknown token {paragraph}.{token}"))?
             .id()
@@ -500,17 +464,19 @@ impl crate::project::Project {
             .expect("a current token belongs to a chunk")
             .1
             .to_owned();
-        if self.is_attention_marked(&token_id) {
+        if self.is_attention_marked(&token_identity) {
             return Err(format!("token {paragraph}.{token} is already marked"));
         }
         self.remember_editable_state();
-        self.attention_marks
-            .push(AttentionMark { chunk_id, token_id });
+        self.attention_marks.push(AttentionMark {
+            chunk_id,
+            token_identity,
+        });
         Ok(())
     }
 
     pub fn unmark_attention(&mut self, paragraph: usize, token: usize) -> Result<(), String> {
-        let token_id = self
+        let token_identity = self
             .token(paragraph, token)
             .ok_or_else(|| format!("unknown token {paragraph}.{token}"))?
             .id()
@@ -523,7 +489,7 @@ impl crate::project::Project {
         let Some(index) = self
             .attention_marks
             .iter()
-            .position(|mark| mark.chunk_id == chunk_id && mark.token_id == token_id)
+            .position(|mark| mark.chunk_id == chunk_id && mark.token_identity == token_identity)
         else {
             return Err(format!("token {paragraph}.{token} is not marked"));
         };
@@ -532,9 +498,10 @@ impl crate::project::Project {
         Ok(())
     }
 
-    pub fn resolve_issue(&mut self, token_ids: Vec<VisibleTokenId>) {
+    pub fn resolve_issue(&mut self, token_identities: Vec<TokenIdentity>) {
         self.remember_editable_state();
-        self.resolved_issues.push(ResolvedIssue { token_ids });
+        self.resolved_issues
+            .push(ResolvedIssue { token_identities });
     }
 
     pub fn reopen_issue(&mut self, index: usize) -> bool {
@@ -556,22 +523,22 @@ impl crate::project::Project {
 
     fn editable_state(&self) -> EditableProjectState {
         EditableProjectState {
+            settings: self.settings.clone(),
             paragraphs: self.paragraphs.clone(),
             next_structure_id: self.next_structure_id,
             chunk_audio_mappings: self.chunk_audio_mappings.clone(),
             token_audio_mappings: self.token_audio_mappings.clone(),
-            replay_chunks: self.replay_chunks.clone(),
             resolved_issues: self.resolved_issues.clone(),
             attention_marks: self.attention_marks.clone(),
         }
     }
 
     fn restore_editable_state(&mut self, state: EditableProjectState) {
+        self.settings = state.settings;
         self.document.paragraphs = state.paragraphs;
         self.document.next_structure_id = state.next_structure_id;
         self.chunk_audio_mappings = state.chunk_audio_mappings;
         self.token_audio_mappings = state.token_audio_mappings;
-        self.replay_chunks = state.replay_chunks;
         self.resolved_issues = state.resolved_issues;
         self.attention_marks = state.attention_marks;
     }
@@ -624,13 +591,13 @@ impl crate::project::Project {
             .map(|(index, marker)| (index + 1, marker.chunk_id.as_str()))
     }
 
-    fn chunk_id_for_visible_token(&self, token_id: &VisibleTokenId) -> Option<&str> {
+    fn chunk_id_for_token(&self, token_identity: &TokenIdentity) -> Option<&str> {
         for paragraph in &self.paragraphs {
             let mut start = 0;
             for marker in &paragraph.chunk_boundaries {
                 if paragraph.tokens[start..marker.after_tokens]
                     .iter()
-                    .any(|token| token.id == *token_id)
+                    .any(|token| token.id == *token_identity)
                 {
                     return Some(&marker.chunk_id);
                 }
@@ -640,31 +607,37 @@ impl crate::project::Project {
         None
     }
 
-    pub fn install_chunk_recognition(
+    pub fn install_transcription(
         &mut self,
         paragraph_number: usize,
         marker_number: usize,
-        run: RecognitionRun,
+        transcription: crate::transcription::Transcription,
+        settings: crate::project::TranscriptionSettings,
     ) -> Result<(), String> {
+        if transcription.config.language != settings.language {
+            return Err("selected language differs from transcription circumstances".into());
+        }
         let mut next = self.clone();
         next.remember_editable_state();
-        next.install_chunk_recognition_inner(paragraph_number, marker_number, run)?;
+        next.install_transcription_inner(paragraph_number, marker_number, transcription)?;
+        next.settings = settings;
         crate::persistence::validate(&next).map_err(|error| error.to_string())?;
         *self = next;
         Ok(())
     }
 
-    fn install_chunk_recognition_inner(
+    fn install_transcription_inner(
         &mut self,
         paragraph_number: usize,
         marker_number: usize,
-        run: RecognitionRun,
+        mut transcription: crate::transcription::Transcription,
     ) -> Result<(), String> {
-        if run.chunks.len() != 1 {
-            return Err("chunk refresh must contain exactly one chunk".into());
-        }
-        if self.recognition_runs.iter().any(|old| old.id == run.id) {
-            return Err("recognition run ID is not unique".into());
+        if self
+            .transcriptions
+            .iter()
+            .any(|old| old.id == transcription.id)
+        {
+            return Err("transcription identity is not unique".into());
         }
         let paragraph = self
             .paragraph(paragraph_number)
@@ -672,7 +645,7 @@ impl crate::project::Project {
         let marker_index = marker_number
             .checked_sub(1)
             .filter(|i| *i < paragraph.chunk_boundaries.len())
-            .ok_or_else(|| format!("unknown chunk marker {paragraph_number}@{marker_number}"))?;
+            .ok_or_else(|| format!("unknown chunk {paragraph_number}.{marker_number}"))?;
         if paragraph.revision == u64::MAX {
             return Err("paragraph revision cannot be increased".into());
         }
@@ -681,6 +654,25 @@ impl crate::project::Project {
             .map_or(0, |i| paragraph.chunk_boundaries[i].after_tokens);
         let end = paragraph.chunk_boundaries[marker_index].after_tokens;
         let chunk_id = paragraph.chunk_boundaries[marker_index].chunk_id.clone();
+        let previous_id = paragraph.chunk_boundaries[marker_index]
+            .transcription_id
+            .clone();
+        if transcription.chunk_id != chunk_id
+            || transcription.previous_id.as_deref() != Some(previous_id.as_str())
+        {
+            return Err(
+                "transcription target or predecessor differs from the current chunk".into(),
+            );
+        }
+        let original = self
+            .current_transcription(paragraph_number, marker_number)
+            .ok_or("current transcription is missing")?;
+        if transcription.source != original.source
+            || transcription.audio_range != original.audio_range
+        {
+            return Err("chunk audio identity or boundaries changed".into());
+        }
+        transcription.boundary = original.boundary.clone();
         let paragraph_id = paragraph.id.clone();
         let old_revision = paragraph.revision;
         let source_id = self
@@ -689,37 +681,38 @@ impl crate::project::Project {
             .source_id
             .clone();
         let mut tokens = Vec::new();
-        for segment in &run.segments {
+        for segment in &transcription.segments {
             for (token_index, token) in segment.tokens.iter().enumerate() {
                 if !token.is_special {
-                    tokens.push(VisibleToken {
-                        id: VisibleTokenId::Recognition {
-                            run_id: run.id.clone(),
+                    tokens.push(TextToken {
+                        id: TokenIdentity {
+                            transcription_id: transcription.id.clone(),
                             segment_id: segment.id.clone(),
                             token_index,
                         },
                         text: token.text.clone(),
-                        origin: VisibleTokenOrigin::Recognition,
+                        vocabulary_id: token.token_id,
                     });
                 }
             }
         }
         let expected = tokens.iter().map(|t| t.text.as_str()).collect::<String>();
-        if expected != run.chunks[0].text {
-            return Err("normal recognition tokens do not reproduce refreshed chunk text".into());
+        if expected != transcription.text {
+            tokens.clear();
         }
         let removed = self.paragraphs[paragraph_number - 1].tokens[start..end]
             .iter()
             .map(|t| t.id.clone())
             .collect::<Vec<_>>();
         self.resolved_issues
-            .retain(|issue| !issue.token_ids.iter().any(|id| removed.contains(id)));
+            .retain(|issue| !issue.token_identities.iter().any(|id| removed.contains(id)));
         self.attention_marks
-            .retain(|mark| mark.chunk_id != chunk_id || !removed.contains(&mark.token_id));
-        let new_ids = tokens.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+            .retain(|mark| mark.chunk_id != chunk_id || !removed.contains(&mark.token_identity));
         let delta = tokens.len() as isize - (end - start) as isize;
         let paragraph = &mut self.document.paragraphs[paragraph_number - 1];
         paragraph.tokens.splice(start..end, tokens);
+        paragraph.chunk_boundaries[marker_index].text = transcription.text.clone();
+        paragraph.chunk_boundaries[marker_index].transcription_id = transcription.id.clone();
         for marker in &mut paragraph.chunk_boundaries[marker_index..] {
             marker.after_tokens = marker
                 .after_tokens
@@ -727,52 +720,30 @@ impl crate::project::Project {
                 .ok_or("invalid marker adjustment")?;
         }
         paragraph.revision += 1;
-        self.ensure_replay_chunks();
-        let replay = self
-            .replay_chunks
-            .iter_mut()
-            .find(|c| c.id == chunk_id)
-            .ok_or("chunk has no replay record")?;
-        replay.token_ids = new_ids.clone();
         self.token_audio_mappings
-            .retain(|m| !removed.contains(&m.token_id));
+            .retain(|m| !removed.contains(&m.token_identity));
         for mapping in &mut self.token_audio_mappings {
             if mapping.paragraph_id == paragraph_id && mapping.paragraph_revision == old_revision {
                 mapping.paragraph_revision += 1;
             }
         }
-        for segment in &run.segments {
+        for segment in &transcription.segments {
             for (token_index, token) in segment.tokens.iter().enumerate() {
-                let id = VisibleTokenId::Recognition {
-                    run_id: run.id.clone(),
+                let id = TokenIdentity {
+                    transcription_id: transcription.id.clone(),
                     segment_id: segment.id.clone(),
                     token_index,
                 };
-                self.recognition_token_evidence
-                    .push(RecognitionTokenEvidence {
-                        token_id: id.clone(),
-                        recognition_token_id: token.token_id,
-                        probability: token.probability,
-                        alternatives: token
-                            .alternatives
-                            .iter()
-                            .map(|a| RecognitionAlternative {
-                                token_id: a.token_id,
-                                text: a.text.clone(),
-                                probability: a.probability,
-                            })
-                            .collect(),
-                    });
-                if !token.is_special {
+                if !token.is_special && expected == transcription.text {
                     if let Some(range) = token.audio_range.filter(|r| {
                         !r.is_empty()
-                            && r.start_sample >= run.chunks[0].audio_range.start_sample
-                            && r.end_sample <= run.chunks[0].audio_range.end_sample
+                            && r.start_sample >= transcription.audio_range.start_sample
+                            && r.end_sample <= transcription.audio_range.end_sample
                     }) {
                         self.token_audio_mappings.push(TokenAudioMapping {
                             paragraph_id: paragraph_id.clone(),
                             paragraph_revision: old_revision + 1,
-                            token_id: id,
+                            token_identity: id,
                             source_id: source_id.clone(),
                             range,
                             alignment: AlignmentState::Exact,
@@ -781,7 +752,7 @@ impl crate::project::Project {
                 }
             }
         }
-        self.recognition_runs.push(run);
+        self.transcriptions.push(transcription);
         Ok(())
     }
 
@@ -789,13 +760,12 @@ impl crate::project::Project {
         &self,
         paragraph: usize,
         token: usize,
-    ) -> Option<&[RecognitionAlternative]> {
-        let visible = self.token(paragraph, token)?;
-        let evidence = self
-            .recognition_token_evidence
-            .iter()
-            .find(|evidence| evidence.token_id == *visible.id())?;
-        Some(&evidence.alternatives)
+    ) -> Option<&[crate::transcription::TokenAlternative]> {
+        Some(
+            &self
+                .token_evidence(self.token(paragraph, token)?.id())?
+                .alternatives,
+        )
     }
     pub fn alternative_token_id(
         &self,
@@ -803,44 +773,9 @@ impl crate::project::Project {
         token: usize,
         candidate: usize,
     ) -> Option<i32> {
-        let visible = self.token(paragraph, token)?;
-        self.recognition_token_evidence
-            .iter()
-            .find(|e| e.token_id == *visible.id())?
-            .alternatives
+        self.alternatives(paragraph, token)?
             .get(candidate.checked_sub(1)?)
             .map(|a| a.token_id)
-    }
-
-    pub fn choose_alternative(
-        &mut self,
-        paragraph: usize,
-        token: usize,
-        candidate: usize,
-    ) -> Result<EditedTokenPosition, AlternativeEditError> {
-        let visible = self
-            .token(paragraph, token)
-            .ok_or(DocumentEditError::UnknownToken { paragraph, token })?;
-        let evidence = self
-            .recognition_token_evidence
-            .iter()
-            .find(|evidence| evidence.token_id == *visible.id())
-            .ok_or(AlternativeEditError::Unavailable)?;
-        let text = evidence
-            .alternatives
-            .get(candidate.checked_sub(1).unwrap_or(usize::MAX))
-            .ok_or(AlternativeEditError::UnknownCandidate(candidate))?
-            .text
-            .clone();
-        self.apply_edit_with_reason(
-            paragraph,
-            token - 1,
-            token,
-            Some(text),
-            false,
-            "recognition alternative",
-        )?;
-        Ok(EditedTokenPosition { paragraph, token })
     }
     pub fn audio_source(&self, source_id: &str) -> Option<&AudioSource> {
         self.audio_sources
@@ -866,31 +801,6 @@ impl crate::project::Project {
             .find(|mapping| mapping.chunk_id == chunk_id)
     }
 
-    fn ensure_replay_chunks(&mut self) {
-        if !self.replay_chunks.is_empty() {
-            return;
-        }
-        self.replay_chunks = self
-            .paragraphs
-            .iter()
-            .flat_map(|paragraph| {
-                let mut start = 0;
-                paragraph.chunk_boundaries.iter().map(move |marker| {
-                    let chunk = ReplayChunk {
-                        id: marker.chunk_id.clone(),
-                        parent_ids: Vec::new(),
-                        token_ids: paragraph.tokens[start..marker.after_tokens]
-                            .iter()
-                            .map(|token| token.id.clone())
-                            .collect(),
-                    };
-                    start = marker.after_tokens;
-                    chunk
-                })
-            })
-            .collect();
-    }
-
     pub fn split_paragraph(
         &mut self,
         paragraph_number: usize,
@@ -913,10 +823,11 @@ impl crate::project::Project {
             if mapping.paragraph_id != old_id {
                 continue;
             }
-            if let Some((id, _)) = destinations
-                .iter()
-                .find(|(_, tokens)| tokens.iter().any(|token| token.id == mapping.token_id))
-            {
+            if let Some((id, _)) = destinations.iter().find(|(_, tokens)| {
+                tokens
+                    .iter()
+                    .any(|token| token.id == mapping.token_identity)
+            }) {
                 mapping.paragraph_id = (*id).clone();
                 mapping.paragraph_revision = 1;
             }
@@ -960,279 +871,36 @@ impl crate::project::Project {
         *self = next;
         Ok(outcome)
     }
-
-    pub fn insert_text(
-        &mut self,
-        paragraph: usize,
-        token: usize,
-        after: bool,
-        text: String,
-    ) -> Result<EditedTokenPosition, DocumentEditError> {
-        if text.is_empty() {
-            return Err(DocumentEditError::EmptyText);
-        }
-        let token_count = self.checked_token_count(paragraph, token)?;
-        let position = if after { token } else { token - 1 };
-        let shift_marker_at_position = after;
-        self.apply_edit(
-            paragraph,
-            position,
-            position,
-            Some(text),
-            shift_marker_at_position,
-        )?;
-        debug_assert_eq!(
-            self.paragraph(paragraph).unwrap().tokens().len(),
-            token_count + 1
-        );
-        Ok(EditedTokenPosition {
-            paragraph,
-            token: position + 1,
-        })
-    }
-
-    pub fn replace_text(
-        &mut self,
-        start_paragraph: usize,
-        start_token: usize,
-        end_paragraph: usize,
-        end_token: usize,
-        text: String,
-    ) -> Result<EditedTokenPosition, DocumentEditError> {
-        if text.is_empty() {
-            return Err(DocumentEditError::EmptyText);
-        }
-        self.checked_range(start_paragraph, start_token, end_paragraph, end_token)?;
-        self.apply_edit(
-            start_paragraph,
-            start_token - 1,
-            end_token,
-            Some(text),
-            false,
-        )?;
-        Ok(EditedTokenPosition {
-            paragraph: start_paragraph,
-            token: start_token,
-        })
-    }
-
-    pub fn delete_text(
-        &mut self,
-        start_paragraph: usize,
-        start_token: usize,
-        end_paragraph: usize,
-        end_token: usize,
-    ) -> Result<Option<EditedTokenPosition>, DocumentEditError> {
-        self.checked_range(start_paragraph, start_token, end_paragraph, end_token)?;
-        self.apply_edit(start_paragraph, start_token - 1, end_token, None, false)?;
-        let remaining = self.paragraph(start_paragraph).unwrap().tokens().len();
-        Ok((remaining > 0).then_some(EditedTokenPosition {
-            paragraph: start_paragraph,
-            token: start_token.min(remaining),
-        }))
-    }
-
-    fn checked_token_count(
-        &self,
-        paragraph: usize,
-        token: usize,
-    ) -> Result<usize, DocumentEditError> {
-        let value = self
-            .paragraph(paragraph)
-            .ok_or(DocumentEditError::UnknownParagraph(paragraph))?;
-        if token == 0 || token > value.tokens.len() {
-            return Err(DocumentEditError::UnknownToken { paragraph, token });
-        }
-        Ok(value.tokens.len())
-    }
-
-    fn checked_range(
-        &self,
-        start_paragraph: usize,
-        start_token: usize,
-        end_paragraph: usize,
-        end_token: usize,
-    ) -> Result<(), DocumentEditError> {
-        if start_paragraph != end_paragraph {
-            return Err(DocumentEditError::CrossParagraphRange);
-        }
-        if start_token > end_token {
-            return Err(DocumentEditError::ReversedRange {
-                start_paragraph,
-                start_token,
-                end_paragraph,
-                end_token,
-            });
-        }
-        self.checked_token_count(start_paragraph, start_token)?;
-        self.checked_token_count(end_paragraph, end_token)?;
-        Ok(())
-    }
-
-    fn apply_edit(
-        &mut self,
-        paragraph_number: usize,
-        start: usize,
-        end_exclusive: usize,
-        replacement: Option<String>,
-        shift_marker_at_start: bool,
-    ) -> Result<(), DocumentEditError> {
-        self.apply_edit_with_reason(
-            paragraph_number,
-            start,
-            end_exclusive,
-            replacement,
-            shift_marker_at_start,
-            "user text",
-        )
-    }
-
-    fn apply_edit_with_reason(
-        &mut self,
-        paragraph_number: usize,
-        start: usize,
-        end_exclusive: usize,
-        replacement: Option<String>,
-        shift_marker_at_start: bool,
-        reason: &str,
-    ) -> Result<(), DocumentEditError> {
-        let old_revision = self
-            .paragraphs
-            .get(paragraph_number.checked_sub(1).unwrap_or(usize::MAX))
-            .ok_or(DocumentEditError::UnknownParagraph(paragraph_number))?
-            .revision;
-        let new_revision = old_revision
-            .checked_add(1)
-            .ok_or(DocumentEditError::RevisionOverflow)?;
-        self.remember_editable_state();
-        let removed = end_exclusive - start;
-        let inserted = usize::from(replacement.is_some());
-        let (paragraph_id, removed_ids) = {
-            let paragraph = self
-                .document
-                .paragraphs
-                .get_mut(paragraph_number.checked_sub(1).unwrap_or(usize::MAX))
-                .ok_or(DocumentEditError::UnknownParagraph(paragraph_number))?;
-
-            for marker in &mut paragraph.chunk_boundaries {
-                marker.after_tokens = if removed == 0 {
-                    if marker.after_tokens > start
-                        || (shift_marker_at_start && marker.after_tokens == start)
-                    {
-                        marker.after_tokens + inserted
-                    } else {
-                        marker.after_tokens
-                    }
-                } else if marker.after_tokens <= start {
-                    marker.after_tokens
-                } else if marker.after_tokens <= end_exclusive {
-                    start + inserted
-                } else {
-                    marker.after_tokens - removed + inserted
-                };
-            }
-
-            let removed_ids = paragraph.tokens[start..end_exclusive]
-                .iter()
-                .map(|token| token.id.clone())
-                .collect::<std::collections::HashSet<_>>();
-            let paragraph_id = paragraph.id.clone();
-            let replacement = replacement.map(|text| VisibleToken {
-                id: VisibleTokenId::Pseudo {
-                    id: format!("edit:{paragraph_id}:{new_revision}"),
-                },
-                text,
-                origin: VisibleTokenOrigin::Pseudo {
-                    reason: reason.into(),
-                },
-            });
-            paragraph.tokens.splice(start..end_exclusive, replacement);
-            paragraph.revision = new_revision;
-            (paragraph_id, removed_ids)
-        };
-        self.resolved_issues
-            .retain(|issue| !issue.token_ids.iter().any(|id| removed_ids.contains(id)));
-        self.attention_marks
-            .retain(|mark| !removed_ids.contains(&mark.token_id));
-
-        self.token_audio_mappings.retain_mut(|mapping| {
-            if mapping.paragraph_id != paragraph_id || mapping.paragraph_revision != old_revision {
-                return true;
-            }
-            if removed_ids.contains(&mapping.token_id) {
-                return false;
-            }
-            mapping.paragraph_revision = new_revision;
-            true
-        });
-        self.sync_current_chunk_memberships();
-        Ok(())
-    }
-
-    fn sync_current_chunk_memberships(&mut self) {
-        if self.replay_chunks.is_empty() {
-            return;
-        }
-        let memberships = self
-            .paragraphs
-            .iter()
-            .flat_map(|paragraph| {
-                let mut start = 0;
-                paragraph.chunk_boundaries.iter().map(move |marker| {
-                    let ids = paragraph.tokens[start..marker.after_tokens]
-                        .iter()
-                        .map(|token| token.id.clone())
-                        .collect::<Vec<_>>();
-                    start = marker.after_tokens;
-                    (marker.chunk_id.clone(), ids)
-                })
-            })
-            .collect::<HashMap<_, _>>();
-        for chunk in &mut self.replay_chunks {
-            if let Some(tokens) = memberships.get(&chunk.id) {
-                chunk.token_ids.clone_from(tokens);
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Paragraph {
     id: String,
     revision: u64,
-    tokens: Vec<VisibleToken>,
+    tokens: Vec<TextToken>,
     chunk_boundaries: Vec<ChunkBoundaryMarker>,
 }
 
 impl Paragraph {
     fn from_chunks(
         run_id: &str,
-        chunks: &[&RecognitionChunk],
+        chunks: &[&TranscriptionChunk],
         segments: &HashMap<&str, &DecodedSegment>,
-        fallbacks: &mut Vec<TokenFallback>,
     ) -> Self {
         let mut tokens = Vec::new();
         let mut chunk_boundaries = Vec::with_capacity(chunks.len());
         for chunk in chunks {
-            match recognition_tokens(run_id, chunk, segments) {
+            match transcription_tokens(run_id, chunk, segments) {
                 Ok(chunk_tokens) => tokens.extend(chunk_tokens),
-                Err(reason) => {
-                    fallbacks.push(TokenFallback {
-                        chunk_id: chunk.id.clone(),
-                        reason: reason.clone(),
-                    });
-                    tokens.push(VisibleToken {
-                        id: VisibleTokenId::Pseudo {
-                            id: format!("fallback:{run_id}:{}", chunk.id),
-                        },
-                        text: chunk.text.clone(),
-                        origin: VisibleTokenOrigin::Pseudo { reason },
-                    });
+                Err(_) => {
+                    // Keep current text without inventing tokens.
                 }
             }
             chunk_boundaries.push(ChunkBoundaryMarker {
                 chunk_id: chunk.id.clone(),
                 after_tokens: tokens.len(),
+                transcription_id: format!("{run_id}:{}", chunk.id),
+                text: chunk.text.clone(),
             });
         }
         let first_chunk = chunks
@@ -1255,10 +923,13 @@ impl Paragraph {
     }
 
     pub fn text(&self) -> String {
-        self.tokens.iter().map(VisibleToken::text).collect()
+        self.chunk_boundaries
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect()
     }
 
-    pub fn tokens(&self) -> &[VisibleToken] {
+    pub fn tokens(&self) -> &[TextToken] {
         &self.tokens
     }
 
@@ -1267,11 +938,11 @@ impl Paragraph {
     }
 }
 
-fn recognition_tokens(
+fn transcription_tokens(
     run_id: &str,
-    chunk: &RecognitionChunk,
+    chunk: &TranscriptionChunk,
     segments: &HashMap<&str, &DecodedSegment>,
-) -> Result<Vec<VisibleToken>, String> {
+) -> Result<Vec<TextToken>, String> {
     let mut result = Vec::new();
     let mut text = String::new();
     for segment_id in &chunk.segment_ids {
@@ -1283,94 +954,40 @@ fn recognition_tokens(
                 continue;
             }
             text.push_str(&token.text);
-            result.push(VisibleToken {
-                id: VisibleTokenId::Recognition {
-                    run_id: run_id.into(),
+            result.push(TextToken {
+                id: TokenIdentity {
+                    transcription_id: format!("{run_id}:{}", chunk.id),
                     segment_id: segment.id.clone(),
                     token_index,
                 },
                 text: token.text.clone(),
-                origin: VisibleTokenOrigin::Recognition,
+                vocabulary_id: token.token_id,
             });
         }
     }
     if text != chunk.text {
-        return Err("normal recognition tokens do not reproduce the chunk text".into());
+        return Err("normal transcription tokens do not reproduce the chunk text".into());
     }
     Ok(result)
 }
 
+/// Stable identity of one Whisper token occurrence, not its vocabulary ID.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum VisibleTokenId {
-    Recognition {
-        run_id: String,
-        segment_id: String,
-        token_index: usize,
-    },
-    Pseudo {
-        id: String,
-    },
+pub struct TokenIdentity {
+    pub transcription_id: String,
+    pub segment_id: String,
+    pub token_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum VisibleTokenOrigin {
-    Recognition,
-    Pseudo { reason: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VisibleToken {
-    id: VisibleTokenId,
+pub struct TextToken {
+    id: TokenIdentity,
     text: String,
-    origin: VisibleTokenOrigin,
+    vocabulary_id: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecognitionAlternative {
-    token_id: i32,
-    text: String,
-    probability: f32,
-}
-
-impl Eq for RecognitionAlternative {}
-
-impl RecognitionAlternative {
-    pub fn token_id(&self) -> i32 {
-        self.token_id
-    }
-
-    pub fn text(&self) -> &str {
-        &self.text
-    }
-
-    pub fn probability(&self) -> f32 {
-        self.probability
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecognitionTokenEvidence {
-    token_id: VisibleTokenId,
-    recognition_token_id: i32,
-    probability: f32,
-    alternatives: Vec<RecognitionAlternative>,
-}
-
-impl Eq for RecognitionTokenEvidence {}
-
-impl RecognitionTokenEvidence {
-    pub fn token_id(&self) -> &VisibleTokenId {
-        &self.token_id
-    }
-    pub fn probability(&self) -> f32 {
-        self.probability
-    }
-}
-
-impl VisibleToken {
-    pub fn id(&self) -> &VisibleTokenId {
+impl TextToken {
+    pub fn id(&self) -> &TokenIdentity {
         &self.id
     }
 
@@ -1378,15 +995,11 @@ impl VisibleToken {
         &self.text
     }
 
-    pub fn origin(&self) -> &VisibleTokenOrigin {
-        &self.origin
+    pub fn vocabulary_id(&self) -> i32 {
+        self.vocabulary_id
     }
-
     pub fn kind_label(&self) -> &'static str {
-        match self.origin {
-            VisibleTokenOrigin::Recognition => "rec",
-            VisibleTokenOrigin::Pseudo { .. } => "pseudo",
-        }
+        "whisper"
     }
 }
 
@@ -1394,11 +1007,20 @@ impl VisibleToken {
 pub struct ChunkBoundaryMarker {
     chunk_id: String,
     after_tokens: usize,
+    transcription_id: String,
+    text: String,
 }
 
 impl ChunkBoundaryMarker {
     pub fn chunk_id(&self) -> &str {
         &self.chunk_id
+    }
+
+    pub fn transcription_id(&self) -> &str {
+        &self.transcription_id
+    }
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
     pub fn after_tokens(&self) -> usize {
@@ -1447,26 +1069,6 @@ fn exact_alignment() -> AlignmentState {
     AlignmentState::Exact
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReplayChunk {
-    id: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    parent_ids: Vec<String>,
-    token_ids: Vec<VisibleTokenId>,
-}
-
-impl ReplayChunk {
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-    pub fn parent_ids(&self) -> &[String] {
-        &self.parent_ids
-    }
-    pub fn token_ids(&self) -> &[VisibleTokenId] {
-        &self.token_ids
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AlignmentState {
@@ -1493,7 +1095,7 @@ impl std::fmt::Display for AlignmentState {
 pub struct TokenAudioMapping {
     paragraph_id: String,
     paragraph_revision: u64,
-    token_id: VisibleTokenId,
+    token_identity: TokenIdentity,
     source_id: String,
     range: SampleRange,
     alignment: AlignmentState,
@@ -1506,8 +1108,8 @@ impl TokenAudioMapping {
     pub fn paragraph_revision(&self) -> u64 {
         self.paragraph_revision
     }
-    pub fn token_id(&self) -> &VisibleTokenId {
-        &self.token_id
+    pub fn token_identity(&self) -> &TokenIdentity {
+        &self.token_identity
     }
     pub fn source_id(&self) -> &str {
         &self.source_id
@@ -1539,457 +1141,17 @@ impl ChunkAudioMapping {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenFallback {
+pub struct TokenAlignmentFailure {
     chunk_id: String,
     reason: String,
 }
 
-impl TokenFallback {
+impl TokenAlignmentFailure {
     pub fn chunk_id(&self) -> &str {
         &self.chunk_id
     }
 
     pub fn reason(&self) -> &str {
         &self.reason
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        chunking::{SampleRange, SourceFacts},
-        project::Project,
-        recognition::{
-            ChunkBoundary, RecognitionConfig, RecognitionRun, RecognitionStatus, RecognitionToken,
-            RecognizerIdentity, RECOGNITION_RUN_SCHEMA,
-        },
-    };
-
-    fn token(text: &str) -> RecognitionToken {
-        RecognitionToken {
-            token_id: 1,
-            text: text.into(),
-            probability: 1.0,
-            is_special: false,
-            audio_range: None,
-            alternatives: Vec::new(),
-        }
-    }
-
-    fn segment(id: &str, text: &str, tokens: Vec<RecognitionToken>) -> DecodedSegment {
-        DecodedSegment {
-            id: id.into(),
-            audio_range: SampleRange {
-                start_sample: 0,
-                end_sample: 1,
-            },
-            text: text.into(),
-            no_speech_probability: 0.0,
-            tokens,
-        }
-    }
-
-    fn chunk(
-        id: &str,
-        segment_id: &str,
-        text: &str,
-        reason: ChunkBoundaryReason,
-    ) -> RecognitionChunk {
-        RecognitionChunk {
-            id: id.into(),
-            ordinal: 1,
-            segment_ids: vec![segment_id.into()],
-            audio_range: SampleRange {
-                start_sample: 0,
-                end_sample: 1,
-            },
-            text: text.into(),
-            token_count: 1,
-            boundary: ChunkBoundary {
-                reason,
-                pause_samples: None,
-            },
-        }
-    }
-
-    fn run(id: &str, chunk_id: &str, segment_id: &str, text: &str) -> RecognitionRun {
-        let segment = segment(segment_id, text, vec![token(text)]);
-        RecognitionRun {
-            schema: RECOGNITION_RUN_SCHEMA.into(),
-            id: id.into(),
-            revision: 1,
-            source: SourceFacts {
-                sha256: "source".into(),
-                sample_rate_hz: 16_000,
-                channels: 1,
-                decoded_sample_count: 1,
-            },
-            recognizer: RecognizerIdentity {
-                name: "test".into(),
-                implementation: "test".into(),
-                model_sha256: "model".into(),
-            },
-            config: RecognitionConfig::default(),
-            status: RecognitionStatus::Succeeded,
-            windows: Vec::new(),
-            segments: vec![segment],
-            chunks: vec![chunk(
-                chunk_id,
-                segment_id,
-                text,
-                ChunkBoundaryReason::SourceEnd,
-            )],
-        }
-    }
-
-    #[test]
-    fn builds_paragraphs_from_complete_normal_tokens() {
-        let segments = vec![
-            segment("s1", "one", vec![token("one")]),
-            segment("s2", " two", vec![token(" "), token("two")]),
-            segment("s3", " three", vec![token(" three")]),
-        ];
-        let chunks = vec![
-            chunk("a", "s1", "one", ChunkBoundaryReason::StrongPause),
-            chunk("b", "s2", " two", ChunkBoundaryReason::LongPause),
-            chunk("c", "s3", " three", ChunkBoundaryReason::SourceEnd),
-        ];
-
-        let document = Project::from_evidence("run", &segments, &chunks);
-
-        assert_eq!(document.paragraphs().len(), 2);
-        assert_eq!(document.paragraphs()[0].text(), "one two");
-        assert_eq!(document.paragraphs()[0].tokens().len(), 3);
-        assert_eq!(
-            document.paragraphs()[0].chunk_boundaries()[0].after_tokens(),
-            1
-        );
-        assert_eq!(
-            document.paragraphs()[0].chunk_boundaries()[1].after_tokens(),
-            3
-        );
-        assert!(document.token_fallbacks().is_empty());
-    }
-
-    #[test]
-    fn mismatched_or_missing_evidence_becomes_one_pseudo_token_per_chunk() {
-        let segments = vec![segment("s1", "wrong", vec![token("wrong")])];
-        let chunks = vec![
-            chunk("a", "s1", "authoritative", ChunkBoundaryReason::StrongPause),
-            chunk("b", "missing", " text", ChunkBoundaryReason::SourceEnd),
-        ];
-
-        let document = Project::from_evidence("run", &segments, &chunks);
-        let paragraph = &document.paragraphs()[0];
-
-        assert_eq!(paragraph.text(), "authoritative text");
-        assert_eq!(paragraph.tokens().len(), 2);
-        assert!(paragraph
-            .tokens()
-            .iter()
-            .all(|token| matches!(token.origin(), VisibleTokenOrigin::Pseudo { .. })));
-        assert_eq!(document.token_fallbacks().len(), 2);
-        assert_eq!(paragraph.chunk_boundaries()[0].after_tokens(), 1);
-        assert_eq!(paragraph.chunk_boundaries()[1].after_tokens(), 2);
-    }
-
-    #[test]
-    fn special_tokens_remain_evidence_but_not_visible_tokens() {
-        let mut special = token("ignored");
-        special.is_special = true;
-        let segments = vec![segment("s1", "shown", vec![special, token("shown")])];
-        let chunks = vec![chunk("a", "s1", "shown", ChunkBoundaryReason::SourceEnd)];
-
-        let document = Project::from_evidence("run", &segments, &chunks);
-
-        assert_eq!(document.paragraphs()[0].tokens().len(), 1);
-        assert_eq!(document.paragraphs()[0].tokens()[0].text(), "shown");
-    }
-
-    #[test]
-    fn edits_create_one_pseudo_token_and_keep_markers_on_token_boundaries() {
-        let segments = vec![
-            segment("s1", "a", vec![token("a")]),
-            segment("s2", " b c", vec![token(" b"), token(" c")]),
-        ];
-        let chunks = vec![
-            chunk("a", "s1", "a", ChunkBoundaryReason::StrongPause),
-            chunk("b", "s2", " b c", ChunkBoundaryReason::SourceEnd),
-        ];
-        let mut document = Project::from_evidence("run", &segments, &chunks);
-
-        let inserted = document
-            .insert_text(1, 2, false, " inserted words".into())
-            .unwrap();
-        assert_eq!(
-            inserted,
-            EditedTokenPosition {
-                paragraph: 1,
-                token: 2
-            }
-        );
-        assert_eq!(document.paragraphs()[0].text(), "a inserted words b c");
-        assert_eq!(document.paragraphs()[0].tokens().len(), 4);
-        assert_eq!(
-            document.paragraphs()[0].chunk_boundaries()[0].after_tokens(),
-            1
-        );
-        assert_eq!(
-            document.paragraphs()[0].chunk_boundaries()[1].after_tokens(),
-            4
-        );
-
-        document
-            .replace_text(1, 2, 1, 3, " replacement span".into())
-            .unwrap();
-        let paragraph = &document.paragraphs()[0];
-        assert_eq!(paragraph.text(), "a replacement span c");
-        assert_eq!(paragraph.tokens().len(), 3);
-        assert_eq!(paragraph.revision(), 3);
-        assert!(matches!(
-            paragraph.tokens()[1].origin(),
-            VisibleTokenOrigin::Pseudo { reason } if reason == "user text"
-        ));
-        assert_eq!(paragraph.chunk_boundaries()[0].after_tokens(), 1);
-        assert_eq!(paragraph.chunk_boundaries()[1].after_tokens(), 3);
-    }
-
-    #[test]
-    fn append_stays_immediately_before_a_marker_and_delete_can_empty_a_paragraph() {
-        let segments = vec![segment("s1", "a", vec![token("a")])];
-        let chunks = vec![chunk("a", "s1", "a", ChunkBoundaryReason::SourceEnd)];
-        let mut document = Project::from_evidence("run", &segments, &chunks);
-
-        document.insert_text(1, 1, true, " tail".into()).unwrap();
-        assert_eq!(document.paragraphs()[0].text(), "a tail");
-        assert_eq!(
-            document.paragraphs()[0].chunk_boundaries()[0].after_tokens(),
-            2
-        );
-
-        assert_eq!(document.delete_text(1, 1, 1, 2).unwrap(), None);
-        assert!(document.paragraphs()[0].tokens().is_empty());
-        assert_eq!(
-            document.paragraphs()[0].chunk_boundaries()[0].after_tokens(),
-            0
-        );
-    }
-
-    #[test]
-    fn edit_preserves_retained_mappings_at_the_new_revision_and_rejects_cross_paragraphs() {
-        let segments = vec![
-            segment("s1", "a", vec![token("a")]),
-            segment("s2", " b", vec![token(" b")]),
-        ];
-        let chunks = vec![
-            chunk("a", "s1", "a", ChunkBoundaryReason::LongPause),
-            chunk("b", "s2", " b", ChunkBoundaryReason::SourceEnd),
-        ];
-        let mut document = Project::from_evidence("run", &segments, &chunks);
-        let first_id = document.paragraphs[0].tokens[0].id.clone();
-        document.token_audio_mappings.push(TokenAudioMapping {
-            paragraph_id: document.paragraphs[0].id.clone(),
-            paragraph_revision: 1,
-            token_id: first_id.clone(),
-            source_id: "audio".into(),
-            range: SampleRange {
-                start_sample: 1,
-                end_sample: 2,
-            },
-            alignment: AlignmentState::Exact,
-        });
-        let before = document.clone();
-
-        assert_eq!(
-            document.replace_text(1, 1, 2, 1, "no".into()),
-            Err(DocumentEditError::CrossParagraphRange)
-        );
-        assert_eq!(document, before);
-
-        document.insert_text(1, 1, true, " added".into()).unwrap();
-        assert_eq!(document.token_audio_mappings.len(), 1);
-        assert_eq!(document.token_audio_mappings[0].token_id, first_id);
-        assert_eq!(document.token_audio_mappings[0].paragraph_revision, 2);
-        assert!(document
-            .token_audio_mappings
-            .iter()
-            .all(|mapping| !matches!(mapping.token_id, VisibleTokenId::Pseudo { .. })));
-    }
-
-    #[test]
-    fn invalid_paragraph_structure_operations_do_not_change_the_document() {
-        let segments = vec![segment("s1", "a", vec![token("a")])];
-        let chunks = vec![chunk("a", "s1", "a", ChunkBoundaryReason::SourceEnd)];
-        let mut document = Project::from_evidence("run", &segments, &chunks);
-        let original = document.clone();
-
-        assert_eq!(
-            document.split_paragraph(1, 1),
-            Err(StructureEditError::FinalMarker)
-        );
-        assert_eq!(document, original);
-        assert_eq!(
-            document.merge_paragraphs(1),
-            Err(StructureEditError::NoFollowingParagraph(1))
-        );
-        assert_eq!(document, original);
-    }
-
-    #[test]
-    fn paragraph_structure_edits_preserve_chunk_identity_and_evidence() {
-        let segments = vec![
-            segment("s1", "one", vec![token("one")]),
-            segment("s2", " two", vec![token(" two")]),
-        ];
-        let chunks = vec![
-            chunk("a", "s1", "one", ChunkBoundaryReason::StrongPause),
-            chunk("b", "s2", " two", ChunkBoundaryReason::SourceEnd),
-        ];
-        let mut document = Project::from_evidence("run", &segments, &chunks);
-        let evidence = document.recognition_token_evidence.clone();
-
-        document.split_paragraph(1, 1).unwrap();
-        assert_eq!(document.paragraphs[0].chunk_boundaries[0].chunk_id, "a");
-        assert_eq!(document.paragraphs[1].chunk_boundaries[0].chunk_id, "b");
-        assert_eq!(document.recognition_token_evidence, evidence);
-
-        document.merge_paragraphs(1).unwrap();
-        assert_eq!(
-            document.paragraphs[0]
-                .chunk_boundaries
-                .iter()
-                .map(|marker| marker.chunk_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["a", "b"]
-        );
-        assert_eq!(document.recognition_token_evidence, evidence);
-    }
-
-    #[test]
-    fn installing_another_transcription_preserves_chunk_identity() {
-        let initial = run("initial", "stable", "s1", "old");
-        let mut document = Project::from_run(&initial);
-        let mapping = document.chunk_audio_mapping("stable").unwrap().clone();
-        document.mark_attention(1, 1).unwrap();
-
-        document
-            .install_chunk_recognition(1, 1, run("refresh", "ignored", "s2", "new"))
-            .unwrap();
-
-        assert_eq!(document.paragraphs[0].text(), "new");
-        assert_eq!(
-            document.paragraphs[0].chunk_boundaries[0].chunk_id,
-            "stable"
-        );
-        assert_eq!(document.chunk_audio_mapping("stable"), Some(&mapping));
-        assert!(document.attention_marks().is_empty());
-        assert_eq!(document.undo(1), 1);
-        assert_eq!(document.attention_marks()[0].chunk_id(), "stable");
-        assert!(document.is_attention_marked(document.token(1, 1).unwrap().id()));
-        assert_eq!(document.redo(1), 1);
-        assert!(document.attention_marks().is_empty());
-    }
-
-    #[test]
-    fn counted_undo_and_redo_apply_available_steps_and_new_edits_clear_redo() {
-        let segments = vec![segment("s1", "a b", vec![token("a"), token(" b")])];
-        let chunks = vec![chunk("a", "s1", "a b", ChunkBoundaryReason::SourceEnd)];
-        let mut document = Project::from_evidence("run", &segments, &chunks);
-
-        document.insert_text(1, 1, true, " x".into()).unwrap();
-        document.replace_text(1, 1, 1, 1, "first".into()).unwrap();
-        assert_eq!(document.paragraphs()[0].text(), "first x b");
-        assert_eq!(document.undo(5), 2);
-        assert_eq!(document.paragraphs()[0].text(), "a b");
-        assert_eq!(document.edit_history_len(), 0);
-        assert_eq!(document.redo_history_len(), 2);
-
-        assert_eq!(document.redo(1), 1);
-        assert_eq!(document.paragraphs()[0].text(), "a x b");
-        document.insert_text(1, 1, false, "new ".into()).unwrap();
-        assert_eq!(document.redo_history_len(), 0);
-        assert_eq!(document.redo(5), 0);
-    }
-
-    #[test]
-    fn attention_mark_address_is_derived_after_an_insertion() {
-        let segments = vec![segment("s1", "a b", vec![token("a"), token(" b")])];
-        let chunks = vec![chunk("stable", "s1", "a b", ChunkBoundaryReason::SourceEnd)];
-        let mut project = Project::from_evidence("run", &segments, &chunks);
-        let marked_id = project.token(1, 2).unwrap().id().clone();
-        project.mark_attention(1, 2).unwrap();
-
-        project.insert_text(1, 1, false, "new ".into()).unwrap();
-
-        assert_eq!(project.attention_marks()[0].chunk_id(), "stable");
-        assert_eq!(project.token(1, 3).unwrap().id(), &marked_id);
-        assert!(project.is_attention_marked(project.token(1, 3).unwrap().id()));
-    }
-
-    #[test]
-    fn document_rearranges_chunks_without_project_support_state() {
-        let initial = run("initial", "first", "s1", "one");
-        let mut project = crate::project::Project::from_run(&initial);
-        let second = chunk("second", "s2", " two", ChunkBoundaryReason::SourceEnd);
-        project.document.paragraphs[0].tokens.push(VisibleToken {
-            id: VisibleTokenId::Recognition {
-                run_id: "initial".into(),
-                segment_id: "s2".into(),
-                token_index: 0,
-            },
-            text: " two".into(),
-            origin: VisibleTokenOrigin::Recognition,
-        });
-        project.document.paragraphs[0]
-            .chunk_boundaries
-            .push(ChunkBoundaryMarker {
-                chunk_id: second.id,
-                after_tokens: 2,
-            });
-
-        let mut composition = project.document().clone();
-        composition.split_paragraph(1, 1).unwrap();
-
-        assert_eq!(composition.paragraphs().len(), 2);
-        assert_eq!(
-            composition.paragraphs()[0].chunk_boundaries()[0].chunk_id(),
-            "first"
-        );
-        assert_eq!(
-            composition.paragraphs()[1].chunk_boundaries()[0].chunk_id(),
-            "second"
-        );
-        assert_eq!(project.recognition_runs().len(), 1);
-    }
-
-    #[test]
-    fn transcription_install_after_undo_follows_restored_state_and_failure_keeps_redo() {
-        let initial = run("initial", "stable", "s1", "old");
-        let mut project = crate::project::Project::from_run(&initial);
-        project
-            .install_chunk_recognition(1, 1, run("discarded", "ignored", "s2", "discarded"))
-            .unwrap();
-        assert_eq!(project.undo(1), 1);
-        assert_eq!(project.paragraphs()[0].text(), "old");
-        assert_eq!(project.redo_history_len(), 1);
-
-        let before_failure = project.clone();
-        let error = project
-            .install_chunk_recognition(1, 1, run("initial", "ignored", "s3", "failed"))
-            .unwrap_err();
-        assert!(error.contains("not unique"));
-        assert_eq!(project, before_failure);
-        assert_eq!(project.redo_history_len(), 1);
-
-        project
-            .install_chunk_recognition(1, 1, run("replacement", "ignored", "s4", "new"))
-            .unwrap();
-        assert_eq!(project.paragraphs()[0].text(), "new");
-        assert_eq!(project.redo_history_len(), 0);
-        assert_eq!(project.undo(1), 1);
-        assert_eq!(project.paragraphs()[0].text(), "old");
-        assert_eq!(project.redo(1), 1);
-        assert_eq!(project.paragraphs()[0].text(), "new");
     }
 }

@@ -1,4 +1,4 @@
-//! Editing and recognition-refresh operations for session command execution.
+//! Correction-driven transcriptions and project history for session commands.
 
 use std::io::{self, Write};
 
@@ -6,7 +6,7 @@ use crate::{
     chunking::{read_canonical_wav, SourceFacts},
     navigation::{tokens_in_range, Address, NavigationState, PositionAddress, TokenAddress},
     project::Project,
-    recognition::{ChunkRefreshRequest, RecognizerSession},
+    transcription::{ChunkTranscriber, ChunkTranscriptionRequest},
 };
 
 pub(crate) fn preserve_boundary_whitespace(
@@ -28,6 +28,10 @@ pub(crate) fn preserve_boundary_whitespace(
         .iter()
         .map(|token| token.text())
         .collect::<String>();
+    preserve_text_boundary_whitespace(&selected, replacement)
+}
+
+pub(crate) fn preserve_text_boundary_whitespace(selected: &str, replacement: String) -> String {
     if selected.chars().all(char::is_whitespace) {
         return replacement;
     }
@@ -125,21 +129,22 @@ pub(crate) fn edit_range(
     navigation: &NavigationState,
     addressed: Option<Address>,
 ) -> Result<(TokenAddress, TokenAddress), crate::navigation::NavigationError> {
-    if let Some(Address::Range { start, end }) = addressed {
-        let tokens = tokens_in_range(document, start, end)?;
-        let (Some(start), Some(end)) = (tokens.first(), tokens.last()) else {
-            return Err(crate::navigation::NavigationError::NoTokenSelection);
-        };
-        if start.paragraph != end.paragraph {
-            return Err(crate::navigation::NavigationError::CrossParagraphSelection);
-        }
-        if start.chunk != end.chunk {
-            return Err(crate::navigation::NavigationError::CrossChunkSelection);
-        }
-        Ok((*start, *end))
-    } else {
-        navigation.selected_token_range(document)
+    let (left, right) = match addressed {
+        Some(Address::Range { start, end }) => (start, end),
+        _ => navigation.current_range(document)?,
+    };
+    let tokens = tokens_in_range(document, left, right)?;
+    let (Some(start), Some(end)) = (tokens.first(), tokens.last()) else {
+        return Err(crate::navigation::NavigationError::NoTokenSelection);
+    };
+    let complete = crate::navigation::chunks_in_range(document, left, right)?;
+    if start.paragraph != end.paragraph || complete.iter().any(|c| c.paragraph != start.paragraph) {
+        return Err(crate::navigation::NavigationError::CrossParagraphSelection);
     }
+    if start.chunk != end.chunk || complete.iter().any(|c| c.chunk != start.chunk) {
+        return Err(crate::navigation::NavigationError::CrossChunkSelection);
+    }
+    Ok((*start, *end))
 }
 
 pub(crate) fn chunk_prefix(
@@ -169,10 +174,10 @@ pub(crate) fn resolve_current_chunk(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_corrected_refresh(
+pub(crate) fn run_correction(
     document: &mut Project,
     navigation: &mut NavigationState,
-    recognizer: &mut Option<RecognizerSession>,
+    transcriber: &mut Option<Box<dyn ChunkTranscriber>>,
     language: &str,
     paragraph: usize,
     chunk: usize,
@@ -181,15 +186,15 @@ pub(crate) fn run_corrected_refresh(
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> io::Result<()> {
-    let Some(session) = recognizer.as_ref() else {
+    let Some(session) = transcriber.as_ref() else {
         return writeln!(
             errors,
-            "recognition requires a model: start with --model MODEL or use: model PATH"
+            "transcription requires a model: start with --model MODEL or use: model PATH"
         );
     };
     let mut forced = match session.tokenize(&intended) {
         Ok(v) => v,
-        Err(e) => return writeln!(errors, "recognition failed: {e}"),
+        Err(e) => return writeln!(errors, "transcription failed: {e}"),
     };
     if let Some(id) = chosen {
         forced.push(id);
@@ -199,15 +204,25 @@ pub(crate) fn run_corrected_refresh(
             Ok(_) => {
                 return writeln!(
                     errors,
-                    "recognition failed: tokenizer did not reproduce the forced prefix"
+                    "transcription failed: tokenizer did not reproduce the forced prefix"
                 )
             }
-            Err(e) => return writeln!(errors, "recognition failed: {e}"),
+            Err(e) => return writeln!(errors, "transcription failed: {e}"),
         }
     }
     prepend_beginning_timestamp(&mut forced, session.beginning_timestamp_token());
-    run_refresh(
-        document, navigation, recognizer, language, paragraph, chunk, forced, output, errors,
+    let settings = document.settings().clone();
+    debug_assert_eq!(settings.language, language);
+    run_transcription(
+        document,
+        navigation,
+        transcriber,
+        &settings,
+        paragraph,
+        chunk,
+        forced,
+        output,
+        errors,
     )
 }
 
@@ -216,56 +231,74 @@ fn prepend_beginning_timestamp(forced: &mut Vec<i32>, beginning_timestamp: i32) 
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_refresh(
+pub(crate) fn run_transcription(
     document: &mut Project,
     navigation: &mut NavigationState,
-    recognizer: &mut Option<RecognizerSession>,
-    language: &str,
+    transcriber: &mut Option<Box<dyn ChunkTranscriber>>,
+    settings: &crate::project::TranscriptionSettings,
     paragraph: usize,
     marker: usize,
     forced: Vec<i32>,
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> io::Result<()> {
-    let Some(session) = recognizer.as_mut() else {
+    let Some(session) = transcriber.as_mut() else {
         return writeln!(
             errors,
-            "recognition requires a model: start with --model MODEL or use: model PATH"
+            "transcription requires a model: start with --model MODEL or use: model PATH"
         );
     };
     let Some(boundary) = document.chunk_marker(paragraph, marker) else {
-        return writeln!(errors, "refresh failed: unknown chunk {paragraph}.{marker}");
+        return writeln!(
+            errors,
+            "transcription failed: unknown chunk {paragraph}.{marker}"
+        );
     };
     let chunk_id = boundary.chunk_id().to_string();
     let Some(mapping) = document.chunk_audio_mapping(&chunk_id) else {
-        return writeln!(errors, "refresh failed: chunk has no usable audio mapping");
+        return writeln!(
+            errors,
+            "transcription failed: chunk has no usable audio mapping"
+        );
     };
     if mapping.alignment() == crate::document::AlignmentState::Unavailable {
-        return writeln!(errors, "refresh failed: chunk audio mapping is unavailable");
+        return writeln!(
+            errors,
+            "transcription failed: chunk audio mapping is unavailable"
+        );
     }
     let range = mapping.range();
     let source_id = mapping.source_id().to_string();
     let Some(source) = document.audio_source(&source_id) else {
-        return writeln!(errors, "refresh failed: audio source is missing");
+        return writeln!(errors, "transcription failed: audio source is missing");
     };
     let Some(path) = source.path() else {
-        return writeln!(errors, "refresh failed: audio source has no local path");
+        return writeln!(
+            errors,
+            "transcription failed: audio source has no local path"
+        );
     };
     let wav = match read_canonical_wav(path) {
         Ok(v) => v,
-        Err(e) => return writeln!(errors, "refresh failed: {e}"),
+        Err(e) => return writeln!(errors, "transcription failed: {e}"),
     };
     if source
         .sha256()
         .is_some_and(|hash| hash != wav.source_sha256)
     {
-        return writeln!(errors, "refresh failed: audio source identity changed");
+        return writeln!(
+            errors,
+            "transcription failed: audio source identity changed"
+        );
     }
     if source
         .canonical_sample_count()
         .is_some_and(|n| n != wav.samples.len() as u64)
     {
-        return writeln!(errors, "refresh failed: canonical audio length changed");
+        return writeln!(
+            errors,
+            "transcription failed: canonical audio length changed"
+        );
     }
     let facts = SourceFacts {
         sha256: wav.source_sha256,
@@ -274,31 +307,25 @@ pub(crate) fn run_refresh(
         decoded_sample_count: wav.samples.len() as u64,
     };
     let requested = forced.clone();
-    let Some(revision) = document
-        .recognition_runs()
-        .iter()
-        .map(|run| run.revision)
-        .max()
-        .unwrap_or(0)
-        .checked_add(1)
-    else {
-        return writeln!(
-            errors,
-            "refresh failed: recognition revision cannot be increased"
-        );
-    };
-    let run = match session.refresh_chunk(
-        ChunkRefreshRequest {
+    let revision = document.transcriptions().len() as u64 + 1;
+    let run = match session.transcribe_chunk(
+        ChunkTranscriptionRequest {
+            chunk_id: chunk_id.clone(),
+            previous_id: document
+                .current_transcription(paragraph, marker)
+                .expect("a current chunk has a transcription")
+                .id
+                .clone(),
             source: facts,
             chunk_range: range,
-            language: language.into(),
+            language: settings.language.clone(),
             forced_tokens: forced,
             revision,
         },
         &wav.samples,
     ) {
         Ok(run) => run,
-        Err(e) => return writeln!(errors, "refresh failed: {e}"),
+        Err(e) => return writeln!(errors, "transcription failed: {e}"),
     };
     let decoded = run
         .segments
@@ -309,25 +336,28 @@ pub(crate) fn run_refresh(
     if !requested.is_empty() && !decoded.starts_with(&requested) {
         return writeln!(
             errors,
-            "refresh failed: decoder did not preserve the forced prefix"
+            "transcription failed: decoder did not preserve the forced prefix"
         );
     }
-    match document.install_chunk_recognition(paragraph, marker, run) {
+    match document.install_transcription(paragraph, marker, run, settings.clone()) {
         Ok(()) => {
             *navigation = NavigationState::new(document);
-            if document.token(paragraph, 1).is_some() {
-                let _ = navigation.move_to(
-                    document,
-                    &Address::Position(PositionAddress::Token(TokenAddress {
-                        paragraph,
-                        chunk: marker,
-                        token: 1,
-                    })),
-                );
-            }
-            writeln!(output, "refreshed {paragraph}.{marker}")
+            let position = if document.chunk_has_tokens(paragraph, marker) == Some(true) {
+                PositionAddress::Token(TokenAddress {
+                    paragraph,
+                    chunk: marker,
+                    token: 1,
+                })
+            } else {
+                PositionAddress::Chunk(crate::navigation::ChunkAddress {
+                    paragraph,
+                    chunk: marker,
+                })
+            };
+            let _ = navigation.move_to(document, &Address::Position(position));
+            writeln!(output, "transcribed {paragraph}.{marker}")
         }
-        Err(e) => writeln!(errors, "refresh failed: {e}"),
+        Err(e) => writeln!(errors, "transcription failed: {e}"),
     }
 }
 
@@ -426,80 +456,21 @@ pub(crate) fn apply_paragraph_merge(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
     #[test]
-    fn correction_prefix_starts_with_whisper_beginning_timestamp() {
-        let mut forced = vec![708, 366, 5622];
-
-        prepend_beginning_timestamp(&mut forced, 50_364);
-
-        assert_eq!(forced, vec![50_364, 708, 366, 5622]);
-    }
-
-    #[test]
-    fn all_whitespace_selection_does_not_contribute_boundaries() {
-        let document: Project = serde_json::from_value(json!({
-            "schema": "rde-document/v1-experimental",
-            "id": "document:test",
-            "paragraphs": [{
-                "id": "paragraph:test",
-                "revision": 1,
-                "tokens": [{
-                    "id": {"kind": "pseudo", "id": "space"},
-                    "text": " \t\u{2003}",
-                    "origin": {"kind": "pseudo", "reason": "test"}
-                }],
-                "chunk_boundaries": [{"chunk_id": "chunk", "after_tokens": 1}]
-            }]
-        }))
-        .unwrap();
-
+    fn boundary_whitespace_is_preserved_without_requiring_token_surrogates() {
         assert_eq!(
-            preserve_boundary_whitespace(
-                &document,
-                TokenAddress {
-                    paragraph: 1,
-                    chunk: 1,
-                    token: 1,
-                },
-                TokenAddress {
-                    paragraph: 1,
-                    chunk: 1,
-                    token: 1,
-                },
-                "word".into(),
-            ),
+            preserve_text_boundary_whitespace(" \t\u{2003}", "word".into()),
             "word"
         );
-    }
-
-    #[test]
-    fn replacement_keeps_unicode_boundary_whitespace() {
-        let document: Project = serde_json::from_value(json!({
-            "schema": "rde-document/v1-experimental",
-            "id": "document:test",
-            "paragraphs": [{
-                "id": "paragraph:test",
-                "revision": 1,
-                "tokens": [{
-                    "id": {"kind": "pseudo", "id": "text"},
-                    "text": "\t old text \u{2003}",
-                    "origin": {"kind": "pseudo", "reason": "test"}
-                }],
-                "chunk_boundaries": [{"chunk_id": "chunk", "after_tokens": 1}]
-            }]
-        }))
-        .unwrap();
-        let address = TokenAddress {
-            paragraph: 1,
-            chunk: 1,
-            token: 1,
-        };
-
         assert_eq!(
-            preserve_boundary_whitespace(&document, address, address, "new text".into()),
-            "\t new text \u{2003}"
+            preserve_text_boundary_whitespace("\t old text \u{2003}", "new".into()),
+            "\t new \u{2003}"
         );
+    }
+    #[test]
+    fn forced_prefix_starts_with_whispers_beginning_timestamp() {
+        let mut forced = vec![708, 366, 5622];
+        prepend_beginning_timestamp(&mut forced, 50_364);
+        assert_eq!(forced, vec![50_364, 708, 366, 5622]);
     }
 }
