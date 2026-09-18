@@ -21,25 +21,26 @@ changes it. The repository is one Rust package: `rde` is the executable and
 - Initial-transcription chunking: `docs/transcription-chunking.md`; read it
   before changing provisional chunks, boundary selection, overlap ownership,
   accepted-segment grouping, or pause handling.
-- Domain language: `CONTEXT.md`; use it in new code, tests, and issues even when
-  legacy identifiers have not migrated yet.
+- Domain language: `CONTEXT.md`; use it in code, tests, and issues.
 - Durable architecture: read the relevant accepted record in `docs/adr/`
   before changing document authority or recovery, editing units, chunk boundary
   formation, audio coordinates, correction transactions, or decoder and prompt
   state.
 - Finalized chunk identity and boundaries: [ADR-0008](docs/adr/0008-keep-finalized-chunks-stable.md).
   Editing may move complete chunks between paragraphs but does not split or join
-  chunks. Preserve derived chunk records and boundary-changing history found in
-  projects saved by historical versions.
+  chunks.
 - Project and document ownership: [ADR-0009](docs/adr/0009-separate-project-state-from-document-composition.md).
-  The historical v1 schema name describes a project despite retaining
-  `rde-document` in its version string.
+  Transcriptions belong to the project and each proposes text for one chunk.
+  Earlier unreleased project formats are not supported.
 - Attention-mark targets: [ADR-0010](docs/adr/0010-target-attention-marks-by-chunk-and-token.md).
   Store stable chunk and token identities and derive displayed addresses from
   the current document structure.
+- Transcription settings and history: [ADR-0012](docs/adr/0012-history-restores-transcription-settings.md).
+  Model and language changes produce another transcription for one current
+  chunk in one transaction; undo and redo restore the selected settings too.
 
 Surface conflicts between these sources. Preserve exact user-visible text and
-recoverable project data while resolving them.
+reachable project data in the supported format while resolving them.
 
 CLI addresses are one-based positions in document structure: `N` is before a
 paragraph, `N.M` is before a chunk, and `N.M.K` is before a token in that

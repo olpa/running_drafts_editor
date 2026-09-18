@@ -216,7 +216,7 @@ fn token_pieces(
             .find(|m| {
                 m.paragraph_id() == paragraph.id()
                     && m.paragraph_revision() == paragraph.revision()
-                    && m.token_id() == token.id()
+                    && m.token_identity() == token.id()
             })
             .filter(|m| !matches!(m.alignment(), AlignmentState::Unavailable))
         {
@@ -276,10 +276,10 @@ mod tests {
 
     fn empty_chunks() -> Project {
         serde_json::from_value(json!({
-            "schema":"rde-document/v1-experimental", "id":"document:empty",
+            "schema":"rde-project/v1-experimental", "id":"document:empty", "settings":{"model":null,"language":"auto"},
             "paragraphs":[
-                {"id":"p1","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c1","after_tokens":0},{"chunk_id":"c2","after_tokens":0}]},
-                {"id":"p2","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c3","after_tokens":0}]}
+                {"id":"p1","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c1","transcription_id":"test","text":"","after_tokens":0},{"chunk_id":"c2","transcription_id":"test","text":"","after_tokens":0}]},
+                {"id":"p2","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c3","transcription_id":"test","text":"","after_tokens":0}]}
             ],
             "audio_sources":[{"id":"audio","canonical_sample_count":300}],
             "chunk_audio_mappings":[

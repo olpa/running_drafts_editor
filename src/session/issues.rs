@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    document::VisibleTokenId,
+    document::TokenIdentity,
     navigation::{Address, NavigationState, PositionAddress, TokenAddress},
     project::Project,
 };
@@ -41,7 +41,7 @@ pub(crate) enum Confidence {
 pub(crate) struct IssueEntry {
     pub start: TokenAddress,
     pub end: TokenAddress,
-    pub token_ids: Vec<VisibleTokenId>,
+    pub token_identities: Vec<TokenIdentity>,
     pub resolved_index: Option<usize>,
 }
 
@@ -53,21 +53,17 @@ impl IssueEntry {
 
 pub(crate) fn confidence(
     document: &Project,
-    id: &VisibleTokenId,
+    id: &TokenIdentity,
     settings: IssueThresholds,
 ) -> Option<Confidence> {
     if document
         .resolved_issues()
         .iter()
-        .any(|issue| issue.token_ids().contains(id))
+        .any(|issue| issue.token_identities().contains(id))
     {
         return None;
     }
-    let probability = document
-        .recognition_token_evidence()
-        .iter()
-        .find(|e| e.token_id() == id)?
-        .probability();
+    let probability = document.token_evidence(id)?.probability();
     if probability < settings.red {
         Some(Confidence::Red)
     } else if probability < settings.orange {
@@ -81,7 +77,7 @@ pub(crate) fn entries(document: &Project, settings: IssueThresholds) -> Vec<Issu
     let resolved_ids = document
         .resolved_issues()
         .iter()
-        .flat_map(|r| r.token_ids())
+        .flat_map(|r| r.token_identities())
         .collect::<HashSet<_>>();
     let mut result = Vec::new();
     for (pi, paragraph) in document.paragraphs().iter().enumerate() {
@@ -125,7 +121,7 @@ pub(crate) fn entries(document: &Project, settings: IssueThresholds) -> Vec<Issu
     }
     for (ri, resolved) in document.resolved_issues().iter().enumerate() {
         let positions = resolved
-            .token_ids()
+            .token_identities()
             .iter()
             .filter_map(|id| find_token(document, id))
             .collect::<Vec<_>>();
@@ -133,7 +129,7 @@ pub(crate) fn entries(document: &Project, settings: IssueThresholds) -> Vec<Issu
             result.push(IssueEntry {
                 start: *start,
                 end: *end,
-                token_ids: resolved.token_ids().to_vec(),
+                token_identities: resolved.token_identities().to_vec(),
                 resolved_index: Some(ri),
             });
         }
@@ -162,14 +158,14 @@ fn push_open(
             chunk: chunk_index + 1,
             token: end - chunk_start + 1,
         },
-        token_ids: paragraph.tokens()[start..=end]
+        token_identities: paragraph.tokens()[start..=end]
             .iter()
             .map(|t| t.id().clone())
             .collect(),
         resolved_index: None,
     });
 }
-fn find_token(document: &Project, id: &VisibleTokenId) -> Option<TokenAddress> {
+fn find_token(document: &Project, id: &TokenIdentity) -> Option<TokenAddress> {
     document
         .paragraphs()
         .iter()
@@ -201,7 +197,7 @@ pub(crate) fn list(
     }
     for (i, issue) in values.iter().enumerate() {
         let text = issue
-            .token_ids
+            .token_identities
             .iter()
             .filter_map(|id| find_token(document, id))
             .filter_map(|a| document.chunk_token(a.paragraph, a.chunk, a.token))

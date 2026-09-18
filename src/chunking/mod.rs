@@ -1,4 +1,4 @@
-//! Canonical audio input and sample-based recognition positions.
+//! Canonical audio input and sample-based transcription positions.
 
 mod model;
 mod wav;

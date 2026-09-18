@@ -2,7 +2,7 @@
 
 use std::{cmp::Ordering, fmt};
 
-use crate::document::{Document, VisibleTokenId};
+use crate::document::{Document, TokenIdentity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChunkAddress {
@@ -224,7 +224,7 @@ struct StablePosition {
     paragraph_id: Option<String>,
     paragraph_revision: Option<u64>,
     chunk_id: Option<String>,
-    token_id: Option<VisibleTokenId>,
+    token_id: Option<TokenIdentity>,
     document_end: Option<Vec<(String, u64)>>,
 }
 
@@ -454,23 +454,18 @@ impl NavigationState {
                 PositionAddress::Paragraph(_) => Err(NavigationError::NoCurrentPosition),
             };
         }
-        let chunks = chunks_in_range(document, start, end)?;
-        if chunks.len() == 1 {
-            return Ok(chunks[0]);
-        }
-        if chunks.is_empty() {
-            let tokens = tokens_in_range(document, start, end)?;
-            if let Some(first) = tokens.first() {
-                if tokens
-                    .iter()
-                    .all(|token| token.paragraph == first.paragraph && token.chunk == first.chunk)
-                {
-                    return Ok(ChunkAddress {
-                        paragraph: first.paragraph,
-                        chunk: first.chunk,
-                    });
-                }
+        let mut touched = chunks_in_range(document, start, end)?;
+        for token in tokens_in_range(document, start, end)? {
+            let chunk = ChunkAddress {
+                paragraph: token.paragraph,
+                chunk: token.chunk,
+            };
+            if !touched.contains(&chunk) {
+                touched.push(chunk);
             }
+        }
+        if touched.len() == 1 {
+            return Ok(touched[0]);
         }
         Err(NavigationError::NoCurrentPosition)
     }
@@ -807,16 +802,16 @@ mod tests {
     use serde_json::json;
 
     fn structured_document() -> Project {
-        let token = |id: &str| json!({"id":{"kind":"pseudo","id":id},"text":id,"origin":{"kind":"pseudo","reason":"test"}});
+        let token = |id: &str| json!({"id":{"transcription_id":"test","segment_id":id,"token_index":0},"text":id,"vocabulary_id":1});
         serde_json::from_value(json!({
-            "schema":"rde-document/v1-experimental", "id":"document:positions",
+            "schema":"rde-project/v1-experimental", "id":"document:positions", "settings":{"model":null,"language":"auto"},
             "paragraphs":[
                 {"id":"p1","revision":1,"tokens":[token("a"),token("b"),token("c")],"chunk_boundaries":[
-                    {"chunk_id":"c1","after_tokens":2},
-                    {"chunk_id":"c2","after_tokens":2},
-                    {"chunk_id":"c3","after_tokens":3}
+                    {"chunk_id":"c1","transcription_id":"test","text":"","after_tokens":2},
+                    {"chunk_id":"c2","transcription_id":"test","text":"","after_tokens":2},
+                    {"chunk_id":"c3","transcription_id":"test","text":"","after_tokens":3}
                 ]},
-                {"id":"p2","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c4","after_tokens":0}]}
+                {"id":"p2","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c4","transcription_id":"test","text":"","after_tokens":0}]}
             ]
         })).unwrap()
     }
@@ -1002,7 +997,7 @@ mod tests {
                 })),
             )
             .unwrap();
-        document.insert_text(1, 1, false, "new".into()).unwrap();
+        document.split_paragraph(1, 1).unwrap();
         assert_eq!(
             navigation.current_range(&document),
             Err(NavigationError::StaleSelection)

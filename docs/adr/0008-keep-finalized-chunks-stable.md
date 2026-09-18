@@ -10,11 +10,9 @@ splitting and merging. The CLI does not define chunk split or join commands,
 and reusable document APIs do not expose those operations, so callers cannot
 derive new chunks with uncertain audio ownership.
 
-## Legacy history
+## Unreleased formats
 
-Projects saved by older versions may contain derived chunk records and
-undo/redo states that change chunk boundaries. Loading, saving, undoing, and
-redoing those states remains supported so their text and transcription evidence
-stay reachable; restoring a recorded historical state does not authorize a new
-chunk mutation. Silently dropping those states would make recovery less honest
-than preserving the historical structure.
+Issue #57 explicitly dropped support for earlier unreleased project formats.
+The supported format does not carry derived chunks or boundary-changing history.
+Within that format, save/reopen and undo/redo preserve fixed chunk identities
+and boundaries and all reachable transcription evidence.

@@ -14,9 +14,9 @@ Overlap is transcription evidence, not intended final ownership. The agreed
 domain model requires finalized chunks to be disjoint, but initial
 transcription does not yet guarantee this because an accepted segment may
 begin before its owned core. [Issue #58](https://github.com/olpa/running_drafts_editor/issues/58)
-tracks that gap. Historical editor versions could also split and join chunks;
-current editing keeps finalized chunk identity and boundaries fixed while
-retaining old saved states and history as described in [ADR-0008](adr/0008-keep-finalized-chunks-stable.md).
+tracks that gap. Editing keeps finalized chunk identity and boundaries fixed as
+described in [ADR-0008](adr/0008-keep-finalized-chunks-stable.md). Earlier
+unreleased project formats are not supported.
 
 ## Procedure
 
@@ -62,8 +62,8 @@ Boundary reasons and pause lengths remain inspectable. Initial paragraphs join
 consecutive finalized chunks and end at a long-pause or source-end boundary.
 Other chunk boundaries remain visible inside the paragraph.
 
-Current defaults and the exact scoring rule live in `RecognitionConfig` and
-`PostChunkConfig` in `src/recognition.rs`.
+Current defaults and the exact scoring rule live in `TranscriptionConfig` and
+`PostChunkConfig` in `src/transcription.rs`.
 
 ## Experiment record
 
@@ -76,6 +76,6 @@ contains no voice.
 The experiment and its measurements remain in [GitHub issue #25](https://github.com/olpa/running_drafts_editor/issues/25).
 The initial Whisper design and overlap requirements are in [issue #2](https://github.com/olpa/running_drafts_editor/issues/2)
 and [issue #3](https://github.com/olpa/running_drafts_editor/issues/3). The
-current code uses `ProcessingWindow`, `core`, and `RecognitionChunk` as legacy
-names; [issue #57](https://github.com/olpa/running_drafts_editor/issues/57)
-owns their vocabulary review.
+initial orchestration returns an `InitialTranscriptionResult`. Each finalized
+chunk receives its own immutable `Transcription`; overlapping provisional
+decoder evidence remains project-owned supporting data.

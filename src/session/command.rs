@@ -20,9 +20,6 @@ pub(crate) enum SessionCommand {
         paragraph: usize,
         chunk: usize,
     },
-    Refresh {
-        marker: Option<(usize, usize)>,
-    },
     Model(Option<PathBuf>),
     Language(Option<String>),
     Print(Option<usize>),
@@ -208,23 +205,6 @@ pub(crate) fn parse_command(input: &str) -> Result<SessionCommand, CommandParseE
             name,
             SessionCommand::Language((!arguments.is_empty()).then_some(arguments)),
         ),
-        "refresh" => {
-            reject_arguments(&name, &arguments)?;
-            let marker = match address {
-                Some(Address::Position(PositionAddress::Chunk(address))) => {
-                    Some((address.paragraph, address.chunk))
-                }
-                None | Some(Address::Current) => None,
-                Some(address) => {
-                    return Err(CommandParseError::InvalidAddress {
-                        command: name,
-                        address,
-                        expected: "a chunk position N.M",
-                    })
-                }
-            };
-            Ok(SessionCommand::Refresh { marker })
-        }
         "save" => no_address(
             address,
             name,

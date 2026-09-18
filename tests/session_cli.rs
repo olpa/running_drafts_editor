@@ -1,186 +1,20 @@
-//! End-to-end tests for the shared CLI session entered through `rde edit`.
-
+mod common;
+use running_drafts_editor::{
+    persistence::{load_project, save_project},
+    project::Project,
+};
 use std::{
     fs,
     io::Write,
     process::{Command, Stdio},
 };
 
-use serde_json::json;
-
-#[test]
-fn attention_commands_use_hierarchical_addresses_and_selection() {
-    let directory = tempfile::tempdir().unwrap();
-    let document = directory.path().join("attention.json");
-    let exported = directory.path().join("attention.txt");
-    let value = json!({"schema":"rde-document/v1-experimental","id":"document:attention","paragraphs":[{
-        "id":"p","revision":1,"tokens":[
-            {"id":{"kind":"pseudo","id":"a"},"text":"one","origin":{"kind":"pseudo","reason":"test"}},
-            {"id":{"kind":"pseudo","id":"b"},"text":" two","origin":{"kind":"pseudo","reason":"test"}},
-            {"id":{"kind":"pseudo","id":"c"},"text":" three","origin":{"kind":"pseudo","reason":"test"}}
-        ],"chunk_boundaries":[{"chunk_id":"chunk","after_tokens":3}]
-    }]});
-    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+fn run(project: &Project, commands: &str) -> (String, String, Project) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.json");
+    save_project(&path, project).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", document.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let commands = format!(
-        "1.1.2mark\n1.1.2mark\n1.1.1,1.1.2select\nmark\nundo\nredo\np\n1.1\nmark\n1select\nunmark\n1.1.1unmark\nexport {}\nsave\nq\n",
-        exported.display()
-    );
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(commands.as_bytes())
-        .unwrap();
-    let result = child.wait_with_output().unwrap();
-    assert!(result.status.success());
-    let output = String::from_utf8(result.stdout).unwrap();
-    let errors = String::from_utf8(result.stderr).unwrap();
-    assert!(output.contains("marked 1.1.1"));
-    assert!(output.contains("⚑one"));
-    assert!(output.contains("⚑ two"));
-    assert!(errors.contains("token 1.2 is already marked"));
-    assert!(errors.contains("mark requires a current token"));
-    assert!(errors.contains("unmark requires a current token"));
-    assert_eq!(fs::read_to_string(exported).unwrap(), "one⚑ two three");
-    let saved: serde_json::Value = serde_json::from_slice(&fs::read(document).unwrap()).unwrap();
-    assert_eq!(saved["attention_marks"].as_array().unwrap().len(), 1);
-}
-
-#[test]
-fn edit_defers_loading_a_configured_model_until_recognition_is_used() {
-    let directory = tempfile::tempdir().unwrap();
-    let document = directory.path().join("lazy-model.json");
-    let model = directory.path().join("fake-model.bin");
-    fs::write(&model, b"readable but not a whisper model").unwrap();
-    let value = json!({"schema":"rde-document/v1-experimental","id":"document:lazy","paragraphs":[{
-        "id":"p","revision":1,"tokens":[{"id":{"kind":"pseudo","id":"t"},"text":"text","origin":{"kind":"pseudo","reason":"test"}}],
-        "chunk_boundaries":[{"chunk_id":"c","after_tokens":1}]
-    }]});
-    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-
-    let run = |commands: &[u8]| {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-            .args([
-                "edit",
-                document.to_str().unwrap(),
-                "--model",
-                model.to_str().unwrap(),
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(commands).unwrap();
-        child.wait_with_output().unwrap()
-    };
-    let idle = run(b"model\nq\n");
-    assert!(idle.status.success());
-    assert!(String::from_utf8(idle.stdout)
-        .unwrap()
-        .contains(&format!("model {}", model.display())));
-    assert!(!String::from_utf8(idle.stderr)
-        .unwrap()
-        .contains("could not load model"));
-
-    let used = run(b"1.1refresh\nq\n");
-    assert!(used.status.success());
-    assert!(String::from_utf8(used.stderr)
-        .unwrap()
-        .contains("could not load model"));
-}
-
-#[test]
-fn confidence_issues_navigate_resolve_persist_and_undo_without_color_on_redirect() {
-    let directory = tempfile::tempdir().unwrap();
-    let document = directory.path().join("issues.rde.json");
-    let rid = |segment: &str, token: usize| json!({"kind":"recognition","run_id":"run","segment_id":segment,"token_index":token});
-    let token = |id: serde_json::Value, text: &str| json!({"id":id,"text":text,"origin":{"kind":"recognition"}});
-    let value = json!({
-        "schema":"rde-document/v1-experimental", "id":"document:issues",
-        "paragraphs":[
-          {"id":"p1","revision":1,"tokens":[token(rid("s",0),"bad\n"),token(rid("s",1),"two"),token(rid("s",2)," orange"),token(rid("s",3)," other")],"chunk_boundaries":[{"chunk_id":"c1","after_tokens":3},{"chunk_id":"c2","after_tokens":4}]},
-          {"id":"p2","revision":1,"tokens":[token(rid("t",0)," last")],"chunk_boundaries":[{"chunk_id":"c3","after_tokens":1}]}
-        ],
-        "recognition_token_evidence":[
-          {"token_id":rid("s",0),"recognition_token_id":1,"probability":0.149,"alternatives":[]},
-          {"token_id":rid("s",1),"recognition_token_id":2,"probability":0.10,"alternatives":[]},
-          {"token_id":rid("s",2),"recognition_token_id":3,"probability":0.15,"alternatives":[]},
-          {"token_id":rid("s",3),"recognition_token_id":4,"probability":0.01,"alternatives":[]},
-          {"token_id":rid("t",0),"recognition_token_id":5,"probability":0.01,"alternatives":[]}
-        ]
-    });
-    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", document.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(b"issues\nnext\nnext\nnext\nprev\n1.1.1,1.1.3select\nresolve\nissues\nundo\nissues\nredo\nissues\n1unignore\nissue-prob red 0.1\nissues\nissue-prob orange 0.1\nissue-prob\n1resolve\nsave\nq\n").unwrap();
-    let result = child.wait_with_output().unwrap();
-    assert!(result.status.success());
-    let output = String::from_utf8(result.stdout).unwrap();
-    let errors = String::from_utf8(result.stderr).unwrap();
-    assert!(output.contains("1  open  \"bad\\ntwo\""));
-    assert!(output.contains("selected 1.2.1,1.2.2"));
-    assert!(output.matches("selected 1.2.1,1.2.2").count() >= 2);
-    assert!(output.contains("selected 1.1.1,1.1.3"));
-    assert!(output.contains("selected 2.1.1,2.1.2 (wrapped)"));
-    assert!(output.contains("1  resolved  \"bad\\ntwo\""));
-    assert!(output.contains("reopened 1.1.1,1.1.3"));
-    assert!(output.contains("issue-prob red 0.1 orange 0.5"));
-    assert!(!output.contains("\u{1b}["));
-    assert!(errors.contains("issue-prob red must be less than orange"));
-    let saved: serde_json::Value = serde_json::from_slice(&fs::read(document).unwrap()).unwrap();
-    assert_eq!(saved["resolved_issues"].as_array().unwrap().len(), 1);
-    assert!(!saved.to_string().contains("issue-prob"));
-}
-
-#[test]
-fn issue_commands_recalculate_addresses_after_a_chunk_moves_to_another_paragraph() {
-    let directory = tempfile::tempdir().unwrap();
-    let document = directory.path().join("moved-issue.rde.json");
-    let rid = |token_index| {
-        json!({
-            "kind":"recognition", "run_id":"run", "segment_id":"segment",
-            "token_index":token_index
-        })
-    };
-    let token = |token_index, text: &str| {
-        json!({
-            "id":rid(token_index), "text":text, "origin":{"kind":"recognition"}
-        })
-    };
-    let value = json!({
-        "schema":"rde-document/v1-experimental", "id":"document:moved-issue",
-        "paragraphs":[{
-            "id":"paragraph", "revision":1,
-            "tokens":[token(0, "clear"), token(1, " uncertain")],
-            "chunk_boundaries":[
-                {"chunk_id":"clear-chunk", "after_tokens":1},
-                {"chunk_id":"issue-chunk", "after_tokens":2}
-            ]
-        }],
-        "recognition_token_evidence":[
-            {"token_id":rid(0), "recognition_token_id":1, "probability":0.9,
-             "alternatives":[]},
-            {"token_id":rid(1), "recognition_token_id":2, "probability":0.01,
-             "alternatives":[]}
-        ]
-    });
-    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", document.to_str().unwrap()])
+        .args(["edit", path.to_str().unwrap()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -190,555 +24,133 @@ fn issue_commands_recalculate_addresses_after_a_chunk_moves_to_another_paragraph
         .stdin
         .take()
         .unwrap()
-        .write_all(b"issues\n1.2parasplit\nissues\nnext\nresolve\nissues\n1unignore\nissues\nq\n")
+        .write_all(format!("{commands}\nsave\nq\n").as_bytes())
         .unwrap();
-    let result = child.wait_with_output().unwrap();
-
-    assert!(
-        result.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let output = String::from_utf8(result.stdout).unwrap();
-    assert_eq!(
-        output.matches("1  open  \" uncertain\"").count(),
-        3,
-        "{output}"
-    );
-    assert!(output.contains("selected 2.1.1,2.1.2"));
-    assert!(output.contains("resolved 2.1.1,2.1.2"));
-    assert!(output.contains("1  resolved  \" uncertain\""));
-    assert!(output.contains("reopened 2.1.1,2.1.2"));
-}
-
-#[test]
-fn lists_every_alternative_but_requires_a_model_before_choose() {
-    let directory = tempfile::tempdir().unwrap();
-    let document = directory.path().join("alternatives.rde.json");
-    let recognition_id = json!({
-        "kind": "recognition", "run_id": "run", "segment_id": "s1", "token_index": 0
-    });
-    let value = json!({
-        "schema": "rde-document/v1-experimental",
-        "id": "document:test",
-        "paragraphs": [{
-            "id": "paragraph:test:1",
-            "revision": 1,
-            "tokens": [{
-                "id": recognition_id,
-                "text": "hello",
-                "origin": {"kind": "recognition"}
-            }],
-            "chunk_boundaries": [{"chunk_id": "c1", "after_tokens": 1}]
-        }],
-        "recognition_token_evidence": [{
-            "token_id": recognition_id,
-            "recognition_token_id": 100,
-            "probability": 0.7,
-            "alternatives": [
-                {"token_id": 100, "text": "hello", "probability": 0.7},
-                {"token_id": 101, "text": "hello", "probability": 0.2},
-                {"token_id": 50257, "text": "", "probability": 0.1}
-            ]
-        }]
-    });
-    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", document.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"1.1.1alts\n1.1.1choose 3\n1.1.1alts\nsave\nq\n")
-        .unwrap();
-    let result = child.wait_with_output().unwrap();
-    assert!(result.status.success());
-    let output = String::from_utf8(result.stdout).unwrap();
-    let errors = String::from_utf8(result.stderr).unwrap();
-    assert!(output.contains("1  id=100  probability=0.700000  text=\"hello\""));
-    assert!(output.contains("2  id=101  probability=0.200000  text=\"hello\""));
-    assert!(output.contains("3  id=50257  probability=0.100000  text=\"\""));
-    assert!(errors.contains("start with --model MODEL or use: model PATH"));
-
-    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&document).unwrap()).unwrap();
-    assert_eq!(saved["paragraphs"][0]["tokens"][0]["text"], "hello");
-    assert_eq!(
-        saved["recognition_token_evidence"][0]["alternatives"]
-            .as_array()
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr)
             .unwrap()
-            .len(),
-        3
-    );
-}
-
-#[test]
-fn edit_opens_prints_and_navigates_without_audio_or_recognition() {
-    let directory = tempfile::tempdir().unwrap();
-    let document = directory.path().join("draft.rde.json");
-    let value = json!({
-        "schema": "rde-document/v1-experimental",
-        "id": "document:test",
-        "paragraphs": [{
-            "id": "paragraph:test:1",
-            "revision": 1,
-            "tokens": [
-                {"id": {"kind": "pseudo", "id": "p1"}, "text": "hello", "origin": {"kind": "pseudo", "reason": "test"}},
-                {"id": {"kind": "pseudo", "id": "p2"}, "text": " world", "origin": {"kind": "pseudo", "reason": "test"}}
-            ],
-            "chunk_boundaries": [{"chunk_id": "c1", "after_tokens": 2}]
-        }],
-        "audio_sources": [{"id": "audio:test", "path": "/missing/audio.wav"}]
-    });
-    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", document.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"1.1.2\np\nsave\nq\n")
-        .unwrap();
-    let result = child.wait_with_output().unwrap();
-
-    assert!(
-        result.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let output = String::from_utf8(result.stdout).unwrap();
-    let errors = String::from_utf8(result.stderr).unwrap();
-    assert!(output.contains("hello world"));
-    assert!(output.contains("position 1.1.2"));
-    assert!(output.contains(&format!("saved {}", document.display())));
-    assert!(errors.contains("text remains editable"));
-}
-
-#[test]
-fn bare_tokens_lists_the_selection_with_five_tokens_of_numbered_context() {
-    let directory = tempfile::tempdir().unwrap();
-    let document = directory.path().join("token-context.json");
-    let make_tokens = |paragraph: usize, count: usize| {
-        (1..=count)
-            .map(|token| {
-                json!({
-                    "id":{"kind":"pseudo","id":format!("p{paragraph}t{token}")},
-                    "text":format!(" {paragraph}:{token}"),
-                    "origin":{"kind":"pseudo","reason":"test"}
-                })
-            })
+            .lines()
+            .filter(|line| !line.ends_with("has no local path; replay is unavailable"))
             .collect::<Vec<_>>()
-    };
-    let value = json!({"schema":"rde-document/v1-experimental","id":"document:tokens","paragraphs":[
-        {"id":"p1","revision":1,"tokens":make_tokens(1,8),"chunk_boundaries":[{"chunk_id":"c1","after_tokens":8}]},
-        {"id":"p2","revision":1,"tokens":make_tokens(2,8),"chunk_boundaries":[{"chunk_id":"c2","after_tokens":8}]}
-    ]});
-    fs::write(&document, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", document.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"tokens\n1.1.7,2.1.3select\ntokens\nq\n")
-        .unwrap();
-    let result = child.wait_with_output().unwrap();
-    assert!(result.status.success());
-    let output = String::from_utf8(result.stdout).unwrap();
-    let errors = String::from_utf8(result.stderr).unwrap();
-    assert!(
-        errors.contains("tokens requires a selection containing tokens or a paragraph position N")
-    );
-    assert!(output.contains("1.1.2      -"));
-    assert!(output.contains("2.1.7      -"));
-    assert!(!output.contains("1.1.1      -"));
-    assert!(!output.contains("2.1.8      -"));
-}
-
-#[test]
-fn session_edit_replaces_document_resets_navigation_and_changes_default_save_path() {
-    let directory = tempfile::tempdir().unwrap();
-    let first = directory.path().join("first.json");
-    let second = directory.path().join("second.json");
-    let document = |id: &str, text: &str| {
-        json!({
-            "schema": "rde-document/v1-experimental",
-            "id": format!("document:{id}"),
-            "paragraphs": [{
-                "id": format!("paragraph:{id}:1"),
-                "revision": 1,
-                "tokens": [{
-                    "id": {"kind": "pseudo", "id": format!("token:{id}")},
-                    "text": text,
-                    "origin": {"kind": "pseudo", "reason": "test"}
-                }],
-                "chunk_boundaries": [{"chunk_id": format!("chunk:{id}"), "after_tokens": 1}]
-            }]
-        })
-    };
-    fs::write(
-        &first,
-        serde_json::to_vec_pretty(&document("first", "first text")).unwrap(),
+            .join("\n"),
+        load_project(&path).unwrap(),
     )
-    .unwrap();
-    fs::write(
-        &second,
-        serde_json::to_vec_pretty(&document("second", "second text")).unwrap(),
-    )
-    .unwrap();
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", first.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(format!("1.1\nedit {}\n1.1\nsave\nq\n", second.display()).as_bytes())
-        .unwrap();
-    let result = child.wait_with_output().unwrap();
-
-    assert!(
-        result.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let output = String::from_utf8(result.stdout).unwrap();
-    assert!(output.contains(&format!("loaded {}", second.display())));
-    assert!(output.contains("second text"));
-    assert!(output.contains(&format!("saved {}", second.display())));
-    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&second).unwrap()).unwrap();
-    assert_eq!(saved["id"], "document:second");
 }
 
 #[test]
-fn session_edits_exact_pseudo_tokens_preserves_mappings_and_rejects_cross_paragraph_ranges() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("draft.json");
-    let value = json!({
-        "schema": "rde-document/v1-experimental",
-        "id": "document:edit-test",
-        "paragraphs": [
-            {
-                "id": "paragraph:one",
-                "revision": 1,
-                "tokens": [
-                    {"id": {"kind": "recognition", "run_id": "run", "segment_id": "s1", "token_index": 0}, "text": "a", "origin": {"kind": "recognition"}},
-                    {"id": {"kind": "recognition", "run_id": "run", "segment_id": "s1", "token_index": 1}, "text": " b", "origin": {"kind": "recognition"}},
-                    {"id": {"kind": "recognition", "run_id": "run", "segment_id": "s2", "token_index": 0}, "text": " c", "origin": {"kind": "recognition"}}
-                ],
-                "chunk_boundaries": [
-                    {"chunk_id": "c1", "after_tokens": 1},
-                    {"chunk_id": "c2", "after_tokens": 3}
-                ]
-            },
-            {
-                "id": "paragraph:two",
-                "revision": 1,
-                "tokens": [
-                    {"id": {"kind": "recognition", "run_id": "run", "segment_id": "s3", "token_index": 0}, "text": "next", "origin": {"kind": "recognition"}}
-                ],
-                "chunk_boundaries": [{"chunk_id": "c3", "after_tokens": 1}]
-            }
-        ],
-        "audio_sources": [{"id": "audio:run"}],
-        "token_audio_mappings": [
-            {
-                "paragraph_id": "paragraph:one",
-                "paragraph_revision": 1,
-                "token_id": {"kind": "recognition", "run_id": "run", "segment_id": "s1", "token_index": 0},
-                "source_id": "audio:run",
-                "range": {"start_sample": 1, "end_sample": 10},
-                "alignment": "exact"
-            },
-            {
-                "paragraph_id": "paragraph:one",
-                "paragraph_revision": 1,
-                "token_id": {"kind": "recognition", "run_id": "run", "segment_id": "s1", "token_index": 1},
-                "source_id": "audio:run",
-                "range": {"start_sample": 10, "end_sample": 20},
-                "alignment": "exact"
-            }
-        ]
-    });
-    fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", path.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(
-            b"1.2.1insert inserted words\n1.2.2append appended words\n1.2.1,1.2.3replace \" exact text  \"\n1.2.2,2.1.1replace forbidden\n1.2.1,1.2.2delete\nsave\nq\n",
-        )
-        .unwrap();
-    let result = child.wait_with_output().unwrap();
-
-    assert!(
-        result.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
+fn removed_chunk_and_refresh_commands_leave_project_unchanged() {
+    let project = common::project(&["one", "two"]);
+    let (output, errors, saved) = run(
+        &project,
+        "refresh\n1.1refresh\n1.1.1split\n1.1isplit\n1.1asplit\n1@1merge\nhelp",
     );
-    let output = String::from_utf8(result.stdout).unwrap();
-    let errors = String::from_utf8(result.stderr).unwrap();
-    assert!(!output.contains("inserted at"));
-    assert!(errors.contains("start with --model MODEL or use: model PATH"));
-    assert!(errors.contains("delete is disabled"));
+    assert_eq!(saved, project);
+    assert!(errors.contains("unknown command 'refresh'"));
+    assert!(!output.contains("[N.M]refresh"));
+}
 
-    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    let first = &saved["paragraphs"][0];
-    assert_eq!(first["revision"], 1);
-    assert_eq!(first["tokens"].as_array().unwrap().len(), 3);
-    assert_eq!(first["tokens"][0]["text"], "a");
-    assert_eq!(first["tokens"][1]["text"], " b");
-    assert_eq!(first["chunk_boundaries"][0]["after_tokens"], 1);
-    assert_eq!(first["chunk_boundaries"][1]["after_tokens"], 3);
-    assert_eq!(saved["token_audio_mappings"].as_array().unwrap().len(), 2);
-    assert_eq!(saved["token_audio_mappings"][0]["paragraph_revision"], 1);
+#[test]
+fn attention_and_issue_commands_follow_actual_tokens_and_history() {
+    let project = common::project(&["one", " two"]);
+    let (output, errors, saved) = run(
+        &project,
+        "1.1.1mark\n1.1.1mark\nissues\nnext\nignore\nundo\nredo\np",
+    );
+    assert!(output.contains("⚑one"));
+    assert!(output.contains("undid 1 edit"));
+    assert!(errors.contains("already marked"));
+    assert_eq!(saved.attention_marks().len(), 1);
+    assert_eq!(saved.resolved_issues().len(), 1);
+}
+
+#[test]
+fn paragraph_operations_preserve_chunks_and_recalculate_issue_addresses() {
+    let project = common::project(&["one", " two"]);
+    let (output, errors, saved) = run(
+        &project,
+        "1.2parasplit\nissues\n2tokens\n1merge\nundo\nredo",
+    );
+    assert!(errors.is_empty(), "{errors}");
+    assert!(output.contains("2.1.1"));
+    assert_eq!(saved.paragraphs().len(), 1);
+    assert_eq!(saved.transcriptions(), project.transcriptions());
+    assert_eq!(saved.paragraph(1).unwrap().text(), "one two");
     assert_eq!(
-        saved["token_audio_mappings"][0]["token_id"],
-        value["paragraphs"][0]["tokens"][0]["id"]
+        saved.paragraph(1).unwrap().chunk_boundaries()[1].chunk_id(),
+        "c1"
     );
 }
 
 #[test]
-fn unaddressed_replace_requires_a_model_and_keeps_the_selection_text() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("selection.json");
-    let value = json!({
-        "schema": "rde-document/v1-experimental",
-        "id": "document:selection",
-        "paragraphs": [{
-            "id": "paragraph:selection",
-            "revision": 1,
-            "tokens": [
-                {"id": {"kind": "pseudo", "id": "one"}, "text": "wrong", "origin": {"kind": "pseudo", "reason": "test"}},
-                {"id": {"kind": "pseudo", "id": "two"}, "text": " name", "origin": {"kind": "pseudo", "reason": "test"}}
-            ],
-            "chunk_boundaries": [{"chunk_id": "chunk", "after_tokens": 2}]
-        }]
-    });
-    fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", path.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"1.1.1,1.1.2select\nreplace Oleg\nsave\nq\n")
-        .unwrap();
-    let result = child.wait_with_output().unwrap();
-
-    assert!(result.status.success());
-    assert!(String::from_utf8(result.stderr)
-        .unwrap()
-        .contains("start with --model MODEL"));
-    let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-    assert_eq!(
-        saved["paragraphs"][0]["tokens"].as_array().unwrap().len(),
-        2
+fn text_without_matching_tokens_is_visible_and_structurally_selectable() {
+    let mut result = common::batch("initial", &["exact text", "two"]);
+    result.segments[0].tokens[0].text = "bad evidence".into();
+    let project = Project::from_initial_transcription(&result);
+    let (output, errors, saved) = run(
+        &project,
+        "p\n1tokens\n1.1.1\n1.1,1.2select\nreplace corrected\n1.1info",
     );
-    assert_eq!(saved["paragraphs"][0]["tokens"][0]["text"], "wrong");
+    assert!(output.contains("exact text"));
+    assert!(output.contains("1.1  chunk  no tokens"));
+    assert!(output.contains("selected 1.1,1.2"));
+    assert!(errors.contains("chunk 1.1 has no token positions"));
+    assert!(errors.contains("transcription requires a model"));
+    assert_eq!(saved, project);
 }
 
 #[test]
-fn replacement_without_a_model_does_not_change_boundary_whitespace() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("whitespace.json");
-    let value = json!({
-        "schema": "rde-document/v1-experimental",
-        "id": "document:whitespace",
-        "paragraphs": [{
-            "id": "paragraph:whitespace",
-            "revision": 1,
-            "tokens": [
-                {"id": {"kind": "pseudo", "id": "before"}, "text": "before", "origin": {"kind": "pseudo", "reason": "test"}},
-                {"id": {"kind": "pseudo", "id": "middle"}, "text": "\t old text \u{2003}", "origin": {"kind": "pseudo", "reason": "test"}},
-                {"id": {"kind": "pseudo", "id": "after"}, "text": "after", "origin": {"kind": "pseudo", "reason": "test"}}
-            ],
-            "chunk_boundaries": [{"chunk_id": "chunk", "after_tokens": 3}]
-        }]
-    });
-    fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", path.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"1.1.2,1.1.3replace new text\np\n1.1.2,1.1.3replace \"tight\"\nsave\nq\n")
-        .unwrap();
-    let result = child.wait_with_output().unwrap();
-
-    assert!(result.status.success());
-    assert!(String::from_utf8(result.stderr)
-        .unwrap()
-        .contains("start with --model MODEL"));
-    let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-    assert_eq!(
-        saved["paragraphs"][0]["tokens"][1]["text"],
-        "\t old text \u{2003}"
+fn settings_queries_are_read_only_and_failed_changes_keep_history() {
+    let mut project = common::project(&["one", "two"]);
+    project.split_paragraph(1, 1).unwrap();
+    project.undo(1);
+    let (output, errors, saved) = run(
+        &project,
+        "model\nlanguage\nlanguage de\nmodel /missing/model.bin\nmodel\nlanguage",
     );
+    assert!(output.contains("model (none)"));
+    assert!(output.contains("language auto"));
+    assert!(errors.contains("transcription requires a model"));
+    assert!(errors.contains("could not load model"));
+    assert_eq!(saved, project);
 }
 
 #[test]
-fn rejected_chunk_commands_do_not_mutate_and_paragraph_commands_preserve_chunks() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("structure.json");
-    let token = |index: usize, text: &str| {
-        json!({
-            "id": {"kind": "recognition", "run_id": "run", "segment_id": "s", "token_index": index},
-            "text": text,
-            "origin": {"kind": "recognition"}
-        })
-    };
-    let mapping = |index: usize, start: u64, end: u64| {
-        json!({
-            "paragraph_id": "paragraph:original",
-            "paragraph_revision": 1,
-            "token_id": {"kind": "recognition", "run_id": "run", "segment_id": "s", "token_index": index},
-            "source_id": "audio:run",
-            "range": {"start_sample": start, "end_sample": end},
-            "alignment": "exact"
-        })
-    };
-    let value = json!({
-        "schema": "rde-document/v1-experimental",
-        "id": "document:structure",
-        "paragraphs": [{
-            "id": "paragraph:original",
-            "revision": 1,
-            "tokens": [token(0, "one"), token(1, " two"), token(2, " three"), token(3, " four")],
-            "chunk_boundaries": [
-                {"chunk_id": "chunk:first", "after_tokens": 2},
-                {"chunk_id": "chunk:second", "after_tokens": 4}
-            ]
-        }],
-        "audio_sources": [{"id": "audio:run", "canonical_sample_count": 400}],
-        "chunk_audio_mappings": [
-            {
-                "chunk_id": "chunk:first",
-                "source_id": "audio:run",
-                "range": {"start_sample": 0, "end_sample": 200}
-            },
-            {
-                "chunk_id": "chunk:second",
-                "source_id": "audio:run",
-                "range": {"start_sample": 200, "end_sample": 400}
-            }
-        ],
-        "token_audio_mappings": [
-            mapping(0, 0, 100), mapping(1, 100, 200),
-            mapping(2, 200, 300), mapping(3, 300, 400)
-        ]
-    });
-    fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+fn cross_chunk_setting_targets_are_rejected_before_loading_models() {
+    let project = common::project(&["one", "two"]);
+    let (_, errors, saved) = run(&project, "1,2select\nmodel /missing/model.bin\nlanguage de");
+    assert!(errors.contains("setting change requires exactly one current chunk"));
+    assert!(!errors.contains("could not load model"));
+    assert_eq!(saved, project);
+}
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_rde"))
-        .args(["edit", path.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(
-            b"split\n1.2split\nisplit\n1.2isplit\nasplit\n1.2asplit\n1.1merge\n1.2parasplit\n1merge\n9undo\n9redo\nsave\nq\n",
-        )
-        .unwrap();
-    let result = child.wait_with_output().unwrap();
+#[test]
+fn failed_corrections_preserve_whitespace_text_selection_and_redo() {
+    let mut project = common::project(&[" \t old text \u{2003}", " next"]);
+    project.split_paragraph(1, 1).unwrap();
+    project.undo(1);
+    let (output, errors, saved) = run(
+        &project,
+        "1.1.1,1.1.2select\nreplace NEW\np\n1.1.1insert inserted\n1.1.1append appended",
+    );
+    assert!(output.contains("selected 1.1.1,1.1.2"));
+    assert!(output.contains("old text"));
+    assert!(errors.contains("transcription requires a model"));
+    assert_eq!(saved, project);
+}
 
-    assert!(
-        result.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
+#[test]
+fn save_load_and_export_keep_exact_current_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let export = dir.path().join("text");
+    let project = common::project(&["one", " two"]);
+    let (_, errors, saved) = run(
+        &project,
+        &format!("1.2parasplit\nexport {}", export.display()),
     );
-    let output = String::from_utf8(result.stdout).unwrap();
-    assert!(output.contains("split paragraph 1 before 1.2"));
-    assert!(output.contains("merged paragraphs 1 and 2"));
-    assert!(output.contains("undid 2 edits"));
-    assert!(output.contains("redid 2 edits"));
-    let errors = String::from_utf8(result.stderr).unwrap();
-    assert_eq!(errors.matches("unknown command").count(), 6);
-    assert!(errors.contains("merge does not accept address '1.1'; expected a paragraph position N"));
-
-    let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-    assert_eq!(saved["paragraphs"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        saved["paragraphs"][0]["tokens"].as_array().unwrap().len(),
-        4
-    );
-    assert_eq!(
-        saved["paragraphs"][0]["chunk_boundaries"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert!(saved.get("replay_chunks").is_none());
-    assert_eq!(saved["chunk_audio_mappings"].as_array().unwrap().len(), 2);
-    assert_eq!(saved["chunk_audio_mappings"][0]["range"]["start_sample"], 0);
-    assert_eq!(saved["chunk_audio_mappings"][0]["range"]["end_sample"], 200);
-    assert_eq!(
-        saved["chunk_audio_mappings"][1]["range"]["start_sample"],
-        200
-    );
-    assert_eq!(saved["chunk_audio_mappings"][1]["range"]["end_sample"], 400);
-    assert_eq!(saved["edit_history"].as_array().unwrap().len(), 2);
-    assert!(saved.get("redo_history").is_none());
-    assert_eq!(
-        saved["paragraphs"][0]["tokens"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|token| token["text"].as_str().unwrap())
-            .collect::<String>(),
-        "one two three four"
-    );
+    assert!(errors.is_empty(), "{errors}");
+    assert_eq!(fs::read_to_string(export).unwrap(), "one\n\n two");
+    assert_eq!(saved.paragraphs().len(), 2);
 }

@@ -1,8 +1,8 @@
-//! Immutable Whisper recognition evidence and bounded-window orchestration.
+//! Immutable Whisper transcription evidence and bounded-window orchestration.
 
 use std::{fs::File, io::Read, path::Path, sync::Arc};
 
-use hfvc_lib::{InteractiveSession, SessionConfig, Transcription};
+use hfvc_lib::{InteractiveSession, SessionConfig, Transcription as DecoderTranscription};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use whisper_rs::{
@@ -11,12 +11,11 @@ use whisper_rs::{
 
 use crate::chunking::{SampleRange, SourceFacts};
 
-pub const RECOGNITION_RUN_SCHEMA: &str = "recognition-run/v1-experimental";
 const WHISPER_SAMPLE_RATE_HZ: u32 = 16_000;
 const SAMPLES_PER_CENTISECOND: u64 = 160;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecognitionConfig {
+pub struct TranscriptionConfig {
     pub max_window_samples: u64,
     pub target_core_samples: u64,
     pub left_context_samples: u64,
@@ -27,7 +26,7 @@ pub struct RecognitionConfig {
     pub post_chunking: PostChunkConfig,
 }
 
-impl Default for RecognitionConfig {
+impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
             max_window_samples: 480_000,
@@ -68,7 +67,7 @@ impl Default for PostChunkConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecognizerIdentity {
+pub struct TranscriberIdentity {
     pub name: String,
     pub implementation: String,
     pub model_sha256: String,
@@ -76,7 +75,7 @@ pub struct RecognizerIdentity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RecognitionStatus {
+pub enum TranscriptionStatus {
     Succeeded,
     Partial,
     Failed,
@@ -99,7 +98,7 @@ pub struct TokenAlternative {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecognitionToken {
+pub struct WhisperToken {
     pub token_id: i32,
     pub text: String,
     pub probability: f32,
@@ -109,13 +108,30 @@ pub struct RecognitionToken {
     pub alternatives: Vec<TokenAlternative>,
 }
 
+impl WhisperToken {
+    pub fn probability(&self) -> f32 {
+        self.probability
+    }
+}
+impl TokenAlternative {
+    pub fn token_id(&self) -> i32 {
+        self.token_id
+    }
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    pub fn probability(&self) -> f32 {
+        self.probability
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DecodedSegment {
     pub id: String,
     pub audio_range: SampleRange,
     pub text: String,
     pub no_speech_probability: f32,
-    pub tokens: Vec<RecognitionToken>,
+    pub tokens: Vec<WhisperToken>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,7 +152,7 @@ pub struct ChunkBoundary {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecognitionChunk {
+pub struct TranscriptionChunk {
     pub id: String,
     pub ordinal: u32,
     pub segment_ids: Vec<String>,
@@ -147,7 +163,7 @@ pub struct RecognitionChunk {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ProcessingWindow {
+pub struct ProvisionalChunkEvidence {
     pub ordinal: u32,
     pub submitted: SampleRange,
     pub core: SampleRange,
@@ -160,21 +176,92 @@ pub struct ProcessingWindow {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecognitionRun {
-    pub schema: String,
+pub struct InitialTranscriptionResult {
     pub id: String,
     pub revision: u64,
     pub source: SourceFacts,
-    pub recognizer: RecognizerIdentity,
-    pub config: RecognitionConfig,
-    pub status: RecognitionStatus,
-    pub windows: Vec<ProcessingWindow>,
+    pub transcriber: TranscriberIdentity,
+    pub config: TranscriptionConfig,
+    pub status: TranscriptionStatus,
+    pub windows: Vec<ProvisionalChunkEvidence>,
     pub segments: Vec<DecodedSegment>,
-    pub chunks: Vec<RecognitionChunk>,
+    pub chunks: Vec<TranscriptionChunk>,
+}
+
+/// Project-owned evidence from the initial process, including failed decoding.
+/// This is not a transcription: it may support several finalized chunks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InitialTranscriptionEvidence {
+    pub id: String,
+    pub source: SourceFacts,
+    pub transcriber: TranscriberIdentity,
+    pub config: TranscriptionConfig,
+    pub status: TranscriptionStatus,
+    pub provisional_chunks: Vec<ProvisionalChunkEvidence>,
+}
+
+/// One immutable proposal for one finalized chunk.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Transcription {
+    pub id: String,
+    pub chunk_id: String,
+    pub previous_id: Option<String>,
+    pub text: String,
+    pub source: SourceFacts,
+    pub transcriber: TranscriberIdentity,
+    pub config: TranscriptionConfig,
+    pub audio_range: SampleRange,
+    pub boundary: ChunkBoundary,
+    pub segments: Vec<DecodedSegment>,
+    pub forced_token_ids: Vec<i32>,
+}
+
+impl InitialTranscriptionResult {
+    pub fn evidence(&self) -> InitialTranscriptionEvidence {
+        InitialTranscriptionEvidence {
+            id: self.id.clone(),
+            source: self.source.clone(),
+            transcriber: self.transcriber.clone(),
+            config: self.config.clone(),
+            status: self.status,
+            provisional_chunks: self.windows.clone(),
+        }
+    }
+    pub fn transcription_for(
+        &self,
+        chunk: &TranscriptionChunk,
+        chunk_id: &str,
+        previous_id: Option<String>,
+    ) -> Transcription {
+        Transcription {
+            id: format!("{}:{}", self.id, chunk.id),
+            chunk_id: chunk_id.into(),
+            previous_id,
+            text: chunk.text.clone(),
+            source: self.source.clone(),
+            transcriber: self.transcriber.clone(),
+            config: self.config.clone(),
+            audio_range: chunk.audio_range,
+            boundary: chunk.boundary.clone(),
+            segments: self
+                .segments
+                .iter()
+                .filter(|s| chunk.segment_ids.contains(&s.id))
+                .cloned()
+                .collect(),
+            forced_token_ids: self
+                .windows
+                .first()
+                .map(|w| w.prompt_token_ids.clone())
+                .unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct ChunkRefreshRequest {
+pub struct ChunkTranscriptionRequest {
+    pub chunk_id: String,
+    pub previous_id: String,
     pub source: SourceFacts,
     pub chunk_range: SampleRange,
     pub language: String,
@@ -182,11 +269,42 @@ pub struct ChunkRefreshRequest {
     pub revision: u64,
 }
 
+/// Decoder seam for correction and transaction tests. Tokens always use the
+/// selected Whisper vocabulary, including tokens forced by an edit.
+pub trait ChunkTranscriber {
+    fn tokenize(&self, text: &str) -> Result<Vec<i32>, TranscriptionError>;
+    fn render_tokens(&self, tokens: &[i32]) -> Result<String, TranscriptionError>;
+    fn beginning_timestamp_token(&self) -> i32;
+    fn transcribe_chunk(
+        &mut self,
+        request: ChunkTranscriptionRequest,
+        samples: &[f32],
+    ) -> Result<Transcription, TranscriptionError>;
+}
+
+impl ChunkTranscriber for TranscriberSession {
+    fn tokenize(&self, text: &str) -> Result<Vec<i32>, TranscriptionError> {
+        self.tokenize(text)
+    }
+    fn render_tokens(&self, tokens: &[i32]) -> Result<String, TranscriptionError> {
+        self.render_tokens(tokens)
+    }
+    fn beginning_timestamp_token(&self) -> i32 {
+        self.beginning_timestamp_token()
+    }
+    fn transcribe_chunk(
+        &mut self,
+        request: ChunkTranscriptionRequest,
+        samples: &[f32],
+    ) -> Result<Transcription, TranscriptionError> {
+        self.transcribe_chunk(request, samples)
+    }
+}
+
 /// Owns one model context and at most one exact-range decode cache.
-///
 /// `InteractiveSession` contains audio- and history-specific Whisper state, so
 /// a cache must never be reused for a different source, range, or language.
-pub struct RecognizerSession {
+pub struct TranscriberSession {
     chunk_decode_cache: Option<ChunkDecodeCache>,
     decoder: WhisperDecoder,
     model_path: std::path::PathBuf,
@@ -199,8 +317,8 @@ struct ChunkDecodeCache {
     session: InteractiveSession,
 }
 
-impl RecognizerSession {
-    pub fn load(model: &Path, config: &RecognitionConfig) -> Result<Self, RecognitionError> {
+impl TranscriberSession {
+    pub fn load(model: &Path, config: &TranscriptionConfig) -> Result<Self, TranscriptionError> {
         Ok(Self {
             chunk_decode_cache: None,
             decoder: WhisperDecoder::load(model, config)?,
@@ -226,22 +344,22 @@ impl RecognizerSession {
         self.decoder.language = language;
     }
 
-    pub fn tokenize(&self, text: &str) -> Result<Vec<i32>, RecognitionError> {
+    pub fn tokenize(&self, text: &str) -> Result<Vec<i32>, TranscriptionError> {
         let maximum = text.len().saturating_add(256).max(256);
         self.decoder
             .context
             .tokenize(text, maximum)
-            .map_err(|error| RecognitionError::Model(error.to_string()))
+            .map_err(|error| TranscriptionError::Model(error.to_string()))
     }
 
-    pub fn render_tokens(&self, tokens: &[i32]) -> Result<String, RecognitionError> {
+    pub fn render_tokens(&self, tokens: &[i32]) -> Result<String, TranscriptionError> {
         tokens
             .iter()
             .map(|id| {
                 self.decoder
                     .context
                     .token_to_string(*id)
-                    .map_err(|error| RecognitionError::Model(error.to_string()))
+                    .map_err(|error| TranscriptionError::Model(error.to_string()))
             })
             .collect()
     }
@@ -250,11 +368,11 @@ impl RecognizerSession {
         self.decoder.context.token_beg()
     }
 
-    pub fn refresh_chunk(
+    pub fn transcribe_chunk(
         &mut self,
-        request: ChunkRefreshRequest,
+        request: ChunkTranscriptionRequest,
         samples: &[f32],
-    ) -> Result<RecognitionRun, RecognitionError> {
+    ) -> Result<Transcription, TranscriptionError> {
         if request.source.sample_rate_hz != WHISPER_SAMPLE_RATE_HZ
             || request.source.channels != 1
             || request.source.decoded_sample_count != samples.len() as u64
@@ -262,14 +380,14 @@ impl RecognizerSession {
             || request.chunk_range.end_sample > request.source.decoded_sample_count
             || request.chunk_range.len() > 480_000
         {
-            return Err(RecognitionError::InvalidConfiguration(
+            return Err(TranscriptionError::InvalidConfiguration(
                 "invalid existing chunk audio range".into(),
             ));
         }
         let start = usize::try_from(request.chunk_range.start_sample)
-            .map_err(|_| RecognitionError::AudioTooLong)?;
+            .map_err(|_| TranscriptionError::AudioTooLong)?;
         let end = usize::try_from(request.chunk_range.end_sample)
-            .map_err(|_| RecognitionError::AudioTooLong)?;
+            .map_err(|_| TranscriptionError::AudioTooLong)?;
         self.decoder.language = request.language.clone();
         let cache_matches = self.chunk_decode_cache.as_ref().is_some_and(|cached| {
             cached.source_sha256 == request.source.sha256
@@ -287,10 +405,10 @@ impl RecognizerSession {
             }
             let mut session =
                 InteractiveSession::new_with_context(Arc::clone(&self.decoder.context), config)
-                    .map_err(|error| RecognitionError::Model(error.to_string()))?;
+                    .map_err(|error| TranscriptionError::Model(error.to_string()))?;
             session
                 .load_audio(&samples[start..end])
-                .map_err(|error| RecognitionError::Model(error.to_string()))?;
+                .map_err(|error| TranscriptionError::Model(error.to_string()))?;
             self.chunk_decode_cache = Some(ChunkDecodeCache {
                 source_sha256: request.source.sha256.clone(),
                 range: request.chunk_range,
@@ -307,7 +425,7 @@ impl RecognizerSession {
                 cached
                     .session
                     .reset()
-                    .map_err(|error| RecognitionError::Model(error.to_string()))?
+                    .map_err(|error| TranscriptionError::Model(error.to_string()))?
                     .clone()
             } else {
                 cached
@@ -320,7 +438,7 @@ impl RecognizerSession {
             cached
                 .session
                 .force_prefix_tokens(&request.forced_tokens)
-                .map_err(|error| RecognitionError::Model(error.to_string()))?
+                .map_err(|error| TranscriptionError::Model(error.to_string()))?
                 .clone()
         };
         let relative = self
@@ -334,8 +452,8 @@ impl RecognizerSession {
             .map(|t| t.text.as_str())
             .collect::<String>();
         let segment_ids = segments.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
-        let chunk = RecognitionChunk {
-            id: "refresh-chunk".into(),
+        let chunk = TranscriptionChunk {
+            id: "decoded-chunk".into(),
             ordinal: 1,
             segment_ids,
             audio_range: request.chunk_range,
@@ -350,42 +468,48 @@ impl RecognizerSession {
                 pause_samples: None,
             },
         };
-        let config = RecognitionConfig {
+        let config = TranscriptionConfig {
             language: request.language,
-            ..RecognitionConfig::default()
+            threads: self.decoder.threads,
+            top_candidates: self.decoder.top_candidates,
+            ..TranscriptionConfig::default()
         };
-        let window = ProcessingWindow {
+        let window = ProvisionalChunkEvidence {
             ordinal: 1,
             submitted: request.chunk_range,
             core: request.chunk_range,
-            prompt_token_ids: Vec::new(),
+            prompt_token_ids: request.forced_tokens,
             advance_reason: AdvanceReason::SourceEnd,
             hypotheses: segments.clone(),
             accepted_segment_ids: segments.iter().map(|s| s.id.clone()).collect(),
             error: None,
         };
-        let recognizer = self.decoder.identity.clone();
+        let transcriber = self.decoder.identity.clone();
         let base_id = run_id(
             &request.source,
-            &recognizer,
+            &transcriber,
             &config,
             std::slice::from_ref(&window),
             &segments,
             std::slice::from_ref(&chunk),
         );
         let id = format!("{base_id}-r{}", request.revision);
-        Ok(RecognitionRun {
-            schema: RECOGNITION_RUN_SCHEMA.into(),
+        let result = InitialTranscriptionResult {
             id,
             revision: request.revision,
             source: request.source,
-            recognizer,
+            transcriber,
             config,
-            status: RecognitionStatus::Succeeded,
+            status: TranscriptionStatus::Succeeded,
             windows: vec![window],
             segments,
             chunks: vec![chunk],
-        })
+        };
+        Ok(result.transcription_for(
+            &result.chunks[0],
+            &request.chunk_id,
+            Some(request.previous_id),
+        ))
     }
 }
 
@@ -394,11 +518,11 @@ pub struct WindowSegment {
     pub audio_range: SampleRange,
     pub text: String,
     pub no_speech_probability: f32,
-    pub tokens: Vec<RecognitionToken>,
+    pub tokens: Vec<WhisperToken>,
 }
 
 pub trait WindowDecoder {
-    fn identity(&self) -> RecognizerIdentity;
+    fn identity(&self) -> TranscriberIdentity;
     fn decode(
         &mut self,
         audio: &[f32],
@@ -407,8 +531,8 @@ pub trait WindowDecoder {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum RecognitionError {
-    #[error("invalid recognition configuration: {0}")]
+pub enum TranscriptionError {
+    #[error("invalid transcription configuration: {0}")]
     InvalidConfiguration(String),
     #[error("audio sample count does not fit this platform")]
     AudioTooLong,
@@ -418,12 +542,12 @@ pub enum RecognitionError {
     ModelRead(#[from] std::io::Error),
 }
 
-pub fn recognize<D: WindowDecoder>(
+pub fn transcribe_initial<D: WindowDecoder>(
     source: SourceFacts,
     samples: &[f32],
-    config: RecognitionConfig,
+    config: TranscriptionConfig,
     decoder: &mut D,
-) -> Result<RecognitionRun, RecognitionError> {
+) -> Result<InitialTranscriptionResult, TranscriptionError> {
     validate_config(&source, samples, &config)?;
     let total = source.decoded_sample_count;
     let mut cursor = 0_u64;
@@ -442,8 +566,9 @@ pub fn recognize<D: WindowDecoder>(
             start_sample: submitted_start,
             end_sample: submitted_end,
         };
-        let start = usize::try_from(submitted_start).map_err(|_| RecognitionError::AudioTooLong)?;
-        let end = usize::try_from(submitted_end).map_err(|_| RecognitionError::AudioTooLong)?;
+        let start =
+            usize::try_from(submitted_start).map_err(|_| TranscriptionError::AudioTooLong)?;
+        let end = usize::try_from(submitted_end).map_err(|_| TranscriptionError::AudioTooLong)?;
         let ordinal = u32::try_from(windows.len() + 1).unwrap_or(u32::MAX);
         let window_prompt_token_ids = prompt_token_ids.clone();
 
@@ -493,7 +618,7 @@ pub fn recognize<D: WindowDecoder>(
             prompt_token_ids = next;
         }
 
-        windows.push(ProcessingWindow {
+        windows.push(ProvisionalChunkEvidence {
             ordinal,
             submitted,
             core: SampleRange {
@@ -510,21 +635,20 @@ pub fn recognize<D: WindowDecoder>(
     }
 
     let status = if failures == 0 {
-        RecognitionStatus::Succeeded
+        TranscriptionStatus::Succeeded
     } else if failures == windows.len() {
-        RecognitionStatus::Failed
+        TranscriptionStatus::Failed
     } else {
-        RecognitionStatus::Partial
+        TranscriptionStatus::Partial
     };
-    let recognizer = decoder.identity();
+    let transcriber = decoder.identity();
     let chunks = build_post_chunks(&accepted, source.sample_rate_hz, &config.post_chunking);
-    let id = run_id(&source, &recognizer, &config, &windows, &accepted, &chunks);
-    Ok(RecognitionRun {
-        schema: RECOGNITION_RUN_SCHEMA.into(),
+    let id = run_id(&source, &transcriber, &config, &windows, &accepted, &chunks);
+    Ok(InitialTranscriptionResult {
         id,
         revision: 1,
         source,
-        recognizer,
+        transcriber,
         config,
         status,
         windows,
@@ -536,20 +660,20 @@ pub fn recognize<D: WindowDecoder>(
 fn validate_config(
     source: &SourceFacts,
     samples: &[f32],
-    config: &RecognitionConfig,
-) -> Result<(), RecognitionError> {
+    config: &TranscriptionConfig,
+) -> Result<(), TranscriptionError> {
     if source.sample_rate_hz != WHISPER_SAMPLE_RATE_HZ || source.channels != 1 {
-        return Err(RecognitionError::InvalidConfiguration(
+        return Err(TranscriptionError::InvalidConfiguration(
             "Whisper input must be canonical mono 16 kHz audio".into(),
         ));
     }
     if source.decoded_sample_count != u64::try_from(samples.len()).unwrap_or(u64::MAX) {
-        return Err(RecognitionError::InvalidConfiguration(
+        return Err(TranscriptionError::InvalidConfiguration(
             "source facts do not match decoded samples".into(),
         ));
     }
     if config.max_window_samples == 0 || config.target_core_samples == 0 {
-        return Err(RecognitionError::InvalidConfiguration(
+        return Err(TranscriptionError::InvalidConfiguration(
             "window and target core must be positive".into(),
         ));
     }
@@ -558,7 +682,7 @@ fn validate_config(
         .checked_add(config.target_core_samples)
         .and_then(|value| value.checked_add(config.right_context_samples));
     if submitted.is_none_or(|value| value > config.max_window_samples) {
-        return Err(RecognitionError::InvalidConfiguration(
+        return Err(TranscriptionError::InvalidConfiguration(
             "left context + target core + right context exceeds maximum window".into(),
         ));
     }
@@ -567,12 +691,12 @@ fn validate_config(
         || post.minimum_tokens > post.target_tokens
         || post.target_tokens > post.maximum_tokens
     {
-        return Err(RecognitionError::InvalidConfiguration(
+        return Err(TranscriptionError::InvalidConfiguration(
             "post-chunk token limits must be positive and ordered".into(),
         ));
     }
     if post.usable_pause_ms > post.strong_pause_ms || post.strong_pause_ms > post.long_pause_ms {
-        return Err(RecognitionError::InvalidConfiguration(
+        return Err(TranscriptionError::InvalidConfiguration(
             "post-chunk pause limits must be ordered".into(),
         ));
     }
@@ -598,7 +722,7 @@ fn build_post_chunks(
     segments: &[DecodedSegment],
     sample_rate_hz: u32,
     config: &PostChunkConfig,
-) -> Vec<RecognitionChunk> {
+) -> Vec<TranscriptionChunk> {
     let mut chunks = Vec::new();
     let mut start = 0_usize;
 
@@ -678,8 +802,8 @@ fn build_post_chunks(
         let choice = choice.expect("a non-empty segment suffix always produces a chunk");
         let selected = &segments[start..choice.end];
         let ordinal = u32::try_from(chunks.len() + 1).unwrap_or(u32::MAX);
-        chunks.push(RecognitionChunk {
-            id: format!("recognition-chunk-{ordinal}"),
+        chunks.push(TranscriptionChunk {
+            id: format!("chunk-{ordinal}"),
             ordinal,
             segment_ids: selected.iter().map(|segment| segment.id.clone()).collect(),
             audio_range: SampleRange {
@@ -787,7 +911,7 @@ fn choose_boundary(
     cursor: u64,
     total: u64,
     segments: &[DecodedSegment],
-    config: &RecognitionConfig,
+    config: &TranscriptionConfig,
 ) -> (u64, AdvanceReason) {
     let submitted_end = cursor
         .saturating_add(config.target_core_samples)
@@ -812,45 +936,45 @@ fn choose_boundary(
         })
 }
 
-fn target_boundary(cursor: u64, total: u64, config: &RecognitionConfig) -> u64 {
+fn target_boundary(cursor: u64, total: u64, config: &TranscriptionConfig) -> u64 {
     cursor.saturating_add(config.target_core_samples).min(total)
 }
 
 fn run_id(
     source: &SourceFacts,
-    recognizer: &RecognizerIdentity,
-    config: &RecognitionConfig,
-    windows: &[ProcessingWindow],
+    transcriber: &TranscriberIdentity,
+    config: &TranscriptionConfig,
+    windows: &[ProvisionalChunkEvidence],
     segments: &[DecodedSegment],
-    chunks: &[RecognitionChunk],
+    chunks: &[TranscriptionChunk],
 ) -> String {
-    let encoded = serde_json::to_vec(&(source, recognizer, config, windows, segments, chunks))
-        .expect("recognition identity values are serializable");
+    let encoded = serde_json::to_vec(&(source, transcriber, config, windows, segments, chunks))
+        .expect("transcription identity values are serializable");
     let digest = Sha256::digest(encoded);
-    format!("recognition-{}", hex::encode(&digest[..16]))
+    format!("transcription-{}", hex::encode(&digest[..16]))
 }
 
 pub struct WhisperDecoder {
     context: Arc<WhisperContext>,
-    identity: RecognizerIdentity,
+    identity: TranscriberIdentity,
     language: String,
     threads: usize,
     top_candidates: usize,
 }
 
 impl WhisperDecoder {
-    pub fn load(model: &Path, config: &RecognitionConfig) -> Result<Self, RecognitionError> {
+    pub fn load(model: &Path, config: &TranscriptionConfig) -> Result<Self, TranscriptionError> {
         let model_sha256 = hash_file(model)?;
         let path = model
             .to_str()
-            .ok_or_else(|| RecognitionError::Model("model path is not valid UTF-8".into()))?;
+            .ok_or_else(|| TranscriptionError::Model("model path is not valid UTF-8".into()))?;
         let context = Arc::new(
             WhisperContext::new_with_params(path, WhisperContextParameters::default())
-                .map_err(|error| RecognitionError::Model(error.to_string()))?,
+                .map_err(|error| TranscriptionError::Model(error.to_string()))?,
         );
         Ok(Self {
             context,
-            identity: RecognizerIdentity {
+            identity: TranscriberIdentity {
                 name: "whisper.cpp".into(),
                 implementation: format!(
                     "whisper-rs-{}/whisper.cpp-{}",
@@ -890,7 +1014,7 @@ impl WhisperDecoder {
                         probability: candidate.p,
                     })
                     .collect();
-                tokens.push(RecognitionToken {
+                tokens.push(WhisperToken {
                     token_id: token.token_id(),
                     text: token.to_string().unwrap_or_default(),
                     probability: token.token_probability(),
@@ -917,8 +1041,8 @@ impl WhisperDecoder {
     fn interactive_segments(
         &self,
         session: &InteractiveSession,
-        transcription: &Transcription,
-    ) -> Result<Vec<WindowSegment>, RecognitionError> {
+        transcription: &DecoderTranscription,
+    ) -> Result<Vec<WindowSegment>, TranscriptionError> {
         Ok(transcription
             .segments
             .iter()
@@ -938,7 +1062,7 @@ impl WhisperDecoder {
                                 probability: candidate.probability,
                             })
                             .collect();
-                        RecognitionToken {
+                        WhisperToken {
                             token_id: token.token_id,
                             text: token.text.clone(),
                             probability: token.probability,
@@ -984,7 +1108,7 @@ impl WhisperDecoder {
 }
 
 impl WindowDecoder for WhisperDecoder {
-    fn identity(&self) -> RecognizerIdentity {
+    fn identity(&self) -> TranscriberIdentity {
         self.identity.clone()
     }
 
