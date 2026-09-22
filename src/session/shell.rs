@@ -8,13 +8,13 @@ use std::{
 use rustyline::{error::ReadlineError, DefaultEditor};
 
 use crate::{
+    backend::{
+        AudioBackend, BackendError, LocalAudioBackend, LocalRecognitionBackend, RecognitionBackend,
+    },
     navigation::NavigationState,
     persistence::{export_text, load_project, save_project},
     project::Project,
-    transcription::{
-        ChunkTranscriber, InitialTranscriptionResult, TranscriberSession, TranscriptionConfig,
-        TranscriptionError,
-    },
+    transcription::InitialTranscriptionResult,
 };
 
 use super::{
@@ -31,30 +31,13 @@ use super::{
     },
 };
 
-trait TranscriberFactory {
-    fn load(
-        &mut self,
-        model: &Path,
-        config: &TranscriptionConfig,
-    ) -> Result<Box<dyn ChunkTranscriber>, TranscriptionError>;
-}
-struct WhisperFactory;
-impl TranscriberFactory for WhisperFactory {
-    fn load(
-        &mut self,
-        model: &Path,
-        config: &TranscriptionConfig,
-    ) -> Result<Box<dyn ChunkTranscriber>, TranscriptionError> {
-        TranscriberSession::load(model, config).map(|s| Box::new(s) as Box<dyn ChunkTranscriber>)
-    }
-}
-
 pub struct SessionContext<'a> {
     project_path: Option<&'a Path>,
     initial_result: Option<&'a InitialTranscriptionResult>,
     start: SessionStart<'a>,
     model: Option<&'a Path>,
-    transcriber: Option<Box<dyn ChunkTranscriber>>,
+    recognition: Option<Box<dyn RecognitionBackend>>,
+    audio: Option<Box<dyn AudioBackend>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -70,7 +53,8 @@ impl<'a> SessionContext<'a> {
             initial_result: None,
             start: SessionStart::SavedDocument,
             model,
-            transcriber: None,
+            recognition: None,
+            audio: None,
         }
     }
 
@@ -85,24 +69,20 @@ impl<'a> SessionContext<'a> {
             initial_result: Some(initial_result),
             start: SessionStart::TranscribedAudio { source },
             model,
-            transcriber: None,
+            recognition: None,
+            audio: None,
         }
     }
 
-    pub fn transcribed_audio_with_transcriber(
-        initial_result: &'a InitialTranscriptionResult,
-        source: &'a Path,
-        project_path: Option<&'a Path>,
-        model: Option<&'a Path>,
-        transcriber: TranscriberSession,
+    /// Select implementations without changing session command callers.
+    pub fn with_backends(
+        mut self,
+        audio: Box<dyn AudioBackend>,
+        recognition: Box<dyn RecognitionBackend>,
     ) -> Self {
-        Self {
-            project_path,
-            initial_result: Some(initial_result),
-            start: SessionStart::TranscribedAudio { source },
-            model,
-            transcriber: Some(Box::new(transcriber)),
-        }
+        self.audio = Some(audio);
+        self.recognition = Some(recognition);
+        self
     }
 }
 
@@ -114,11 +94,11 @@ struct SessionState<'a> {
     navigation: NavigationState,
     last_playback: Option<super::playback::LastPlayback>,
     language: String,
-    transcriber: Option<Box<dyn ChunkTranscriber>>,
+    recognition: Box<dyn RecognitionBackend>,
+    audio: Box<dyn AudioBackend>,
     model_path: Option<PathBuf>,
     issue_thresholds: IssueThresholds,
     color: bool,
-    factory: Box<dyn TranscriberFactory>,
     startup_model: Option<PathBuf>,
 }
 
@@ -141,9 +121,13 @@ impl<'a> SessionState<'a> {
             initial_result,
             start,
             model,
-            transcriber,
+            recognition,
+            audio,
         } = context;
         let document = project.clone();
+        let mut audio = audio.unwrap_or_else(|| Box::new(LocalAudioBackend::new()));
+        audio.restore(document.audio_sources(), document.chunk_audio_mappings());
+        let recognition = recognition.unwrap_or_else(|| Box::new(LocalRecognitionBackend::new()));
         let initial_model = document.settings().model.clone();
         let startup_model = model
             .map(Path::to_path_buf)
@@ -160,19 +144,14 @@ impl<'a> SessionState<'a> {
                     output,
                 )?;
                 for source in document.audio_sources() {
-                    match source.path() {
-                        None => writeln!(
+                    match audio.availability(source.id()) {
+                        Err(BackendError::NoLocalPath(_)) => writeln!(
                             errors,
                             "audio source '{}' has no local path; replay is unavailable",
                             source.id()
                         )?,
-                        Some(path) if !path.is_file() => writeln!(
-                            errors,
-                            "audio source '{}' is unavailable at {}; text remains editable",
-                            source.id(),
-                            path.display()
-                        )?,
-                        Some(_) => {}
+                        Err(error) => writeln!(errors, "{error}; text remains editable")?,
+                        Ok(()) => {}
                     }
                 }
             }
@@ -228,11 +207,11 @@ impl<'a> SessionState<'a> {
             navigation,
             last_playback: None,
             language: initial_language,
-            transcriber,
+            recognition,
+            audio,
             model_path,
             issue_thresholds: IssueThresholds::default(),
             color,
-            factory: Box::new(WhisperFactory),
             startup_model,
         }))
     }
@@ -247,6 +226,10 @@ impl<'a> SessionState<'a> {
         replay_context_samples: u64,
     ) -> io::Result<SessionControl> {
         self.sync_settings();
+        self.audio.restore(
+            self.project.audio_sources(),
+            self.project.chunk_audio_mappings(),
+        );
         let Self {
             project: document,
             project_path,
@@ -255,11 +238,11 @@ impl<'a> SessionState<'a> {
             navigation,
             last_playback,
             language,
-            transcriber,
+            recognition,
+            audio,
             model_path,
             issue_thresholds,
             color,
-            factory,
             startup_model: _,
         } = self;
         let append = matches!(&command, SessionCommand::Append { .. });
@@ -506,14 +489,11 @@ impl<'a> SessionState<'a> {
                     return Ok(SessionControl::Continue);
                 };
                 let prefix = chunk_prefix(document, address, address.token - 1).unwrap();
-                if !ensure_transcriber(transcriber, model_path, language, factory.as_mut(), errors)?
-                {
-                    return Ok(SessionControl::Continue);
-                }
                 run_correction(
                     document,
                     navigation,
-                    transcriber,
+                    audio.as_mut(),
+                    recognition.as_mut(),
                     language,
                     address.paragraph,
                     address.chunk,
@@ -559,14 +539,11 @@ impl<'a> SessionState<'a> {
                     chunk_prefix(document, address, through).unwrap_or_default(),
                     text
                 );
-                if !ensure_transcriber(transcriber, model_path, language, factory.as_mut(), errors)?
-                {
-                    return Ok(SessionControl::Continue);
-                }
                 run_correction(
                     document,
                     navigation,
-                    transcriber,
+                    audio.as_mut(),
+                    recognition.as_mut(),
                     language,
                     address.paragraph,
                     address.chunk,
@@ -605,19 +582,11 @@ impl<'a> SessionState<'a> {
                             replacement.text,
                         )
                     };
-                    if !ensure_transcriber(
-                        transcriber,
-                        model_path,
-                        language,
-                        factory.as_mut(),
-                        errors,
-                    )? {
-                        return Ok(SessionControl::Continue);
-                    }
                     run_correction(
                         document,
                         navigation,
-                        transcriber,
+                        audio.as_mut(),
+                        recognition.as_mut(),
                         language,
                         c.paragraph,
                         c.chunk,
@@ -646,14 +615,11 @@ impl<'a> SessionState<'a> {
                     chunk_prefix(document, start, start.token - 1).unwrap_or_default(),
                     text
                 );
-                if !ensure_transcriber(transcriber, model_path, language, factory.as_mut(), errors)?
-                {
-                    return Ok(SessionControl::Continue);
-                }
                 run_correction(
                     document,
                     navigation,
-                    transcriber,
+                    audio.as_mut(),
+                    recognition.as_mut(),
                     language,
                     start.paragraph,
                     start.chunk,
@@ -697,40 +663,27 @@ impl<'a> SessionState<'a> {
                     writeln!(output, "transcription settings unchanged")?;
                     return Ok(SessionControl::Continue);
                 }
-                let Some(path) = settings.model.as_ref() else {
+                if settings.model.is_none() {
                     writeln!(
                         errors,
                         "transcription requires a model: start with --model MODEL"
                     )?;
                     return Ok(SessionControl::Continue);
-                };
-                let config = TranscriptionConfig {
-                    language: settings.language.clone(),
-                    ..TranscriptionConfig::default()
-                };
-                match factory.load(path, &config) {
-                    Err(error) => writeln!(errors, "could not load model: {error}")?,
-                    Ok(engine) => {
-                        let mut candidate = Some(engine);
-                        let history = document.edit_history_len();
-                        run_transcription(
-                            document,
-                            navigation,
-                            &mut candidate,
-                            &settings,
-                            paragraph,
-                            chunk,
-                            Vec::new(),
-                            output,
-                            errors,
-                        )?;
-                        if document.edit_history_len() > history {
-                            *model_path = settings.model;
-                            *language = settings.language;
-                            *transcriber = candidate;
-                        }
-                    }
                 }
+                run_transcription(
+                    document,
+                    navigation,
+                    audio.as_mut(),
+                    recognition.as_mut(),
+                    &settings,
+                    paragraph,
+                    chunk,
+                    None,
+                    output,
+                    errors,
+                )?;
+                *model_path = document.settings().model.clone();
+                *language = document.settings().language.clone();
             }
             SessionCommand::SplitParagraph { marker } => {
                 apply_paragraph_split(document, navigation, marker, output, errors)?
@@ -752,8 +705,8 @@ impl<'a> SessionState<'a> {
                     ReplayStart {
                         context_samples: replay_context_samples,
                         speed,
-                        require_file: matches!(*start, SessionStart::SavedDocument),
                     },
+                    audio.as_mut(),
                     player,
                     output,
                     errors,
@@ -762,9 +715,9 @@ impl<'a> SessionState<'a> {
                 }
             }
             SessionCommand::Replay { speed } => repeat_document_replay(
-                document,
                 last_playback.as_ref(),
                 speed,
+                audio.as_mut(),
                 player,
                 output,
                 errors,
@@ -838,7 +791,6 @@ impl<'a> SessionState<'a> {
     fn sync_settings(&mut self) {
         let settings = self.project.settings();
         if self.model_path != settings.model || self.language != settings.language {
-            self.transcriber = None;
             self.model_path = settings.model.clone();
             self.language = settings.language.clone();
         }
@@ -867,41 +819,6 @@ fn render_session_document(
         }
     }
     Ok(())
-}
-
-fn ensure_transcriber(
-    transcriber: &mut Option<Box<dyn ChunkTranscriber>>,
-    model_path: &Option<PathBuf>,
-    language: &str,
-    factory: &mut dyn TranscriberFactory,
-    errors: &mut impl Write,
-) -> io::Result<bool> {
-    if transcriber.is_some() {
-        return Ok(true);
-    }
-    let Some(path) = model_path else {
-        writeln!(
-            errors,
-            "transcription requires a model: start with --model MODEL or use: model PATH"
-        )?;
-        return Ok(false);
-    };
-    match factory.load(
-        path,
-        &TranscriptionConfig {
-            language: language.into(),
-            ..TranscriptionConfig::default()
-        },
-    ) {
-        Ok(session) => {
-            *transcriber = Some(session);
-            Ok(true)
-        }
-        Err(error) => {
-            writeln!(errors, "could not load model: {error}")?;
-            Ok(false)
-        }
-    }
 }
 
 fn render_selected_tokens(
@@ -1120,6 +1037,10 @@ mod tests {
     use std::{ffi::OsString, path::PathBuf};
 
     use super::*;
+    use crate::{
+        backend::local::TranscriberFactory,
+        transcription::{ChunkTranscriber, TranscriptionConfig, TranscriptionError},
+    };
     use std::{cell::RefCell, rc::Rc};
     type LoadLog = Rc<RefCell<Vec<(PathBuf, String)>>>;
 
@@ -1267,11 +1188,13 @@ mod tests {
         .unwrap()
         .unwrap();
         let loads = Rc::new(RefCell::new(Vec::new()));
-        state.factory = Box::new(FakeFactory {
-            loads: loads.clone(),
-            fail_load: false,
-            fail_decode: false,
-        });
+        state.recognition = Box::new(LocalRecognitionBackend::with_factory(Box::new(
+            FakeFactory {
+                loads: loads.clone(),
+                fail_load: false,
+                fail_decode: false,
+            },
+        )));
         (dir, state, loads)
     }
     fn execute(state: &mut SessionState<'_>, command: &str) -> String {
@@ -1335,11 +1258,13 @@ mod tests {
             state.navigation = NavigationState::new(&state.project);
             let project = state.project.clone();
             let navigation = state.navigation.clone();
-            state.factory = Box::new(FakeFactory {
-                loads,
-                fail_load,
-                fail_decode: !fail_load,
-            });
+            state.recognition = Box::new(LocalRecognitionBackend::with_factory(Box::new(
+                FakeFactory {
+                    loads,
+                    fail_load,
+                    fail_decode: !fail_load,
+                },
+            )));
             let errors = execute(&mut state, "language de");
             assert!(errors.contains("failure"), "{errors}");
             assert_eq!(state.project, project);
@@ -1358,6 +1283,55 @@ mod tests {
     }
 
     #[test]
+    fn changed_local_audio_is_transcribed_with_current_circumstances_and_stable_chunk_identity() {
+        let (_dir, mut state, _) = state(&["old"]);
+        let original = state.project.current_transcription(1, 1).unwrap().clone();
+        let path = state.project.audio_sources()[0].path().unwrap().to_owned();
+        let mut writer = hound::WavWriter::create(
+            &path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for _ in 0..200 {
+            writer.write_sample(1000i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        assert!(execute(&mut state, "language de").is_empty());
+        let current = state.project.current_transcription(1, 1).unwrap();
+        assert_eq!(current.chunk_id, original.chunk_id);
+        assert_eq!(current.audio_range, original.audio_range);
+        assert_ne!(current.source.sha256, original.source.sha256);
+        assert_eq!(current.source.decoded_sample_count, 200);
+        let saved = path.with_extension("json");
+        save_project(&saved, &state.project).unwrap();
+        let reopened = load_project(&saved).unwrap();
+        assert_eq!(reopened, state.project);
+        execute(&mut state, "undo");
+        assert_eq!(
+            state.project.current_transcription(1, 1).unwrap(),
+            &original
+        );
+        execute(&mut state, "redo");
+        assert_eq!(state.project, reopened);
+    }
+
+    #[test]
+    fn missing_local_audio_fails_replay_and_transcription_without_changing_the_project() {
+        let (dir, mut state, _) = state(&["old"]);
+        let before = state.project.clone();
+        dir.close().unwrap();
+        assert!(execute(&mut state, "play").contains("unavailable"));
+        assert!(execute(&mut state, "language de").contains("transcription failed"));
+        assert_eq!(state.project, before);
+        assert!(execute(&mut state, "print").is_empty());
+    }
+
+    #[test]
     fn startup_model_override_is_a_normal_atomic_model_change() {
         let (_dir, state, loads) = state(&["old"]);
         let context =
@@ -1373,11 +1347,13 @@ mod tests {
         .unwrap();
         assert_eq!(reopened.project, state.project);
         let model = reopened.startup_model.take().unwrap();
-        reopened.factory = Box::new(FakeFactory {
-            loads: loads.clone(),
-            fail_load: false,
-            fail_decode: false,
-        });
+        reopened.recognition = Box::new(LocalRecognitionBackend::with_factory(Box::new(
+            FakeFactory {
+                loads: loads.clone(),
+                fail_load: false,
+                fail_decode: false,
+            },
+        )));
         assert!(execute(&mut reopened, &format!("model {}", model.display())).is_empty());
         assert_eq!(
             reopened.project.settings().model.as_deref(),
