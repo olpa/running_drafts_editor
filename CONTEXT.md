@@ -23,6 +23,10 @@ _Avoid_: Draft, project, visible document.
 **Recording**:
 The complete original audio opened for transcription and editing.
 
+**Recording ID**:
+The stable, opaque identity of a recording, independent of its storage location.
+It is distinct from the chunk IDs assigned during initial transcription.
+
 **Audio source**:
 An identifiable source from which a chunk receives its audio, together with the
 metadata needed to locate or verify it. A recording is the usual audio source;

@@ -272,8 +272,22 @@ impl crate::project::Project {
         run: &InitialTranscriptionResult,
         path: Option<impl AsRef<Path>>,
     ) -> Self {
+        Self::from_initial_transcription_with_recording_id(
+            run,
+            &format!("audio:{}", run.source.sha256),
+            path,
+        )
+    }
+
+    /// Preserve the identity supplied by the audio backend, including remote
+    /// recording IDs which cannot be derived from local source metadata.
+    pub fn from_initial_transcription_with_recording_id(
+        run: &InitialTranscriptionResult,
+        recording_id: &str,
+        path: Option<impl AsRef<Path>>,
+    ) -> Self {
         let mut document = Self::from_evidence(&run.id, &run.segments, &run.chunks);
-        let source_id = format!("audio:{}", run.source.sha256);
+        let source_id = recording_id.to_owned();
         document.audio_sources.push(AudioSource {
             id: source_id.clone(),
             path: path.map(|value| value.as_ref().to_path_buf()),
@@ -667,10 +681,11 @@ impl crate::project::Project {
         let original = self
             .current_transcription(paragraph_number, marker_number)
             .ok_or("current transcription is missing")?;
-        if transcription.source != original.source
-            || transcription.audio_range != original.audio_range
-        {
-            return Err("chunk audio identity or boundaries changed".into());
+        // Local sources are file proxies: users may replace the audio. Keep
+        // the finalized range fixed, while recording the audio actually used
+        // in the new transcription circumstances.
+        if transcription.audio_range != original.audio_range {
+            return Err("chunk audio boundaries changed".into());
         }
         transcription.boundary = original.boundary.clone();
         let paragraph_id = paragraph.id.clone();

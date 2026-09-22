@@ -3,10 +3,11 @@
 use std::io::{self, Write};
 
 use crate::{
-    chunking::{read_canonical_wav, SourceFacts},
+    backend::{
+        AudioBackend, BackendError, ChunkRecognitionRequest, CorrectionContext, RecognitionBackend,
+    },
     navigation::{tokens_in_range, Address, NavigationState, PositionAddress, TokenAddress},
     project::Project,
-    transcription::{ChunkTranscriber, ChunkTranscriptionRequest},
 };
 
 pub(crate) fn preserve_boundary_whitespace(
@@ -177,7 +178,8 @@ pub(crate) fn resolve_current_chunk(
 pub(crate) fn run_correction(
     document: &mut Project,
     navigation: &mut NavigationState,
-    transcriber: &mut Option<Box<dyn ChunkTranscriber>>,
+    audio: &mut dyn AudioBackend,
+    recognition: &mut dyn RecognitionBackend,
     language: &str,
     paragraph: usize,
     chunk: usize,
@@ -186,75 +188,51 @@ pub(crate) fn run_correction(
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> io::Result<()> {
-    let Some(session) = transcriber.as_ref() else {
-        return writeln!(
-            errors,
-            "transcription requires a model: start with --model MODEL or use: model PATH"
-        );
-    };
-    let mut forced = match session.tokenize(&intended) {
-        Ok(v) => v,
-        Err(e) => return writeln!(errors, "transcription failed: {e}"),
-    };
-    if let Some(id) = chosen {
-        forced.push(id);
-    } else {
-        match session.render_tokens(&forced) {
-            Ok(rendered) if rendered == intended => {}
-            Ok(_) => {
-                return writeln!(
-                    errors,
-                    "transcription failed: tokenizer did not reproduce the forced prefix"
-                )
-            }
-            Err(e) => return writeln!(errors, "transcription failed: {e}"),
-        }
-    }
-    prepend_beginning_timestamp(&mut forced, session.beginning_timestamp_token());
     let settings = document.settings().clone();
     debug_assert_eq!(settings.language, language);
     run_transcription(
         document,
         navigation,
-        transcriber,
+        audio,
+        recognition,
         &settings,
         paragraph,
         chunk,
-        forced,
+        Some(CorrectionContext {
+            prefix: intended,
+            chosen_token_id: chosen,
+        }),
         output,
         errors,
     )
-}
-
-fn prepend_beginning_timestamp(forced: &mut Vec<i32>, beginning_timestamp: i32) {
-    forced.insert(0, beginning_timestamp);
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_transcription(
     document: &mut Project,
     navigation: &mut NavigationState,
-    transcriber: &mut Option<Box<dyn ChunkTranscriber>>,
+    audio: &mut dyn AudioBackend,
+    recognition: &mut dyn RecognitionBackend,
     settings: &crate::project::TranscriptionSettings,
     paragraph: usize,
     marker: usize,
-    forced: Vec<i32>,
+    correction: Option<CorrectionContext>,
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> io::Result<()> {
-    let Some(session) = transcriber.as_mut() else {
+    if settings.model.is_none() {
         return writeln!(
             errors,
             "transcription requires a model: start with --model MODEL or use: model PATH"
         );
-    };
+    }
     let Some(boundary) = document.chunk_marker(paragraph, marker) else {
         return writeln!(
             errors,
             "transcription failed: unknown chunk {paragraph}.{marker}"
         );
     };
-    let chunk_id = boundary.chunk_id().to_string();
+    let chunk_id = boundary.chunk_id().to_owned();
     let Some(mapping) = document.chunk_audio_mapping(&chunk_id) else {
         return writeln!(
             errors,
@@ -267,78 +245,36 @@ pub(crate) fn run_transcription(
             "transcription failed: chunk audio mapping is unavailable"
         );
     }
-    let range = mapping.range();
-    let source_id = mapping.source_id().to_string();
-    let Some(source) = document.audio_source(&source_id) else {
-        return writeln!(errors, "transcription failed: audio source is missing");
-    };
-    let Some(path) = source.path() else {
-        return writeln!(
-            errors,
-            "transcription failed: audio source has no local path"
-        );
-    };
-    let wav = match read_canonical_wav(path) {
-        Ok(v) => v,
-        Err(e) => return writeln!(errors, "transcription failed: {e}"),
-    };
-    if source
-        .sha256()
-        .is_some_and(|hash| hash != wav.source_sha256)
-    {
-        return writeln!(
-            errors,
-            "transcription failed: audio source identity changed"
-        );
-    }
-    if source
-        .canonical_sample_count()
-        .is_some_and(|n| n != wav.samples.len() as u64)
-    {
-        return writeln!(
-            errors,
-            "transcription failed: canonical audio length changed"
-        );
-    }
-    let facts = SourceFacts {
-        sha256: wav.source_sha256,
-        sample_rate_hz: wav.sample_rate_hz,
-        channels: wav.channels,
-        decoded_sample_count: wav.samples.len() as u64,
-    };
-    let requested = forced.clone();
-    let revision = document.transcriptions().len() as u64 + 1;
-    let run = match session.transcribe_chunk(
-        ChunkTranscriptionRequest {
-            chunk_id: chunk_id.clone(),
+    let run = match recognition.transcribe_chunk(
+        audio,
+        ChunkRecognitionRequest {
+            chunk_id,
             previous_id: document
                 .current_transcription(paragraph, marker)
                 .expect("a current chunk has a transcription")
                 .id
                 .clone(),
-            source: facts,
-            chunk_range: range,
-            language: settings.language.clone(),
-            forced_tokens: forced,
-            revision,
+            revision: document.transcriptions().len() as u64 + 1,
+            settings: settings.clone(),
+            correction,
         },
-        &wav.samples,
     ) {
         Ok(run) => run,
-        Err(e) => return writeln!(errors, "transcription failed: {e}"),
+        Err(error) => {
+            return match error {
+                BackendError::Model(error) => writeln!(errors, "could not load model: {error}"),
+                BackendError::MissingModel => writeln!(errors, "{error}"),
+                BackendError::NoLocalPath(_) => writeln!(
+                    errors,
+                    "transcription failed: audio source has no local path"
+                ),
+                BackendError::UnknownRecording(_) => {
+                    writeln!(errors, "transcription failed: audio source is missing")
+                }
+                _ => writeln!(errors, "transcription failed: {error}"),
+            }
+        }
     };
-    let decoded = run
-        .segments
-        .iter()
-        .flat_map(|s| &s.tokens)
-        .map(|t| t.token_id)
-        .collect::<Vec<_>>();
-    if !requested.is_empty() && !decoded.starts_with(&requested) {
-        return writeln!(
-            errors,
-            "transcription failed: decoder did not preserve the forced prefix"
-        );
-    }
     match document.install_transcription(paragraph, marker, run, settings.clone()) {
         Ok(()) => {
             *navigation = NavigationState::new(document);
@@ -466,11 +402,5 @@ mod tests {
             preserve_text_boundary_whitespace("\t old text \u{2003}", "new".into()),
             "\t new \u{2003}"
         );
-    }
-    #[test]
-    fn forced_prefix_starts_with_whispers_beginning_timestamp() {
-        let mut forced = vec![708, 366, 5622];
-        prepend_beginning_timestamp(&mut forced, 50_364);
-        assert_eq!(forced, vec![50_364, 708, 366, 5622]);
     }
 }

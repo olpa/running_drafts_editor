@@ -1,5 +1,6 @@
 //! Reusable implementation behind the line-oriented Running Drafts Editor.
 
+pub mod backend;
 pub mod chunking;
 pub mod document;
 pub mod navigation;

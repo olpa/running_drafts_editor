@@ -14,6 +14,7 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedReplay {
     pub source_id: String,
+    pub chunk_ids: Vec<String>,
     pub range: SampleRange,
     pub alignment: AlignmentState,
     pub partial: bool,
@@ -152,7 +153,12 @@ fn resolve_range(
             let m = document
                 .chunk_audio_mapping(id)
                 .ok_or(ReplayResolutionError::Unavailable)?;
-            Ok((m.source_id().to_owned(), m.range(), m.alignment()))
+            Ok((
+                m.source_id().to_owned(),
+                m.range(),
+                m.alignment(),
+                id.to_owned(),
+            ))
         })
         .collect::<Result<Vec<_>, ReplayResolutionError>>()?;
     let partial_token_count = partial_tokens.len();
@@ -181,7 +187,12 @@ fn resolve_chunks<'a>(
             let m = document
                 .chunk_audio_mapping(id)
                 .ok_or(ReplayResolutionError::Unavailable)?;
-            Ok((m.source_id().to_owned(), m.range(), m.alignment()))
+            Ok((
+                m.source_id().to_owned(),
+                m.range(),
+                m.alignment(),
+                id.to_owned(),
+            ))
         })
         .collect::<Result<Vec<_>, ReplayResolutionError>>()?;
     combine(document, pieces, false, 0)
@@ -201,7 +212,7 @@ fn resolve_tokens(
 fn token_pieces(
     document: &Project,
     tokens: impl IntoIterator<Item = TokenAddress>,
-) -> Result<Vec<(String, SampleRange, AlignmentState)>, ReplayResolutionError> {
+) -> Result<Vec<(String, SampleRange, AlignmentState, String)>, ReplayResolutionError> {
     let mut pieces = Vec::new();
     for a in tokens {
         let paragraph = document.paragraph(a.paragraph).ok_or_else(|| {
@@ -220,7 +231,16 @@ fn token_pieces(
             })
             .filter(|m| !matches!(m.alignment(), AlignmentState::Unavailable))
         {
-            pieces.push((m.source_id().to_owned(), m.range(), m.alignment()));
+            pieces.push((
+                m.source_id().to_owned(),
+                m.range(),
+                m.alignment(),
+                document
+                    .chunk_marker(a.paragraph, a.chunk)
+                    .unwrap()
+                    .chunk_id()
+                    .to_owned(),
+            ));
         }
     }
     Ok(pieces)
@@ -228,34 +248,41 @@ fn token_pieces(
 
 fn combine(
     document: &Project,
-    pieces: Vec<(String, SampleRange, AlignmentState)>,
+    pieces: Vec<(String, SampleRange, AlignmentState, String)>,
     partial: bool,
     context_samples: u64,
 ) -> Result<ResolvedReplay, ReplayResolutionError> {
-    let Some((source_id, _, first_alignment)) = pieces.first().cloned() else {
+    let Some((source_id, _, first_alignment, _)) = pieces.first().cloned() else {
         return Err(ReplayResolutionError::Unavailable);
     };
-    if pieces.iter().any(|(source, _, _)| source != &source_id) {
+    if pieces.iter().any(|(source, _, _, _)| source != &source_id) {
         return Err(ReplayResolutionError::MultipleSources);
     }
     let start = pieces
         .iter()
-        .map(|(_, range, _)| range.start_sample)
+        .map(|(_, range, _, _)| range.start_sample)
         .min()
         .unwrap();
     let end = pieces
         .iter()
-        .map(|(_, range, _)| range.end_sample)
+        .map(|(_, range, _, _)| range.end_sample)
         .max()
         .unwrap();
     let alignment = pieces
         .iter()
-        .fold(first_alignment, |value, (_, _, next)| value.max(*next));
+        .fold(first_alignment, |value, (_, _, next, _)| value.max(*next));
     let source = document
         .audio_source(&source_id)
         .ok_or(ReplayResolutionError::Unavailable)?;
+    let mut chunk_ids = pieces
+        .iter()
+        .map(|(_, _, _, id)| id.clone())
+        .collect::<Vec<_>>();
+    chunk_ids.sort();
+    chunk_ids.dedup();
     Ok(ResolvedReplay {
         source_id,
+        chunk_ids,
         range: SampleRange {
             start_sample: start.saturating_sub(context_samples),
             end_sample: source

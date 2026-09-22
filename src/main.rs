@@ -1,13 +1,13 @@
 use std::{io::IsTerminal, path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
-use running_drafts_editor::chunking::{read_canonical_wav, SourceFacts};
+use running_drafts_editor::backend::{
+    AudioBackend, LocalAudioBackend, LocalRecognitionBackend, RecognitionBackend,
+};
 use running_drafts_editor::persistence::{load_project, save_project};
 use running_drafts_editor::project::Project;
 use running_drafts_editor::session::{run_readline_session, run_session, Ffplay, SessionContext};
-use running_drafts_editor::transcription::{
-    transcribe_initial, PostChunkConfig, TranscriberSession, TranscriptionConfig, WhisperDecoder,
-};
+use running_drafts_editor::transcription::{PostChunkConfig, TranscriptionConfig};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -141,8 +141,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_transcribe(args: TranscribeArgs) -> Result<(), Box<dyn std::error::Error>> {
     validate_output_target(&args.output)?;
-    let (run, _) = transcribe_audio(&args.input, &args.transcription)?;
-    let mut project = Project::from_initial_transcription_with_source(&run, Some(&args.input));
+    let (run, recording_id, _, _) = transcribe_audio(&args.input, &args.transcription)?;
+    let mut project = Project::from_initial_transcription_with_recording_id(
+        &run,
+        &recording_id,
+        Some(&args.input),
+    );
     project.configure_initial_settings(
         Some(args.transcription.model.clone()),
         args.transcription.language.clone(),
@@ -203,8 +207,13 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     if let Some(path) = &args.output {
         validate_output_target(path)?;
     }
-    let (run, transcriber) = transcribe_audio(&args.input, &args.transcription)?;
-    let mut project = Project::from_initial_transcription_with_source(&run, Some(&args.input));
+    let (run, recording_id, audio, recognition) =
+        transcribe_audio(&args.input, &args.transcription)?;
+    let mut project = Project::from_initial_transcription_with_recording_id(
+        &run,
+        &recording_id,
+        Some(&args.input),
+    );
     project.configure_initial_settings(
         Some(args.transcription.model.clone()),
         args.transcription.language.clone(),
@@ -220,13 +229,13 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     let mut output = stdout.lock();
     let mut errors = stderr.lock();
     let mut player = Ffplay::new(args.player);
-    let context = SessionContext::transcribed_audio_with_transcriber(
+    let context = SessionContext::transcribed_audio(
         &run,
         &args.input,
         args.output.as_deref(),
         Some(&args.transcription.model),
-        transcriber,
-    );
+    )
+    .with_backends(Box::new(audio), Box::new(recognition));
     if stdin.is_terminal() && stdout.is_terminal() {
         run_readline_session(
             &project,
@@ -257,17 +266,14 @@ fn transcribe_audio(
 ) -> Result<
     (
         running_drafts_editor::transcription::InitialTranscriptionResult,
-        TranscriberSession,
+        String,
+        LocalAudioBackend,
+        LocalRecognitionBackend,
     ),
     Box<dyn std::error::Error>,
 > {
-    let wav = read_canonical_wav(input)?;
-    let source = SourceFacts {
-        sha256: wav.source_sha256,
-        sample_rate_hz: wav.sample_rate_hz,
-        channels: wav.channels,
-        decoded_sample_count: u64::try_from(wav.samples.len())?,
-    };
+    let mut audio = LocalAudioBackend::new();
+    let recording_id = audio.upload(input)?;
     let config = TranscriptionConfig {
         target_core_samples: args.target_core_samples,
         left_context_samples: args.left_context_samples,
@@ -286,10 +292,9 @@ fn transcribe_audio(
         },
         ..TranscriptionConfig::default()
     };
-    let mut decoder = WhisperDecoder::load(&args.model, &config)?;
-    let run = transcribe_initial(source, &wav.samples, config, &mut decoder)?;
-    let transcriber = TranscriberSession::from_decoder(decoder, &args.model);
-    Ok((run, transcriber))
+    let mut recognition = LocalRecognitionBackend::new();
+    let run = recognition.transcribe_recording(&mut audio, &recording_id, &args.model, config)?;
+    Ok((run, recording_id, audio, recognition))
 }
 
 #[cfg(test)]

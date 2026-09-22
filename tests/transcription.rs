@@ -521,10 +521,11 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
+    let audio = tempfile::NamedTempFile::new().unwrap();
 
     open_audio(
         &run,
-        Path::new("audio.wav"),
+        audio.path(),
         None,
         &mut input,
         &mut output,
@@ -535,7 +536,7 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
     .unwrap();
 
     let output = String::from_utf8(output).unwrap();
-    assert!(output.contains("Built 1 chunks from audio.wav"));
+    assert!(output.contains(&format!("Built 1 chunks from {}", audio.path().display())));
     assert!(output.contains("source end"));
     assert!(output.contains("decoded words"));
     assert!(output.contains("⟦1.1⟧"));
@@ -543,7 +544,7 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
     assert_eq!(
         player.calls,
         vec![(
-            PathBuf::from("audio.wav"),
+            audio.path().to_path_buf(),
             16_000,
             SampleRange {
                 start_sample: 160,
@@ -651,10 +652,11 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     let mut output = Vec::new();
     let mut errors = Vec::new();
     let mut player = FakePlayer::default();
+    let audio = tempfile::NamedTempFile::new().unwrap();
 
     open_audio(
         &run,
-        Path::new("audio.wav"),
+        audio.path(),
         None,
         &mut input,
         &mut output,
@@ -686,7 +688,7 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
         player.calls,
         vec![
             (
-                PathBuf::from("audio.wav"),
+                audio.path().to_path_buf(),
                 16_000,
                 SampleRange {
                     start_sample: 48_000,
@@ -694,7 +696,7 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
                 }
             ),
             (
-                PathBuf::from("audio.wav"),
+                audio.path().to_path_buf(),
                 16_000,
                 SampleRange {
                     start_sample: 105_600,
