@@ -14,10 +14,10 @@ and history.
 _Avoid_: Document as a name for the complete working set.
 
 **Document**:
-The editable composition that arranges chunks into paragraphs. Its visible text
-comes from each chunk's current transcription. Supporting audio, transcription
-evidence, review state, and history belong to the project rather than the
-document.
+The editable composition derived by reading the mixed content of ordered decode
+spans. Its visible text comes from each chunk's current transcription.
+Supporting audio, transcription evidence, review state, and history belong to
+the project rather than the document.
 _Avoid_: Draft, project, visible document.
 
 **Recording**:
@@ -33,18 +33,23 @@ metadata needed to locate or verify it. A recording is the usual audio source;
 later user-supplied audio may provide another one.
 _Avoid_: Recording as a synonym when discussing source identity.
 
-**Provisional chunk**:
-A candidate portion of audio whose boundaries are still being determined
-during initial transcription. Provisional chunks may overlap; finalized chunks
-may not.
-_Avoid_: Processing window, submitted window, transcription window.
+**Decode span**:
+Audio processed in one step of initial transcription, together with its decoder
+evidence and produced content. Decode spans may overlap.
+_Avoid_: Provisional chunk, processing window, submitted window,
+transcription window.
+
+**Continuation boundary**:
+A suitable place near the end of a decode span where the next decode span
+starts.
+_Avoid_: Good break point, handoff boundary, core boundary, cursor.
 
 **Chunk**:
 A finalized, disjoint portion of input audio, limited to about 30 seconds,
 together with its metadata, edits, and transcriptions. Its identity and
-boundaries remain stable while overlapping provisional transcription data
-remains available as evidence.
-_Avoid_: Provisional chunk, replay unit, processing window.
+boundaries remain stable while overlapping decode-span data remains available
+as evidence.
+_Avoid_: Decode span, provisional chunk, replay unit, processing window.
 
 **Chunk ID**:
 The stable, opaque identity assigned when a chunk is finalized. It remains
@@ -60,6 +65,11 @@ token with empty token text does.
 **Paragraph**:
 An ordered group of one or more complete chunks presented as one block of text.
 Paragraph boundaries occur only between chunks.
+
+**Paragraph break**:
+A content item indicating that following content starts a new paragraph. It
+has no stable identity.
+_Avoid_: Paragraph marker, paragraph ID.
 
 ### Transcription
 

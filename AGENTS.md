@@ -19,7 +19,7 @@ changes it. The repository is one Rust package: `rde` is the executable and
 - Product intent and interaction rationale: `docs/product.md`; read it before
   changing scope, workflow, replay, correction, export, or user-facing UX.
 - Initial-transcription chunking: `docs/transcription-chunking.md`; read it
-  before changing provisional chunks, boundary selection, overlap ownership,
+  before changing decode spans, boundary selection, overlap ownership,
   accepted-segment grouping, or pause handling.
 - Domain language: `CONTEXT.md`; use it in code, tests, and issues.
 - Durable architecture: read the relevant accepted record in `docs/adr/`

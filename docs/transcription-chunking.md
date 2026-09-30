@@ -1,81 +1,88 @@
 # Transcription chunking
 
 This document preserves the cross-cutting initial-transcription procedure.
-[ADR-0003](adr/0003-transcription-driven-chunk-boundaries.md) records why it
-replaced a separate voice-activity planner. Code and tests remain the source
-for current parameter values and exact implementation behavior.
+[ADR-0013](adr/0013-finalize-chunks-incrementally-from-decode-spans.md)
+records the boundary model, and
+[ADR-0014](adr/0014-store-document-content-inside-decode-spans.md) records
+the ownership direction. Code and tests remain the source for current
+parameter values and implemented behavior. [Issue #58](https://github.com/olpa/running_drafts_editor/issues/58)
+tracks the gap between the current implementation and this procedure.
 
 ## Ownership model
 
-Initial transcription examines overlapping provisional chunks while assigning
-every source sample to one consecutive, non-overlapping owned core.
+Initial transcription processes one active decode span at a time. A decode
+span contains the bounded audio submitted in one step, the resulting decoder
+evidence, and the content finalized from that evidence. It is decoded once.
 
-Overlap is transcription evidence, not intended final ownership. The agreed
-domain model requires finalized chunks to be disjoint, but initial
-transcription does not yet guarantee this because an accepted segment may
-begin before its owned core. [Issue #58](https://github.com/olpa/running_drafts_editor/issues/58)
-tracks that gap. Editing keeps finalized chunk identity and boundaries fixed as
-described in [ADR-0008](adr/0008-keep-finalized-chunks-stable.md). Earlier
-unreleased project formats are not supported.
+The next decode span begins at a continuation boundary near the end of the
+current span. It therefore decodes the current span's remaining suffix again.
+Decode spans may overlap, but finalized chunks from the same audio source must
+be ordered and disjoint. Silence and other unused audio may remain outside all
+finalized chunk ranges.
 
 ## Procedure
 
 1. Convert the source to canonical mono 16 kHz audio. All positions below are
    sample offsets in that coordinate system.
-2. Place a cursor at the first sample not owned by an earlier step.
-3. Submit left context, a target core beginning at the cursor, and right
-   context, within Whisper's input limit.
-4. Decode the submitted audio with timestamps. Retain every decoded segment as
-   immutable evidence, including segments not selected for visible text.
-5. Around the target end, choose the latest usable decoded-segment end in the
-   right context. Use source end for the final core and the target end as the
-   bounded-progress fallback.
-6. Accept a decoded segment for the ordered text sequence when its midpoint is
-   at or after the current cursor and its end is no later than the chosen
-   boundary. This is deliberately minimal overlap reconciliation; the other
-   decoded segments remain available as transcription evidence.
-7. Advance the cursor to the boundary and repeat. The resulting owned ranges
-   cover the source consecutively without gaps or overlap, and every iteration
-   advances even when one window's decoding fails.
-8. Pass text-token IDs from the last accepted segment directly as the next
-   Whisper prompt. A text round trip could change the token sequence; timestamp
-   and other special tokens carry invalid window-local state.
+2. Submit one bounded decode span beginning at the previous continuation
+   boundary. Do not add a separate left- or right-context region.
+3. Decode the span once with timestamps. Retain the complete decoder result as
+   evidence, including the suffix that does not produce finalized content in
+   this pass.
+4. Feed the result into the forward-only paragraph-construction fold so it can
+   identify chunk and paragraph boundaries. It does not revise content
+   finalized by an earlier step.
+5. Choose a suitable continuation boundary near the right end of the span and
+   finalize zero, one, or several chunks and paragraph breaks from the accepted
+   prefix through that boundary. A practical temporary heuristic may prefer a
+   late complete Whisper segment end or the end before trailing silence. The
+   exact heuristic is follow-up work.
+6. Retain the processed decode span, its evidence, and its produced content in
+   the project. It is no longer the active span.
+7. Start the next decode span at the continuation boundary. The suffix is
+   decoded again and may produce visible text only in this later pass.
+8. Until prompt handling is decided separately, pass the exact text-token IDs
+   from the last accepted Whisper segment as the next prompt. Do not recreate
+   those IDs with a text round trip, and do not pass timestamp or other special
+   tokens.
 
-## From accepted segments to finalized chunks
+Every non-final step must advance. A silence-only span may produce no chunk and
+advance to its submitted end. If decoding fails or useful timestamps are
+missing, a bounded-progress fallback retains the evidence but does not invent
+an audio range for unlocated text. At source end, the fold finalizes eligible
+remaining content and trailing silence stays unowned.
 
-After all provisional chunks have been processed, the implementation groups
-the accepted Whisper segments into finalized chunks. It keeps every segment
-whole so it does not invent a boundary inside text for which Whisper supplied
-only a segment-level timestamp. Once finalized, a chunk keeps its identity and
-boundaries through text editing and paragraph restructuring.
+## Incremental chunk and paragraph construction
 
-Grouping balances text-token size goals with usable, strong, and long pauses:
+The fold applies the existing pause and token-size policy incrementally instead
+of grouping all accepted segments after the whole recording has been decoded:
 
-- A long pause always ends a chunk.
+- A long pause ends a chunk and a paragraph.
 - A strong pause ends a chunk after the minimum size.
 - Usable pauses compete near the target size; the score rewards longer pauses
   and penalizes distance from the target token count.
-- At the maximum size, the closest earlier whole-segment boundary is used.
-- Source end finishes the last chunk.
+- At the maximum size, the closest earlier complete segment boundary is used.
+- Source end finishes the last eligible chunk and paragraph.
 
-Boundary reasons and pause lengths remain inspectable. Initial paragraphs join
-consecutive finalized chunks and end at a long-pause or source-end boundary.
-Other chunk boundaries remain visible inside the paragraph.
+The last finalized chunk in a non-final accepted prefix ends at the
+continuation boundary with boundary reason `Continuation`. This boundary does
+not by itself end a paragraph. Other finalized chunks and paragraph breaks may
+precede it in the same decode span.
 
-Current defaults and the exact scoring rule live in `TranscriptionConfig` and
-`PostChunkConfig` in `src/transcription.rs`.
+Finalized chunks keep their identities and ranges through later editing as
+required by [ADR-0008](adr/0008-keep-finalized-chunks-stable.md). Their order is
+the original recording order. The current document is obtained from the mixed
+content stored across decode spans rather than from a duplicate chunk-ID list.
 
 ## Experiment record
 
-ADR-0003 records why Silero voice activity detection was rejected as the
-pre-transcription boundary authority. Pause duration remains useful after
-transcription, when it is a gap between accepted timestamped segments and helps
-group them into finalized chunks; it is not proof that an earlier interval
-contains no voice.
+ADR-0013 preserves the reason from superseded ADR-0003 for rejecting Silero
+voice activity detection as a separate boundary authority. The experiment
+assigned low speech probability to clearly audible quiet speech. Pause duration
+remains useful after transcription as evidence for chunk and paragraph breaks;
+it is not proof that an earlier interval contains no voice.
 
 The experiment and its measurements remain in [GitHub issue #25](https://github.com/olpa/running_drafts_editor/issues/25).
-The initial Whisper design and overlap requirements are in [issue #2](https://github.com/olpa/running_drafts_editor/issues/2)
-and [issue #3](https://github.com/olpa/running_drafts_editor/issues/3). The
-initial orchestration returns an `InitialTranscriptionResult`. Each finalized
-chunk receives its own immutable `Transcription`; overlapping provisional
-decoder evidence remains project-owned supporting data.
+The initial Whisper design and overlap requirements are in
+[issue #2](https://github.com/olpa/running_drafts_editor/issues/2) and
+[issue #3](https://github.com/olpa/running_drafts_editor/issues/3).
