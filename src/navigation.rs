@@ -804,7 +804,7 @@ mod tests {
     fn structured_document() -> Project {
         let token = |id: &str| json!({"id":{"transcription_id":"test","segment_id":id,"token_index":0},"text":id,"vocabulary_id":1});
         serde_json::from_value(json!({
-            "schema":"rde-project/v1-experimental", "id":"document:positions", "settings":{"model":null,"language":"auto"},
+            "schema":"rde-project/v2-experimental", "id":"document:positions", "settings":{"model":null,"language":"auto"},
             "paragraphs":[
                 {"id":"p1","revision":1,"tokens":[token("a"),token("b"),token("c")],"chunk_boundaries":[
                     {"chunk_id":"c1","transcription_id":"test","text":"","after_tokens":2},

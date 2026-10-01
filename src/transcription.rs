@@ -1,4 +1,4 @@
-//! Immutable Whisper transcription evidence and bounded-window orchestration.
+//! Immutable Whisper transcription evidence and bounded decode-span orchestration.
 
 use std::{fs::File, io::Read, path::Path, sync::Arc};
 
@@ -12,37 +12,34 @@ use whisper_rs::{
 use crate::chunking::{SampleRange, SourceFacts};
 
 const WHISPER_SAMPLE_RATE_HZ: u32 = 16_000;
+const WHISPER_MAX_SAMPLES: u64 = 480_000;
 const SAMPLES_PER_CENTISECOND: u64 = 160;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptionConfig {
-    pub max_window_samples: u64,
-    pub target_core_samples: u64,
-    pub left_context_samples: u64,
-    pub right_context_samples: u64,
+    pub decode_span_samples: u64,
+    pub continuation_search_samples: u64,
     pub language: String,
     pub threads: usize,
     pub top_candidates: usize,
-    pub post_chunking: PostChunkConfig,
+    pub chunking: ChunkConstructionConfig,
 }
 
 impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
-            max_window_samples: 480_000,
-            target_core_samples: 384_000,
-            left_context_samples: 48_000,
-            right_context_samples: 48_000,
+            decode_span_samples: 480_000,
+            continuation_search_samples: 48_000,
             language: "auto".into(),
             threads: 4,
             top_candidates: 20,
-            post_chunking: PostChunkConfig::default(),
+            chunking: ChunkConstructionConfig::default(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostChunkConfig {
+pub struct ChunkConstructionConfig {
     pub minimum_tokens: usize,
     pub target_tokens: usize,
     pub maximum_tokens: usize,
@@ -52,7 +49,7 @@ pub struct PostChunkConfig {
     pub distance_penalty_ms: u64,
 }
 
-impl Default for PostChunkConfig {
+impl Default for ChunkConstructionConfig {
     fn default() -> Self {
         Self {
             minimum_tokens: 8,
@@ -141,6 +138,7 @@ pub enum ChunkBoundaryReason {
     StrongPause,
     ScoredPause,
     MaximumTokens,
+    Continuation,
     SourceEnd,
 }
 
@@ -152,7 +150,7 @@ pub struct ChunkBoundary {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TranscriptionChunk {
+pub struct Chunk {
     pub id: String,
     pub ordinal: u32,
     pub segment_ids: Vec<String>,
@@ -160,17 +158,38 @@ pub struct TranscriptionChunk {
     pub text: String,
     pub token_count: usize,
     pub boundary: ChunkBoundary,
+    pub transcriptions: Vec<Transcription>,
+    pub current_transcription_id: String,
+}
+
+impl Chunk {
+    pub fn current_transcription(&self) -> Option<&Transcription> {
+        self.transcriptions
+            .iter()
+            .find(|transcription| transcription.id == self.current_transcription_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ProvisionalChunkEvidence {
+pub struct ParagraphBreak;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum DecodeSpanItem {
+    Chunk(Chunk),
+    ParagraphBreak(ParagraphBreak),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DecodeSpan {
     pub ordinal: u32,
     pub submitted: SampleRange,
-    pub core: SampleRange,
+    pub continuation_boundary: u64,
     pub prompt_token_ids: Vec<i32>,
     pub advance_reason: AdvanceReason,
     pub hypotheses: Vec<DecodedSegment>,
     pub accepted_segment_ids: Vec<String>,
+    pub content: Vec<DecodeSpanItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -183,9 +202,7 @@ pub struct InitialTranscriptionResult {
     pub transcriber: TranscriberIdentity,
     pub config: TranscriptionConfig,
     pub status: TranscriptionStatus,
-    pub windows: Vec<ProvisionalChunkEvidence>,
-    pub segments: Vec<DecodedSegment>,
-    pub chunks: Vec<TranscriptionChunk>,
+    pub decode_spans: Vec<DecodeSpan>,
 }
 
 /// Project-owned evidence from the initial process, including failed decoding.
@@ -197,7 +214,7 @@ pub struct InitialTranscriptionEvidence {
     pub transcriber: TranscriberIdentity,
     pub config: TranscriptionConfig,
     pub status: TranscriptionStatus,
-    pub provisional_chunks: Vec<ProvisionalChunkEvidence>,
+    pub decode_spans: Vec<DecodeSpan>,
 }
 
 /// One immutable proposal for one finalized chunk.
@@ -224,12 +241,97 @@ impl InitialTranscriptionResult {
             transcriber: self.transcriber.clone(),
             config: self.config.clone(),
             status: self.status,
-            provisional_chunks: self.windows.clone(),
+            decode_spans: self.decode_spans.clone(),
         }
     }
+
+    pub fn chunks(&self) -> impl Iterator<Item = &Chunk> {
+        self.decode_spans.iter().flat_map(|span| {
+            span.content.iter().filter_map(|item| match item {
+                DecodeSpanItem::Chunk(chunk) => Some(chunk),
+                DecodeSpanItem::ParagraphBreak(_) => None,
+            })
+        })
+    }
+
+    pub fn chunks_mut(&mut self) -> impl Iterator<Item = &mut Chunk> {
+        self.decode_spans.iter_mut().flat_map(|span| {
+            span.content.iter_mut().filter_map(|item| match item {
+                DecodeSpanItem::Chunk(chunk) => Some(chunk),
+                DecodeSpanItem::ParagraphBreak(_) => None,
+            })
+        })
+    }
+
+    pub fn accepted_segments(&self) -> impl Iterator<Item = &DecodedSegment> {
+        self.decode_spans.iter().flat_map(|span| {
+            span.hypotheses
+                .iter()
+                .filter(|segment| span.accepted_segment_ids.iter().any(|id| id == &segment.id))
+        })
+    }
+
+    pub fn chunk_count(&self) -> usize {
+        self.chunks().count()
+    }
+
+    pub fn namespace_chunks(&mut self, recording_id: &str) {
+        let run_id = self.id.clone();
+        for chunk in self.chunks_mut() {
+            let chunk_id = format!("chunk:{recording_id}:{run_id}:{}", chunk.ordinal);
+            chunk.id.clone_from(&chunk_id);
+            for transcription in &mut chunk.transcriptions {
+                transcription.chunk_id.clone_from(&chunk_id);
+                if transcription.previous_id.is_none() {
+                    transcription.id = format!("{run_id}:{chunk_id}");
+                }
+            }
+            chunk.current_transcription_id = chunk
+                .transcriptions
+                .first()
+                .map(|transcription| transcription.id.clone())
+                .unwrap_or_default();
+        }
+    }
+
+    fn initialize_chunk_transcriptions(&mut self) {
+        let run_id = self.id.clone();
+        let source = self.source.clone();
+        let transcriber = self.transcriber.clone();
+        let config = self.config.clone();
+        for span in &mut self.decode_spans {
+            let prompt_token_ids = span.prompt_token_ids.clone();
+            let hypotheses = span.hypotheses.clone();
+            for item in &mut span.content {
+                let DecodeSpanItem::Chunk(chunk) = item else {
+                    continue;
+                };
+                let transcription = Transcription {
+                    id: format!("{run_id}:{}", chunk.id),
+                    chunk_id: chunk.id.clone(),
+                    previous_id: None,
+                    text: chunk.text.clone(),
+                    source: source.clone(),
+                    transcriber: transcriber.clone(),
+                    config: config.clone(),
+                    audio_range: chunk.audio_range,
+                    boundary: chunk.boundary.clone(),
+                    segments: hypotheses
+                        .iter()
+                        .filter(|segment| chunk.segment_ids.contains(&segment.id))
+                        .cloned()
+                        .collect(),
+                    forced_token_ids: prompt_token_ids.clone(),
+                };
+                chunk.current_transcription_id = transcription.id.clone();
+                chunk.transcriptions.push(transcription);
+            }
+        }
+    }
+
     pub fn transcription_for(
         &self,
-        chunk: &TranscriptionChunk,
+        chunk: &Chunk,
         chunk_id: &str,
         previous_id: Option<String>,
     ) -> Transcription {
@@ -244,15 +346,21 @@ impl InitialTranscriptionResult {
             audio_range: chunk.audio_range,
             boundary: chunk.boundary.clone(),
             segments: self
-                .segments
+                .decode_spans
                 .iter()
+                .flat_map(|span| &span.hypotheses)
                 .filter(|s| chunk.segment_ids.contains(&s.id))
                 .cloned()
                 .collect(),
             forced_token_ids: self
-                .windows
-                .first()
-                .map(|w| w.prompt_token_ids.clone())
+                .decode_spans
+                .iter()
+                .find(|span| {
+                    span.content.iter().any(|item| {
+                        matches!(item, DecodeSpanItem::Chunk(candidate) if candidate.id == chunk.id)
+                    })
+                })
+                .map(|span| span.prompt_token_ids.clone())
                 .unwrap_or_default(),
         }
     }
@@ -452,7 +560,7 @@ impl TranscriberSession {
             .map(|t| t.text.as_str())
             .collect::<String>();
         let segment_ids = segments.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
-        let chunk = TranscriptionChunk {
+        let chunk = Chunk {
             id: "decoded-chunk".into(),
             ordinal: 1,
             segment_ids,
@@ -467,6 +575,8 @@ impl TranscriberSession {
                 reason: ChunkBoundaryReason::SourceEnd,
                 pause_samples: None,
             },
+            transcriptions: Vec::new(),
+            current_transcription_id: String::new(),
         };
         let config = TranscriptionConfig {
             language: request.language,
@@ -474,14 +584,15 @@ impl TranscriberSession {
             top_candidates: self.decoder.top_candidates,
             ..TranscriptionConfig::default()
         };
-        let window = ProvisionalChunkEvidence {
+        let span = DecodeSpan {
             ordinal: 1,
             submitted: request.chunk_range,
-            core: request.chunk_range,
+            continuation_boundary: request.chunk_range.end_sample,
             prompt_token_ids: request.forced_tokens,
             advance_reason: AdvanceReason::SourceEnd,
             hypotheses: segments.clone(),
             accepted_segment_ids: segments.iter().map(|s| s.id.clone()).collect(),
+            content: vec![DecodeSpanItem::Chunk(chunk)],
             error: None,
         };
         let transcriber = self.decoder.identity.clone();
@@ -489,45 +600,39 @@ impl TranscriberSession {
             &request.source,
             &transcriber,
             &config,
-            std::slice::from_ref(&window),
-            &segments,
-            std::slice::from_ref(&chunk),
+            std::slice::from_ref(&span),
         );
         let id = format!("{base_id}-r{}", request.revision);
-        let result = InitialTranscriptionResult {
+        let mut result = InitialTranscriptionResult {
             id,
             revision: request.revision,
             source: request.source,
             transcriber,
             config,
             status: TranscriptionStatus::Succeeded,
-            windows: vec![window],
-            segments,
-            chunks: vec![chunk],
+            decode_spans: vec![span],
         };
-        Ok(result.transcription_for(
-            &result.chunks[0],
-            &request.chunk_id,
-            Some(request.previous_id),
-        ))
+        result.initialize_chunk_transcriptions();
+        let chunk = result.chunks().next().expect("one correction chunk");
+        Ok(result.transcription_for(chunk, &request.chunk_id, Some(request.previous_id)))
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WindowSegment {
+pub struct DecodeSpanSegment {
     pub audio_range: SampleRange,
     pub text: String,
     pub no_speech_probability: f32,
     pub tokens: Vec<WhisperToken>,
 }
 
-pub trait WindowDecoder {
+pub trait DecodeSpanDecoder {
     fn identity(&self) -> TranscriberIdentity;
     fn decode(
         &mut self,
         audio: &[f32],
         prompt_token_ids: &[i32],
-    ) -> Result<Vec<WindowSegment>, String>;
+    ) -> Result<Vec<DecodeSpanSegment>, String>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -542,7 +647,7 @@ pub enum TranscriptionError {
     ModelRead(#[from] std::io::Error),
 }
 
-pub fn transcribe_initial<D: WindowDecoder>(
+pub fn transcribe_initial<D: DecodeSpanDecoder>(
     source: SourceFacts,
     samples: &[f32],
     config: TranscriptionConfig,
@@ -551,17 +656,16 @@ pub fn transcribe_initial<D: WindowDecoder>(
     validate_config(&source, samples, &config)?;
     let total = source.decoded_sample_count;
     let mut cursor = 0_u64;
-    let mut windows = Vec::new();
-    let mut accepted = Vec::new();
+    let mut decode_spans = Vec::new();
     let mut prompt_token_ids = Vec::new();
     let mut failures = 0_usize;
+    let mut next_chunk_ordinal = 1_u32;
+    let mut previous_chunk_end = None;
+    let mut previous_accepted_end = None;
 
     while cursor < total {
-        let submitted_start = cursor.saturating_sub(config.left_context_samples);
-        let desired_end = cursor
-            .saturating_add(config.target_core_samples)
-            .saturating_add(config.right_context_samples);
-        let submitted_end = desired_end.min(total);
+        let submitted_start = cursor;
+        let submitted_end = cursor.saturating_add(config.decode_span_samples).min(total);
         let submitted = SampleRange {
             start_sample: submitted_start,
             end_sample: submitted_end,
@@ -569,22 +673,22 @@ pub fn transcribe_initial<D: WindowDecoder>(
         let start =
             usize::try_from(submitted_start).map_err(|_| TranscriptionError::AudioTooLong)?;
         let end = usize::try_from(submitted_end).map_err(|_| TranscriptionError::AudioTooLong)?;
-        let ordinal = u32::try_from(windows.len() + 1).unwrap_or(u32::MAX);
-        let window_prompt_token_ids = prompt_token_ids.clone();
+        let ordinal = u32::try_from(decode_spans.len() + 1).unwrap_or(u32::MAX);
+        let span_prompt_token_ids = prompt_token_ids.clone();
 
-        let decoded = decoder.decode(&samples[start..end], &window_prompt_token_ids);
+        let decoded = decoder.decode(&samples[start..end], &span_prompt_token_ids);
         let (hypotheses, boundary, advance_reason, error) = match decoded {
             Ok(relative) => {
                 let hypotheses = normalize_segments(relative, submitted, ordinal);
-                let (boundary, reason) = choose_boundary(cursor, total, &hypotheses, &config);
+                let (boundary, reason) =
+                    choose_continuation_boundary(submitted, total, &hypotheses, &config);
                 (hypotheses, boundary, reason, None)
             }
             Err(error) => {
                 failures += 1;
-                let boundary = target_boundary(cursor, total, &config);
                 (
                     Vec::new(),
-                    boundary,
+                    submitted_end,
                     AdvanceReason::FixedDecodeFailure,
                     Some(error),
                 )
@@ -593,42 +697,74 @@ pub fn transcribe_initial<D: WindowDecoder>(
 
         let mut accepted_ids = Vec::new();
         let mut next_prompt_token_ids = None;
-        for segment in &hypotheses {
-            let midpoint = segment.audio_range.start_sample + segment.audio_range.len() / 2;
-            if midpoint >= cursor
-                && segment.audio_range.end_sample <= boundary
-                && !segment.audio_range.is_empty()
-            {
-                accepted_ids.push(segment.id.clone());
-                // Preserve the exact accepted token sequence. A text round trip
-                // could retokenize it, while special tokens belong to this
-                // window's control and timestamp context.
-                next_prompt_token_ids = Some(
-                    segment
-                        .tokens
-                        .iter()
-                        .filter(|token| !token.is_special)
-                        .map(|token| token.token_id)
-                        .collect(),
-                );
-                accepted.push(segment.clone());
+        let accepted = hypotheses
+            .iter()
+            .filter(|segment| {
+                segment.audio_range.start_sample >= cursor
+                    && segment.audio_range.end_sample <= boundary
+                    && !segment.audio_range.is_empty()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if let (Some(previous_end), Some(first)) = (previous_accepted_end, accepted.first()) {
+            let pause_samples = first.audio_range.start_sample.saturating_sub(previous_end);
+            let pause_ms = pause_samples.saturating_mul(1_000) / u64::from(source.sample_rate_hz);
+            if pause_ms >= config.chunking.long_pause_ms {
+                append_paragraph_break_after_last_chunk(&mut decode_spans);
             }
+        }
+        for segment in &accepted {
+            accepted_ids.push(segment.id.clone());
+            // Preserve the exact accepted token sequence. A text round trip
+            // could retokenize it, while special tokens belong to this
+            // decode span's control and timestamp context.
+            next_prompt_token_ids = Some(
+                segment
+                    .tokens
+                    .iter()
+                    .filter(|token| !token.is_special)
+                    .map(|token| token.token_id)
+                    .collect(),
+            );
         }
         if let Some(next) = next_prompt_token_ids {
             prompt_token_ids = next;
         }
+        if let Some(last) = accepted.last() {
+            previous_accepted_end = Some(last.audio_range.end_sample);
+        }
 
-        windows.push(ProvisionalChunkEvidence {
+        let terminal_reason = if boundary == total {
+            ChunkBoundaryReason::SourceEnd
+        } else {
+            ChunkBoundaryReason::Continuation
+        };
+        let chunks = build_chunks(
+            &accepted,
+            source.sample_rate_hz,
+            &config.chunking,
+            terminal_reason,
+            &mut next_chunk_ordinal,
+            &mut previous_chunk_end,
+        );
+        let mut content = Vec::new();
+        for chunk in chunks {
+            let paragraph_break = chunk.boundary.reason == ChunkBoundaryReason::LongPause;
+            content.push(DecodeSpanItem::Chunk(chunk));
+            if paragraph_break {
+                content.push(DecodeSpanItem::ParagraphBreak(ParagraphBreak));
+            }
+        }
+
+        decode_spans.push(DecodeSpan {
             ordinal,
             submitted,
-            core: SampleRange {
-                start_sample: cursor,
-                end_sample: boundary,
-            },
-            prompt_token_ids: window_prompt_token_ids,
+            continuation_boundary: boundary,
+            prompt_token_ids: span_prompt_token_ids,
             advance_reason,
             hypotheses,
             accepted_segment_ids: accepted_ids,
+            content,
             error,
         });
         cursor = boundary;
@@ -636,25 +772,44 @@ pub fn transcribe_initial<D: WindowDecoder>(
 
     let status = if failures == 0 {
         TranscriptionStatus::Succeeded
-    } else if failures == windows.len() {
+    } else if failures == decode_spans.len() {
         TranscriptionStatus::Failed
     } else {
         TranscriptionStatus::Partial
     };
     let transcriber = decoder.identity();
-    let chunks = build_post_chunks(&accepted, source.sample_rate_hz, &config.post_chunking);
-    let id = run_id(&source, &transcriber, &config, &windows, &accepted, &chunks);
-    Ok(InitialTranscriptionResult {
+    let id = run_id(&source, &transcriber, &config, &decode_spans);
+    let mut result = InitialTranscriptionResult {
         id,
         revision: 1,
         source,
         transcriber,
         config,
         status,
-        windows,
-        segments: accepted,
-        chunks,
-    })
+        decode_spans,
+    };
+    result.initialize_chunk_transcriptions();
+    Ok(result)
+}
+
+fn append_paragraph_break_after_last_chunk(decode_spans: &mut [DecodeSpan]) {
+    for span in decode_spans.iter_mut().rev() {
+        let Some(index) = span
+            .content
+            .iter()
+            .rposition(|item| matches!(item, DecodeSpanItem::Chunk(_)))
+        else {
+            continue;
+        };
+        if !matches!(
+            span.content.get(index + 1),
+            Some(DecodeSpanItem::ParagraphBreak(_))
+        ) {
+            span.content
+                .insert(index + 1, DecodeSpanItem::ParagraphBreak(ParagraphBreak));
+        }
+        return;
+    }
 }
 
 fn validate_config(
@@ -672,32 +827,30 @@ fn validate_config(
             "source facts do not match decoded samples".into(),
         ));
     }
-    if config.max_window_samples == 0 || config.target_core_samples == 0 {
+    if config.decode_span_samples == 0 || config.decode_span_samples > WHISPER_MAX_SAMPLES {
         return Err(TranscriptionError::InvalidConfiguration(
-            "window and target core must be positive".into(),
+            "decode span must be between 1 and 480000 samples".into(),
         ));
     }
-    let submitted = config
-        .left_context_samples
-        .checked_add(config.target_core_samples)
-        .and_then(|value| value.checked_add(config.right_context_samples));
-    if submitted.is_none_or(|value| value > config.max_window_samples) {
+    if config.continuation_search_samples >= config.decode_span_samples {
         return Err(TranscriptionError::InvalidConfiguration(
-            "left context + target core + right context exceeds maximum window".into(),
+            "continuation search must be shorter than a decode span".into(),
         ));
     }
-    let post = &config.post_chunking;
-    if post.minimum_tokens == 0
-        || post.minimum_tokens > post.target_tokens
-        || post.target_tokens > post.maximum_tokens
+    let chunking = &config.chunking;
+    if chunking.minimum_tokens == 0
+        || chunking.minimum_tokens > chunking.target_tokens
+        || chunking.target_tokens > chunking.maximum_tokens
     {
         return Err(TranscriptionError::InvalidConfiguration(
-            "post-chunk token limits must be positive and ordered".into(),
+            "chunk token limits must be positive and ordered".into(),
         ));
     }
-    if post.usable_pause_ms > post.strong_pause_ms || post.strong_pause_ms > post.long_pause_ms {
+    if chunking.usable_pause_ms > chunking.strong_pause_ms
+        || chunking.strong_pause_ms > chunking.long_pause_ms
+    {
         return Err(TranscriptionError::InvalidConfiguration(
-            "post-chunk pause limits must be ordered".into(),
+            "chunk pause limits must be ordered".into(),
         ));
     }
     Ok(())
@@ -718,12 +871,15 @@ struct ChunkChoice {
     pause_samples: Option<u64>,
 }
 
-fn build_post_chunks(
+fn build_chunks(
     segments: &[DecodedSegment],
     sample_rate_hz: u32,
-    config: &PostChunkConfig,
-) -> Vec<TranscriptionChunk> {
-    let mut chunks = Vec::new();
+    config: &ChunkConstructionConfig,
+    terminal_reason: ChunkBoundaryReason,
+    next_ordinal: &mut u32,
+    previous_chunk_end: &mut Option<u64>,
+) -> Vec<Chunk> {
+    let mut chunks: Vec<Chunk> = Vec::new();
     let mut start = 0_usize;
 
     while start < segments.len() {
@@ -799,16 +955,45 @@ fn build_post_chunks(
             }
         }
 
-        let choice = choice.expect("a non-empty segment suffix always produces a chunk");
+        let mut choice = choice.expect("a non-empty segment suffix always produces a chunk");
+        if choice.end == segments.len() {
+            choice.reason = terminal_reason;
+            choice.pause_samples = None;
+        }
         let selected = &segments[start..choice.end];
-        let ordinal = u32::try_from(chunks.len() + 1).unwrap_or(u32::MAX);
-        chunks.push(TranscriptionChunk {
+        let range_start = previous_chunk_end
+            .map_or(selected[0].audio_range.start_sample, |previous| {
+                previous.max(selected[0].audio_range.start_sample)
+            });
+        let range_end = selected[selected.len() - 1].audio_range.end_sample;
+        if range_start >= range_end {
+            if let Some(previous) = chunks.last_mut() {
+                previous
+                    .segment_ids
+                    .extend(selected.iter().map(|segment| segment.id.clone()));
+                previous
+                    .text
+                    .extend(selected.iter().map(|segment| segment.text.as_str()));
+                previous.token_count = previous
+                    .token_count
+                    .saturating_add(selected.iter().map(normal_token_count).sum());
+                previous.boundary = ChunkBoundary {
+                    reason: choice.reason,
+                    pause_samples: choice.pause_samples,
+                };
+                start = choice.end;
+                continue;
+            }
+        }
+        let ordinal = *next_ordinal;
+        *next_ordinal = next_ordinal.saturating_add(1);
+        let chunk = Chunk {
             id: format!("chunk-{ordinal}"),
             ordinal,
             segment_ids: selected.iter().map(|segment| segment.id.clone()).collect(),
             audio_range: SampleRange {
-                start_sample: selected[0].audio_range.start_sample,
-                end_sample: selected[selected.len() - 1].audio_range.end_sample,
+                start_sample: range_start,
+                end_sample: range_end,
             },
             text: selected
                 .iter()
@@ -819,7 +1004,11 @@ fn build_post_chunks(
                 reason: choice.reason,
                 pause_samples: choice.pause_samples,
             },
-        });
+            transcriptions: Vec::new(),
+            current_transcription_id: String::new(),
+        };
+        *previous_chunk_end = Some(chunk.audio_range.end_sample);
+        chunks.push(chunk);
         start = choice.end;
     }
 
@@ -843,7 +1032,7 @@ fn pause_after(segments: &[DecodedSegment], end: usize) -> Option<u64> {
     })
 }
 
-fn best_pause(candidates: &[PauseCandidate], config: &PostChunkConfig) -> PauseCandidate {
+fn best_pause(candidates: &[PauseCandidate], config: &ChunkConstructionConfig) -> PauseCandidate {
     *candidates
         .iter()
         .max_by_key(|candidate| {
@@ -857,11 +1046,11 @@ fn best_pause(candidates: &[PauseCandidate], config: &PostChunkConfig) -> PauseC
 }
 
 fn normalize_segments(
-    segments: Vec<WindowSegment>,
+    segments: Vec<DecodeSpanSegment>,
     submitted: SampleRange,
-    window_ordinal: u32,
+    span_ordinal: u32,
 ) -> Vec<DecodedSegment> {
-    segments
+    let mut normalized = segments
         .into_iter()
         .enumerate()
         .filter_map(|(index, segment)| {
@@ -874,7 +1063,7 @@ fn normalize_segments(
                 .saturating_add(segment.audio_range.end_sample)
                 .min(submitted.end_sample);
             (start < end).then(|| DecodedSegment {
-                id: format!("window-{window_ordinal}-segment-{}", index + 1),
+                id: format!("decode-span-{span_ordinal}-segment-{}", index + 1),
                 audio_range: SampleRange {
                     start_sample: start,
                     end_sample: end,
@@ -904,51 +1093,53 @@ fn normalize_segments(
                     .collect(),
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    normalized.sort_by_key(|segment| {
+        (
+            segment.audio_range.start_sample,
+            segment.audio_range.end_sample,
+        )
+    });
+    normalized
 }
 
-fn choose_boundary(
-    cursor: u64,
+fn choose_continuation_boundary(
+    submitted: SampleRange,
     total: u64,
     segments: &[DecodedSegment],
     config: &TranscriptionConfig,
 ) -> (u64, AdvanceReason) {
-    let submitted_end = cursor
-        .saturating_add(config.target_core_samples)
-        .saturating_add(config.right_context_samples)
-        .min(total);
-    if submitted_end == total {
+    if submitted.end_sample == total {
         return (total, AdvanceReason::SourceEnd);
     }
-    let target = cursor.saturating_add(config.target_core_samples).min(total);
-    let candidate = segments
+    let search_start = submitted
+        .end_sample
+        .saturating_sub(config.continuation_search_samples)
+        .max(submitted.start_sample.saturating_add(1));
+    let late_candidate = segments
         .iter()
         .map(|segment| segment.audio_range.end_sample)
-        .filter(|end| *end >= target && *end <= submitted_end)
+        .filter(|end| *end >= search_start && *end <= submitted.end_sample)
         .max();
-    candidate
-        .map(|boundary| (boundary, AdvanceReason::WhisperTimestamp))
-        .unwrap_or_else(|| {
-            (
-                target_boundary(cursor, total, config),
-                AdvanceReason::FixedNoTimestamp,
-            )
+    late_candidate
+        .or_else(|| {
+            segments
+                .iter()
+                .map(|segment| segment.audio_range.end_sample)
+                .filter(|end| *end > submitted.start_sample && *end <= submitted.end_sample)
+                .max()
         })
-}
-
-fn target_boundary(cursor: u64, total: u64, config: &TranscriptionConfig) -> u64 {
-    cursor.saturating_add(config.target_core_samples).min(total)
+        .map(|boundary| (boundary, AdvanceReason::WhisperTimestamp))
+        .unwrap_or((submitted.end_sample, AdvanceReason::FixedNoTimestamp))
 }
 
 fn run_id(
     source: &SourceFacts,
     transcriber: &TranscriberIdentity,
     config: &TranscriptionConfig,
-    windows: &[ProvisionalChunkEvidence],
-    segments: &[DecodedSegment],
-    chunks: &[TranscriptionChunk],
+    decode_spans: &[DecodeSpan],
 ) -> String {
-    let encoded = serde_json::to_vec(&(source, transcriber, config, windows, segments, chunks))
+    let encoded = serde_json::to_vec(&(source, transcriber, config, decode_spans))
         .expect("transcription identity values are serializable");
     let digest = Sha256::digest(encoded);
     format!("transcription-{}", hex::encode(&digest[..16]))
@@ -989,7 +1180,7 @@ impl WhisperDecoder {
         })
     }
 
-    fn extract_segments(&self, state: &WhisperState) -> Result<Vec<WindowSegment>, String> {
+    fn extract_segments(&self, state: &WhisperState) -> Result<Vec<DecodeSpanSegment>, String> {
         let mut output = Vec::new();
         for segment_index in 0..state.full_n_segments() {
             let segment = state
@@ -1028,7 +1219,7 @@ impl WhisperDecoder {
             else {
                 continue;
             };
-            output.push(WindowSegment {
+            output.push(DecodeSpanSegment {
                 audio_range,
                 text: segment.to_string().unwrap_or_default(),
                 no_speech_probability: segment.no_speech_probability(),
@@ -1042,7 +1233,7 @@ impl WhisperDecoder {
         &self,
         session: &InteractiveSession,
         transcription: &DecoderTranscription,
-    ) -> Result<Vec<WindowSegment>, TranscriptionError> {
+    ) -> Result<Vec<DecodeSpanSegment>, TranscriptionError> {
         Ok(transcription
             .segments
             .iter()
@@ -1072,7 +1263,7 @@ impl WhisperDecoder {
                         }
                     })
                     .collect();
-                Some(WindowSegment {
+                Some(DecodeSpanSegment {
                     audio_range,
                     text: segment.text.clone(),
                     no_speech_probability: segment.no_speech_prob,
@@ -1107,7 +1298,7 @@ impl WhisperDecoder {
     }
 }
 
-impl WindowDecoder for WhisperDecoder {
+impl DecodeSpanDecoder for WhisperDecoder {
     fn identity(&self) -> TranscriberIdentity {
         self.identity.clone()
     }
@@ -1116,7 +1307,7 @@ impl WindowDecoder for WhisperDecoder {
         &mut self,
         audio: &[f32],
         prompt_token_ids: &[i32],
-    ) -> Result<Vec<WindowSegment>, String> {
+    ) -> Result<Vec<DecodeSpanSegment>, String> {
         let mut state = self
             .context
             .create_state()

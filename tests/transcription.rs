@@ -1,4 +1,4 @@
-//! Initial transcription, provisional evidence, and chunk presentation.
+//! Initial transcription, decode-span evidence, and chunk presentation.
 
 use std::{
     collections::VecDeque,
@@ -12,9 +12,9 @@ use running_drafts_editor::{
     project::Project,
     session::{run_session, AudioPlayer, PlaybackError, SessionContext},
     transcription::{
-        transcribe_initial, AdvanceReason, ChunkBoundaryReason, PostChunkConfig,
-        TranscriberIdentity, TranscriptionConfig, TranscriptionStatus, WhisperToken, WindowDecoder,
-        WindowSegment,
+        transcribe_initial, AdvanceReason, ChunkBoundaryReason, ChunkConstructionConfig,
+        DecodeSpanDecoder, DecodeSpanItem, DecodeSpanSegment, TranscriberIdentity,
+        TranscriptionConfig, TranscriptionStatus, WhisperToken,
     },
 };
 
@@ -44,10 +44,10 @@ fn open_audio(
 #[derive(Default)]
 struct FakeDecoder {
     calls: Vec<(usize, Vec<i32>)>,
-    results: VecDeque<Result<Vec<WindowSegment>, String>>,
+    results: VecDeque<Result<Vec<DecodeSpanSegment>, String>>,
 }
 
-impl WindowDecoder for FakeDecoder {
+impl DecodeSpanDecoder for FakeDecoder {
     fn identity(&self) -> TranscriberIdentity {
         TranscriberIdentity {
             name: "fake".into(),
@@ -60,18 +60,18 @@ impl WindowDecoder for FakeDecoder {
         &mut self,
         audio: &[f32],
         prompt_token_ids: &[i32],
-    ) -> Result<Vec<WindowSegment>, String> {
+    ) -> Result<Vec<DecodeSpanSegment>, String> {
         self.calls.push((audio.len(), prompt_token_ids.to_vec()));
         self.results.pop_front().unwrap_or_else(|| Ok(Vec::new()))
     }
 }
 
-fn segment(start: u64, end: u64, text: &str) -> WindowSegment {
+fn segment(start: u64, end: u64, text: &str) -> DecodeSpanSegment {
     segment_with_tokens(start, end, text, &[])
 }
 
-fn segment_with_tokens(start: u64, end: u64, text: &str, token_ids: &[i32]) -> WindowSegment {
-    WindowSegment {
+fn segment_with_tokens(start: u64, end: u64, text: &str, token_ids: &[i32]) -> DecodeSpanSegment {
+    DecodeSpanSegment {
         audio_range: SampleRange {
             start_sample: start,
             end_sample: end,
@@ -102,8 +102,8 @@ fn segment_with_token_kinds(
     end: u64,
     text: &str,
     tokens: &[(i32, bool)],
-) -> WindowSegment {
-    WindowSegment {
+) -> DecodeSpanSegment {
+    DecodeSpanSegment {
         audio_range: SampleRange {
             start_sample: start,
             end_sample: end,
@@ -139,10 +139,10 @@ fn token_ids(count: usize, first: i32) -> Vec<i32> {
         .collect()
 }
 
-fn transcribe_initial_post_chunks(
-    segments: Vec<WindowSegment>,
+fn transcribe_initial_chunks(
+    segments: Vec<DecodeSpanSegment>,
     total: u64,
-    post_chunking: PostChunkConfig,
+    chunking: ChunkConstructionConfig,
 ) -> running_drafts_editor::transcription::InitialTranscriptionResult {
     let mut decoder = FakeDecoder {
         results: VecDeque::from([Ok(segments)]),
@@ -152,11 +152,9 @@ fn transcribe_initial_post_chunks(
         source(total),
         &vec![0.0; usize::try_from(total).unwrap()],
         TranscriptionConfig {
-            max_window_samples: total,
-            target_core_samples: total,
-            left_context_samples: 0,
-            right_context_samples: 0,
-            post_chunking,
+            decode_span_samples: total,
+            continuation_search_samples: 0,
+            chunking,
             ..small_config()
         },
         &mut decoder,
@@ -166,19 +164,17 @@ fn transcribe_initial_post_chunks(
 
 fn small_config() -> TranscriptionConfig {
     TranscriptionConfig {
-        max_window_samples: 30,
-        target_core_samples: 24,
-        left_context_samples: 3,
-        right_context_samples: 3,
+        decode_span_samples: 30,
+        continuation_search_samples: 3,
         language: "de".into(),
         threads: 1,
         top_candidates: 2,
-        post_chunking: PostChunkConfig::default(),
+        chunking: ChunkConstructionConfig::default(),
     }
 }
 
 #[test]
-fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments() {
+fn continuation_boundaries_drive_overlapping_decode_spans_and_exact_prompts() {
     let mut decoder = FakeDecoder {
         results: VecDeque::from([
             Ok(vec![
@@ -217,52 +213,39 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
     assert_eq!(run.status, TranscriptionStatus::Succeeded);
     assert_eq!(
         decoder.calls,
-        vec![(27, vec![]), (30, vec![30, 31]), (20, vec![40, 41, 42])]
+        vec![(30, vec![]), (30, vec![30, 31]), (14, vec![40, 41, 42])]
     );
     assert_eq!(
-        run.windows
+        run.decode_spans
             .iter()
-            .map(|window| window.submitted)
+            .map(|span| span.submitted)
             .collect::<Vec<_>>(),
         vec![
             SampleRange {
                 start_sample: 0,
-                end_sample: 27,
-            },
-            SampleRange {
-                start_sample: 24,
-                end_sample: 54,
-            },
-            SampleRange {
-                start_sample: 50,
-                end_sample: 70,
-            },
-        ]
-    );
-    assert_eq!(
-        run.windows
-            .iter()
-            .map(|window| window.core)
-            .collect::<Vec<_>>(),
-        vec![
-            SampleRange {
-                start_sample: 0,
-                end_sample: 27,
+                end_sample: 30,
             },
             SampleRange {
                 start_sample: 27,
-                end_sample: 53,
+                end_sample: 57,
             },
             SampleRange {
-                start_sample: 53,
+                start_sample: 56,
                 end_sample: 70,
             },
         ]
     );
     assert_eq!(
-        run.windows
+        run.decode_spans
             .iter()
-            .map(|window| window.advance_reason)
+            .map(|span| span.continuation_boundary)
+            .collect::<Vec<_>>(),
+        vec![27, 56, 70]
+    );
+    assert_eq!(
+        run.decode_spans
+            .iter()
+            .map(|span| span.advance_reason)
             .collect::<Vec<_>>(),
         vec![
             AdvanceReason::WhisperTimestamp,
@@ -271,18 +254,16 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
         ]
     );
     assert_eq!(
-        run.segments
-            .iter()
+        run.accepted_segments()
             .map(|segment| segment.text.as_str())
             .collect::<Vec<_>>(),
-        vec!["A", "B", "tail", "C", "D", "E"]
+        vec!["A", "B", "tail", "old-B", "C", "D", "old-D", "E"]
     );
-    assert_eq!(run.windows[0].prompt_token_ids, Vec::<i32>::new());
-    assert_eq!(run.windows[1].prompt_token_ids, vec![30, 31]);
-    assert_eq!(run.windows[2].prompt_token_ids, vec![40, 41, 42]);
+    assert_eq!(run.decode_spans[0].prompt_token_ids, Vec::<i32>::new());
+    assert_eq!(run.decode_spans[1].prompt_token_ids, vec![30, 31]);
+    assert_eq!(run.decode_spans[2].prompt_token_ids, vec![40, 41, 42]);
     let tail = run
-        .segments
-        .iter()
+        .accepted_segments()
         .find(|segment| segment.text == "tail")
         .unwrap();
     assert_eq!(
@@ -293,13 +274,51 @@ fn timestamps_drive_overlapping_windows_and_prompts_without_duplicate_segments()
         vec![(50_364, true), (30, false), (31, false), (50_464, true)]
     );
     assert!(run
-        .windows
+        .decode_spans
         .iter()
-        .all(|window| window.submitted.len() <= 30));
+        .all(|span| span.submitted.len() <= 30));
+    let chunks = run.chunks().collect::<Vec<_>>();
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| chunk.audio_range)
+            .collect::<Vec<_>>(),
+        vec![
+            SampleRange {
+                start_sample: 0,
+                end_sample: 27,
+            },
+            SampleRange {
+                start_sample: 27,
+                end_sample: 56,
+            },
+            SampleRange {
+                start_sample: 56,
+                end_sample: 70,
+            },
+        ]
+    );
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| chunk.boundary.reason)
+            .collect::<Vec<_>>(),
+        vec![
+            ChunkBoundaryReason::Continuation,
+            ChunkBoundaryReason::Continuation,
+            ChunkBoundaryReason::SourceEnd,
+        ]
+    );
+    assert!(chunks
+        .windows(2)
+        .all(|pair| { pair[0].audio_range.end_sample <= pair[1].audio_range.start_sample }));
+    assert!(chunks.iter().all(|chunk| {
+        chunk.transcriptions.len() == 1 && chunk.current_transcription().is_some()
+    }));
 }
 
 #[test]
-fn latest_timestamp_in_search_area_wins_and_early_timestamp_does_not_shorten_core() {
+fn latest_timestamp_in_search_area_wins_and_trailing_silence_uses_last_segment_end() {
     let mut decoder = FakeDecoder {
         results: VecDeque::from([
             Ok(vec![
@@ -315,23 +334,14 @@ fn latest_timestamp_in_search_area_wins_and_early_timestamp_does_not_shorten_cor
     let run = transcribe_initial(source(50), &[0.0; 50], small_config(), &mut decoder).unwrap();
 
     assert_eq!(
-        run.windows
+        run.decode_spans
             .iter()
-            .map(|window| window.core)
+            .map(|span| span.continuation_boundary)
             .collect::<Vec<_>>(),
-        vec![
-            SampleRange {
-                start_sample: 0,
-                end_sample: 26,
-            },
-            SampleRange {
-                start_sample: 26,
-                end_sample: 50,
-            },
-        ]
+        vec![26, 50]
     );
     assert_eq!(
-        run.windows[0].advance_reason,
+        run.decode_spans[0].advance_reason,
         AdvanceReason::WhisperTimestamp
     );
 
@@ -341,15 +351,15 @@ fn latest_timestamp_in_search_area_wins_and_early_timestamp_does_not_shorten_cor
     };
     let run = transcribe_initial(source(50), &[0.0; 50], small_config(), &mut early_only).unwrap();
 
-    assert_eq!(run.windows[0].core.end_sample, 24);
+    assert_eq!(run.decode_spans[0].continuation_boundary, 2);
     assert_eq!(
-        run.windows[0].advance_reason,
-        AdvanceReason::FixedNoTimestamp
+        run.decode_spans[0].advance_reason,
+        AdvanceReason::WhisperTimestamp
     );
 }
 
 #[test]
-fn decode_failures_still_create_complete_bounded_core_coverage() {
+fn decode_failures_still_advance_by_complete_bounded_decode_spans() {
     let mut decoder = FakeDecoder {
         results: VecDeque::from([Err("one".into()), Err("two".into()), Err("three".into())]),
         ..FakeDecoder::default()
@@ -358,30 +368,88 @@ fn decode_failures_still_create_complete_bounded_core_coverage() {
     let run = transcribe_initial(source(55), &[0.0; 55], small_config(), &mut decoder).unwrap();
 
     assert_eq!(run.status, TranscriptionStatus::Failed);
-    assert!(run.segments.is_empty());
+    assert_eq!(run.accepted_segments().count(), 0);
     assert_eq!(
-        run.windows
+        run.decode_spans
             .iter()
-            .map(|window| window.core)
+            .map(|span| span.submitted)
             .collect::<Vec<_>>(),
         vec![
             SampleRange {
                 start_sample: 0,
-                end_sample: 24,
+                end_sample: 30,
             },
             SampleRange {
-                start_sample: 24,
-                end_sample: 48,
-            },
-            SampleRange {
-                start_sample: 48,
+                start_sample: 30,
                 end_sample: 55,
             },
         ]
     );
-    assert!(run.windows.iter().all(|window| {
-        window.advance_reason == AdvanceReason::FixedDecodeFailure && window.error.is_some()
+    assert!(run.decode_spans.iter().all(|span| {
+        span.advance_reason == AdvanceReason::FixedDecodeFailure && span.error.is_some()
     }));
+}
+
+#[test]
+fn silence_only_span_advances_without_a_chunk_and_later_speech_is_finalized() {
+    let mut decoder = FakeDecoder {
+        results: VecDeque::from([
+            Ok(Vec::new()),
+            Ok(vec![segment_with_tokens(5, 10, "speech", &[10])]),
+        ]),
+        ..FakeDecoder::default()
+    };
+
+    let run = transcribe_initial(source(55), &[0.0; 55], small_config(), &mut decoder).unwrap();
+
+    assert_eq!(run.decode_spans.len(), 2);
+    assert_eq!(
+        run.decode_spans[0].advance_reason,
+        AdvanceReason::FixedNoTimestamp
+    );
+    assert!(run.decode_spans[0].content.is_empty());
+    assert_eq!(run.decode_spans[1].submitted.start_sample, 30);
+    let chunks = run.chunks().collect::<Vec<_>>();
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(
+        chunks[0].audio_range,
+        SampleRange {
+            start_sample: 35,
+            end_sample: 40,
+        }
+    );
+    assert_eq!(chunks[0].boundary.reason, ChunkBoundaryReason::SourceEnd);
+}
+
+#[test]
+fn long_pause_discovered_by_the_next_decode_span_adds_a_paragraph_break() {
+    let mut decoder = FakeDecoder {
+        results: VecDeque::from([
+            Ok(vec![segment_with_tokens(0, 40_000, "before", &[10])]),
+            Ok(vec![segment_with_tokens(32_000, 40_000, "after", &[20])]),
+        ]),
+        ..FakeDecoder::default()
+    };
+    let config = TranscriptionConfig {
+        decode_span_samples: 48_000,
+        continuation_search_samples: 8_000,
+        ..small_config()
+    };
+
+    let run = transcribe_initial(source(88_000), &[0.0; 88_000], config, &mut decoder).unwrap();
+
+    assert!(matches!(
+        run.decode_spans[0].content.as_slice(),
+        [DecodeSpanItem::Chunk(_), DecodeSpanItem::ParagraphBreak(_)]
+    ));
+    assert!(matches!(
+        run.decode_spans[1].content.as_slice(),
+        [DecodeSpanItem::Chunk(_)]
+    ));
+    let project = Project::from_initial_transcription(&run);
+    assert_eq!(project.paragraphs().len(), 2);
+    assert_eq!(project.paragraph(1).unwrap().text(), "before");
+    assert_eq!(project.paragraph(2).unwrap().text(), "after");
 }
 
 #[test]
@@ -389,7 +457,7 @@ fn long_pause_splits_without_minimum_tokens_and_strong_pause_respects_minimum() 
     let one = token_ids(1, 10);
     let four_a = token_ids(4, 20);
     let four_b = token_ids(4, 30);
-    let run = transcribe_initial_post_chunks(
+    let run = transcribe_initial_chunks(
         vec![
             segment_with_tokens(0, 16_000, "one", &one),
             segment_with_tokens(48_000, 64_000, "four-a", &four_a),
@@ -397,24 +465,25 @@ fn long_pause_splits_without_minimum_tokens_and_strong_pause_respects_minimum() 
             segment_with_tokens(105_600, 121_600, "tail", &one),
         ],
         121_600,
-        PostChunkConfig::default(),
+        ChunkConstructionConfig::default(),
     );
 
-    assert_eq!(run.chunks.len(), 3);
-    assert_eq!(run.chunks[0].token_count, 1);
-    assert_eq!(
-        run.chunks[0].boundary.reason,
-        ChunkBoundaryReason::LongPause
-    );
-    assert_eq!(run.chunks[1].token_count, 8);
-    assert_eq!(
-        run.chunks[1].boundary.reason,
-        ChunkBoundaryReason::StrongPause
-    );
-    assert_eq!(
-        run.chunks[2].boundary.reason,
-        ChunkBoundaryReason::SourceEnd
-    );
+    let chunks = run.chunks().collect::<Vec<_>>();
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(chunks[0].token_count, 1);
+    assert_eq!(chunks[0].boundary.reason, ChunkBoundaryReason::LongPause);
+    assert_eq!(chunks[1].token_count, 8);
+    assert_eq!(chunks[1].boundary.reason, ChunkBoundaryReason::StrongPause);
+    assert_eq!(chunks[2].boundary.reason, ChunkBoundaryReason::SourceEnd);
+    assert!(matches!(
+        run.decode_spans[0].content.as_slice(),
+        [
+            DecodeSpanItem::Chunk(_),
+            DecodeSpanItem::ParagraphBreak(_),
+            DecodeSpanItem::Chunk(_),
+            DecodeSpanItem::Chunk(_)
+        ]
+    ));
 }
 
 #[test]
@@ -422,7 +491,7 @@ fn usable_pauses_are_scored_near_target_and_maximum_uses_whole_segment_boundary(
     let twenty = token_ids(20, 100);
     let ten = token_ids(10, 200);
     let two = token_ids(2, 300);
-    let run = transcribe_initial_post_chunks(
+    let run = transcribe_initial_chunks(
         vec![
             segment_with_tokens(0, 16_000, "a", &twenty),
             segment_with_tokens(24_000, 40_000, "b", &ten),
@@ -430,21 +499,19 @@ fn usable_pauses_are_scored_near_target_and_maximum_uses_whole_segment_boundary(
             segment_with_tokens(62_400, 78_400, "d", &two),
         ],
         78_400,
-        PostChunkConfig::default(),
+        ChunkConstructionConfig::default(),
     );
 
-    assert_eq!(run.chunks[0].segment_ids.len(), 2);
-    assert_eq!(run.chunks[0].token_count, 30);
-    assert_eq!(
-        run.chunks[0].boundary.reason,
-        ChunkBoundaryReason::ScoredPause
-    );
+    let chunks = run.chunks().collect::<Vec<_>>();
+    assert_eq!(chunks[0].segment_ids.len(), 2);
+    assert_eq!(chunks[0].token_count, 30);
+    assert_eq!(chunks[0].boundary.reason, ChunkBoundaryReason::ScoredPause);
 
     let twenty_a = token_ids(20, 400);
     let twenty_b = token_ids(20, 500);
     let twenty_c = token_ids(20, 600);
     let twenty_d = token_ids(20, 700);
-    let run = transcribe_initial_post_chunks(
+    let run = transcribe_initial_chunks(
         vec![
             segment_with_tokens(0, 16_000, "a", &twenty_a),
             segment_with_tokens(16_000, 32_000, "b", &twenty_b),
@@ -452,22 +519,23 @@ fn usable_pauses_are_scored_near_target_and_maximum_uses_whole_segment_boundary(
             segment_with_tokens(48_000, 64_000, "d", &twenty_d),
         ],
         64_000,
-        PostChunkConfig::default(),
+        ChunkConstructionConfig::default(),
     );
 
-    assert_eq!(run.chunks[0].token_count, 40);
+    let chunks = run.chunks().collect::<Vec<_>>();
+    assert_eq!(chunks[0].token_count, 40);
     assert_eq!(
-        run.chunks[0].boundary.reason,
+        chunks[0].boundary.reason,
         ChunkBoundaryReason::MaximumTokens
     );
-    assert_eq!(run.chunks[0].segment_ids.len(), 2);
+    assert_eq!(chunks[0].segment_ids.len(), 2);
 }
 
 #[test]
-fn post_chunk_settings_must_be_ordered() {
+fn chunk_settings_must_be_ordered() {
     let mut config = small_config();
-    config.post_chunking.minimum_tokens = 33;
-    config.post_chunking.target_tokens = 32;
+    config.chunking.minimum_tokens = 33;
+    config.chunking.target_tokens = 32;
     let mut decoder = FakeDecoder::default();
 
     let error = transcribe_initial(source(1), &[0.0], config, &mut decoder).unwrap_err();
@@ -508,10 +576,8 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
         source(640),
         &[0.0; 640],
         TranscriptionConfig {
-            max_window_samples: 640,
-            target_core_samples: 640,
-            left_context_samples: 0,
-            right_context_samples: 0,
+            decode_span_samples: 640,
+            continuation_search_samples: 0,
             ..small_config()
         },
         &mut decoder,
@@ -557,7 +623,7 @@ fn decoded_open_audio_shows_text_and_replays_exact_timestamp_range() {
 
 #[test]
 fn open_audio_retains_text_without_inventing_addressable_tokens() {
-    let run = transcribe_initial_post_chunks(
+    let run = transcribe_initial_chunks(
         vec![segment_with_token_kinds(
             0,
             16_000,
@@ -565,7 +631,7 @@ fn open_audio_retains_text_without_inventing_addressable_tokens() {
             &[(1, false)],
         )],
         16_000,
-        PostChunkConfig::default(),
+        ChunkConstructionConfig::default(),
     );
     let mut input = Cursor::new(b"1tokens\n1.1.1select\n1.1,1.2select\nquit\n");
     let mut output = Vec::new();
@@ -596,10 +662,10 @@ fn open_audio_retains_text_without_inventing_addressable_tokens() {
 
 #[test]
 fn open_audio_output_becomes_the_default_session_save_path() {
-    let run = transcribe_initial_post_chunks(
+    let run = transcribe_initial_chunks(
         vec![segment_with_tokens(0, 16_000, "visible text", &[1])],
         16_000,
-        PostChunkConfig::default(),
+        ChunkConstructionConfig::default(),
     );
     let directory = tempfile::tempdir().unwrap();
     let project_path = directory.path().join("draft.rde.json");
@@ -636,7 +702,7 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
     let one = token_ids(1, 10);
     let four_a = token_ids(4, 20);
     let four_b = token_ids(4, 30);
-    let run = transcribe_initial_post_chunks(
+    let run = transcribe_initial_chunks(
         vec![
             segment_with_tokens(0, 16_000, "one", &one),
             segment_with_tokens(48_000, 64_000, "four-a", &four_a),
@@ -644,7 +710,7 @@ fn open_audio_groups_long_pauses_into_paragraphs_and_reports_marker_errors() {
             segment_with_tokens(105_600, 121_600, "tail", &one),
         ],
         121_600,
-        PostChunkConfig::default(),
+        ChunkConstructionConfig::default(),
     );
     let mut input = Cursor::new(
         b"2p\n2.1.1\n2p\n1.1.1,2.1.1select\np\n2.1\n2p\n2.1select\n2p\n2select\n2p\n2.1,2.2select\n2p\nplay\n2.2play\n2tokens\n3p\n1.1info\n2.2info\n3.1info\nquit\n",

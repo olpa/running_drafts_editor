@@ -30,10 +30,10 @@ pub(crate) fn render_transcription_document(
     writeln!(
         output,
         "Built {} chunks from {}",
-        run.chunks.len(),
+        run.chunk_count(),
         source.display()
     )?;
-    if !run.chunks.is_empty() {
+    if run.chunk_count() != 0 {
         writeln!(output)?;
     }
     for (index, paragraph) in document.paragraphs().iter().enumerate() {
@@ -309,7 +309,7 @@ pub(crate) fn render_transcription_info(
     chunk_number: usize,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    let chunk = crate::transcription::TranscriptionChunk {
+    let chunk = crate::transcription::Chunk {
         id: t.chunk_id.clone(),
         ordinal: 1,
         segment_ids: t.segments.iter().map(|s| s.id.clone()).collect(),
@@ -322,6 +322,8 @@ pub(crate) fn render_transcription_info(
             .filter(|t| !t.is_special)
             .count(),
         boundary: t.boundary.clone(),
+        transcriptions: Vec::new(),
+        current_transcription_id: String::new(),
     };
     let run = InitialTranscriptionResult {
         id: t.id.clone(),
@@ -330,16 +332,14 @@ pub(crate) fn render_transcription_info(
         transcriber: t.transcriber.clone(),
         config: t.config.clone(),
         status: crate::transcription::TranscriptionStatus::Succeeded,
-        windows: Vec::new(),
-        segments: Vec::new(),
-        chunks: Vec::new(),
+        decode_spans: Vec::new(),
     };
     render_chunk_info(&run, &chunk, paragraph, chunk_number, output)
 }
 
 fn render_chunk_info(
     run: &InitialTranscriptionResult,
-    chunk: &crate::transcription::TranscriptionChunk,
+    chunk: &crate::transcription::Chunk,
     paragraph: usize,
     chunk_number: usize,
     output: &mut impl Write,
@@ -358,15 +358,13 @@ fn render_chunk_info(
     writeln!(output, "     {}", chunk.text)
 }
 
-fn chunk_boundary_label(
-    chunk: &crate::transcription::TranscriptionChunk,
-    sample_rate_hz: u32,
-) -> String {
+fn chunk_boundary_label(chunk: &crate::transcription::Chunk, sample_rate_hz: u32) -> String {
     let reason = match chunk.boundary.reason {
         ChunkBoundaryReason::LongPause => "long pause",
         ChunkBoundaryReason::StrongPause => "strong pause",
         ChunkBoundaryReason::ScoredPause => "best pause",
         ChunkBoundaryReason::MaximumTokens => return "token limit".into(),
+        ChunkBoundaryReason::Continuation => "continuation",
         ChunkBoundaryReason::SourceEnd => "source end",
     };
     chunk.boundary.pause_samples.map_or_else(

@@ -2,14 +2,19 @@ mod common;
 use running_drafts_editor::{
     persistence::{export_text, load_project, save_project},
     project::{Project, TranscriptionSettings},
-    transcription::ChunkBoundaryReason,
+    transcription::{ChunkBoundaryReason, DecodeSpanItem, ParagraphBreak},
 };
 use std::fs;
 
 #[test]
 fn one_transcription_per_chunk_and_exact_evidence_round_trip() {
     let mut result = common::batch("initial", &[" hello ", "\t世界"]);
-    result.chunks[0].boundary.reason = ChunkBoundaryReason::LongPause;
+    let chunk = result.chunks_mut().next().unwrap();
+    chunk.boundary.reason = ChunkBoundaryReason::LongPause;
+    chunk.transcriptions[0].boundary.reason = ChunkBoundaryReason::LongPause;
+    result.decode_spans[0]
+        .content
+        .insert(1, DecodeSpanItem::ParagraphBreak(ParagraphBreak));
     let project = Project::from_initial_transcription(&result);
     assert_eq!(project.transcriptions().len(), 2);
     assert_ne!(
@@ -21,9 +26,22 @@ fn one_transcription_per_chunk_and_exact_evidence_round_trip() {
     save_project(&path, &project).unwrap();
     assert_eq!(load_project(&path).unwrap(), project);
     let encoded = fs::read_to_string(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
     assert!(!encoded.contains("recognition"));
     assert!(!encoded.contains("pseudo"));
     assert!(!encoded.contains("transcription_runs"));
+    assert!(value.get("transcriptions").is_none());
+    assert_eq!(
+        value["initial_evidence"]["decode_spans"][0]["content"][0]["kind"],
+        "chunk"
+    );
+    assert_eq!(
+        value["initial_evidence"]["decode_spans"][0]["content"][0]["value"]["transcriptions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     export_text(&dir.path().join("text"), &project).unwrap();
     assert_eq!(
         fs::read_to_string(dir.path().join("text")).unwrap(),
@@ -34,7 +52,8 @@ fn one_transcription_per_chunk_and_exact_evidence_round_trip() {
 #[test]
 fn unavailable_token_alignment_preserves_text_evidence_and_structural_history() {
     let mut result = common::batch("initial", &[" exact text \t", "other"]);
-    result.segments[0].tokens[0].text = "mismatched".into();
+    result.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0].text =
+        "mismatched".into();
     let mut project = Project::from_initial_transcription(&result);
     assert_eq!(project.chunk_has_tokens(1, 1), Some(false));
     assert_eq!(project.paragraph(1).unwrap().text(), " exact text \tother");
@@ -63,6 +82,7 @@ fn unavailable_token_alignment_preserves_text_evidence_and_structural_history() 
 fn settings_transcription_marks_issues_and_redo_survive_save_reopen() {
     let mut initial = common::batch("initial", &["old"]);
     initial.config.language = "en".into();
+    common::synchronize_initial_transcriptions(&mut initial);
     let mut project = Project::from_initial_transcription(&initial);
     project
         .configure_initial_settings(Some("old-model".into()), "en".into())
@@ -157,13 +177,19 @@ fn historical_format_is_not_supported_and_missing_audio_is_harmless() {
         load_project(&path).unwrap().paragraph(1).unwrap().text(),
         "text"
     );
-    let mut value = serde_json::to_value(&project).unwrap();
-    value["schema"] = "rde-document/v1-experimental".into();
-    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-    assert!(load_project(&path)
-        .unwrap_err()
-        .to_string()
-        .contains("unsupported project schema"));
+    let value = serde_json::to_value(&project).unwrap();
+    for old_schema in [
+        "rde-project/v1-experimental",
+        "rde-document/v1-experimental",
+    ] {
+        let mut old = value.clone();
+        old["schema"] = old_schema.into();
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(load_project(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported project schema"));
+    }
 }
 
 #[test]
@@ -179,7 +205,7 @@ fn failed_install_preserves_redo_and_current_state() {
         .is_err());
     assert_eq!(project, before);
     let mut altered = common::batch("bad-boundary", &["a"]);
-    altered.chunks[0].audio_range.end_sample = 99;
+    altered.chunks_mut().next().unwrap().audio_range.end_sample = 99;
     let altered = common::proposal(&project, altered);
     assert!(project
         .install_transcription(1, 1, altered, TranscriptionSettings::default())
@@ -249,12 +275,27 @@ fn duplicate_attention_targets_and_audio_mappings_are_rejected() {
 }
 
 #[test]
+fn overlapping_finalized_chunk_ranges_are_rejected() {
+    let mut result = common::batch("overlap", &["one", "two"]);
+    let second = result.chunks_mut().nth(1).unwrap();
+    second.audio_range.start_sample = 50;
+    second.transcriptions[0].audio_range.start_sample = 50;
+    let project = Project::from_initial_transcription(&result);
+    let dir = tempfile::tempdir().unwrap();
+    let error = save_project(&dir.path().join("project"), &project).unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("invalid finalized chunk in decode-span content"));
+}
+
+#[test]
 fn special_tokens_do_not_get_addresses_but_empty_text_tokens_do() {
     let mut result = common::batch("initial", &[""]);
     let project = Project::from_initial_transcription(&result);
     assert_eq!(project.chunk_has_tokens(1, 1), Some(true));
     assert_eq!(project.chunk_token(1, 1, 1).unwrap().text(), "");
-    result.segments[0].tokens[0].is_special = true;
+    result.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0].is_special = true;
     let project = Project::from_initial_transcription(&result);
     assert_eq!(project.chunk_has_tokens(1, 1), Some(false));
     assert!(project.chunk_token(1, 1, 1).is_none());
@@ -295,13 +336,12 @@ fn initial_configuration_cannot_bypass_settings_history_after_user_actions() {
 #[test]
 fn failed_initial_decoding_keeps_its_circumstances_even_without_finalized_chunks() {
     let mut result = common::batch("failed-initial", &["unused"]);
-    result.chunks.clear();
-    result.segments.clear();
+    result.decode_spans[0].content.clear();
     result.status = running_drafts_editor::transcription::TranscriptionStatus::Failed;
     result.config.language = "de".into();
-    result.windows[0].hypotheses.clear();
-    result.windows[0].accepted_segment_ids.clear();
-    result.windows[0].error = Some("synthetic decode failure".into());
+    result.decode_spans[0].hypotheses.clear();
+    result.decode_spans[0].accepted_segment_ids.clear();
+    result.decode_spans[0].error = Some("synthetic decode failure".into());
     let project = Project::from_initial_transcription(&result);
     assert!(project.transcriptions().is_empty());
     let dir = tempfile::tempdir().unwrap();

@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::project::{Project, PROJECT_SCHEMA};
+use crate::transcription::{ChunkBoundaryReason, DecodeSpanItem};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectIoError {
@@ -158,6 +159,7 @@ pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
     if project.id().is_empty() {
         return Err(invalid("document ID is empty"));
     }
+    let (stored_chunk_ids, stored_breaks) = validate_decode_spans(project)?;
     let mut ids = HashSet::new();
     for t in project.transcriptions() {
         if t.id.is_empty() || t.chunk_id.is_empty() || !ids.insert(&t.id) {
@@ -205,12 +207,59 @@ pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
         &project.resolved_issues,
         &sources,
     )?;
+    let document_chunk_ids = project
+        .paragraphs()
+        .iter()
+        .flat_map(|paragraph| paragraph.chunk_boundaries())
+        .map(|marker| marker.chunk_id().to_owned())
+        .collect::<Vec<_>>();
+    if document_chunk_ids != stored_chunk_ids {
+        return Err(invalid(
+            "document chunk order differs from decode-span content",
+        ));
+    }
+    for marker in project
+        .paragraphs()
+        .iter()
+        .flat_map(|paragraph| paragraph.chunk_boundaries())
+    {
+        let selected = project
+            .chunks()
+            .find(|chunk| chunk.id == marker.chunk_id())
+            .map(|chunk| chunk.current_transcription_id.as_str());
+        if selected != Some(marker.transcription_id()) {
+            return Err(invalid(
+                "document projection differs from selected chunk transcription",
+            ));
+        }
+    }
+    if project.chunk_audio_mappings().len() != stored_chunk_ids.len() {
+        return Err(invalid("not every finalized chunk has one audio mapping"));
+    }
+    let document_breaks = project
+        .paragraphs()
+        .iter()
+        .take(project.paragraphs().len().saturating_sub(1))
+        .filter_map(|paragraph| paragraph.chunk_boundaries().last())
+        .map(|marker| marker.chunk_id().to_owned())
+        .collect::<Vec<_>>();
+    if document_breaks != stored_breaks {
+        return Err(invalid(
+            "document paragraphs differ from decode-span content",
+        ));
+    }
     for state in project
         .edit_history
         .iter()
         .map(|e| &e.before)
         .chain(project.redo_history.iter())
     {
+        validate_selected_transcriptions(
+            project,
+            &state.paragraphs,
+            &state.current_transcriptions,
+            stored_chunk_ids.len(),
+        )?;
         validate_state(
             project,
             &state.paragraphs,
@@ -222,6 +271,178 @@ pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
         )?;
     }
     Ok(())
+}
+
+fn validate_selected_transcriptions(
+    project: &Project,
+    paragraphs: &[crate::document::Paragraph],
+    selected: &[(String, String)],
+    chunk_count: usize,
+) -> Result<(), ProjectIoError> {
+    let invalid = |message: &str| ProjectIoError::Invalid(message.into());
+    let unique = selected
+        .iter()
+        .map(|(chunk_id, _)| chunk_id.as_str())
+        .collect::<HashSet<_>>();
+    if selected.len() != chunk_count || unique.len() != selected.len() {
+        return Err(invalid(
+            "history has incomplete chunk transcription selection",
+        ));
+    }
+    for (chunk_id, transcription_id) in selected {
+        let valid = project.chunks().any(|chunk| {
+            chunk.id == *chunk_id
+                && chunk
+                    .transcriptions
+                    .iter()
+                    .any(|transcription| transcription.id == *transcription_id)
+        });
+        if !valid {
+            return Err(invalid("history selects an unknown chunk transcription"));
+        }
+    }
+    for marker in paragraphs
+        .iter()
+        .flat_map(|paragraph| paragraph.chunk_boundaries())
+    {
+        let transcription_id = selected
+            .iter()
+            .find(|(chunk_id, _)| chunk_id == marker.chunk_id())
+            .map(|(_, transcription_id)| transcription_id.as_str());
+        if transcription_id != Some(marker.transcription_id()) {
+            return Err(invalid(
+                "historical document differs from its selected chunk transcription",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_decode_spans(project: &Project) -> Result<(Vec<String>, Vec<String>), ProjectIoError> {
+    let invalid = |message: &str| ProjectIoError::Invalid(message.into());
+    let Some(evidence) = &project.initial_evidence else {
+        return Err(invalid("initial decode-span evidence is missing"));
+    };
+    let mut chunk_ids = Vec::new();
+    let mut breaks = Vec::new();
+    let mut seen_chunk_ids = HashSet::new();
+    let mut previous_chunk_end = None;
+    let mut expected_start = 0_u64;
+
+    for (index, span) in evidence.decode_spans.iter().enumerate() {
+        if span.submitted.start_sample != expected_start
+            || span.ordinal != u32::try_from(index + 1).unwrap_or(u32::MAX)
+            || span.submitted.is_empty()
+            || span.submitted.end_sample > evidence.source.decoded_sample_count
+            || span.continuation_boundary <= span.submitted.start_sample
+            || span.continuation_boundary > span.submitted.end_sample
+        {
+            return Err(invalid("invalid decode-span coordinates"));
+        }
+        let hypothesis_ids = span
+            .hypotheses
+            .iter()
+            .map(|segment| segment.id.as_str())
+            .collect::<HashSet<_>>();
+        if hypothesis_ids.len() != span.hypotheses.len()
+            || span.hypotheses.iter().any(|segment| {
+                segment.audio_range.is_empty()
+                    || segment.audio_range.start_sample < span.submitted.start_sample
+                    || segment.audio_range.end_sample > span.submitted.end_sample
+            })
+            || span
+                .accepted_segment_ids
+                .iter()
+                .any(|id| !hypothesis_ids.contains(id.as_str()))
+        {
+            return Err(invalid("decode span accepts an unknown segment"));
+        }
+        let accepted_ids = span
+            .accepted_segment_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        if accepted_ids.len() != span.accepted_segment_ids.len()
+            || span.hypotheses.iter().any(|segment| {
+                accepted_ids.contains(segment.id.as_str())
+                    && (segment.audio_range.start_sample < span.submitted.start_sample
+                        || segment.audio_range.end_sample > span.continuation_boundary)
+            })
+        {
+            return Err(invalid("invalid accepted segment in decode span"));
+        }
+        let mut used_segment_ids = HashSet::new();
+        let mut last_span_chunk = None;
+        for item in &span.content {
+            match item {
+                DecodeSpanItem::Chunk(chunk) => {
+                    if chunk.id.is_empty()
+                        || !seen_chunk_ids.insert(chunk.id.as_str())
+                        || chunk.audio_range.is_empty()
+                        || chunk.audio_range.start_sample < span.submitted.start_sample
+                        || chunk.audio_range.end_sample > span.continuation_boundary
+                        || previous_chunk_end
+                            .is_some_and(|end| end > chunk.audio_range.start_sample)
+                        || chunk.segment_ids.iter().any(|id| {
+                            !accepted_ids.contains(id.as_str())
+                                || !used_segment_ids.insert(id.as_str())
+                        })
+                        || chunk.segment_ids.is_empty()
+                        || chunk.transcriptions.is_empty()
+                        || chunk.current_transcription().is_none()
+                        || chunk.transcriptions.iter().any(|transcription| {
+                            transcription.chunk_id != chunk.id
+                                || transcription.audio_range != chunk.audio_range
+                                || transcription.boundary != chunk.boundary
+                        })
+                    {
+                        return Err(invalid("invalid finalized chunk in decode-span content"));
+                    }
+                    previous_chunk_end = Some(chunk.audio_range.end_sample);
+                    last_span_chunk = Some(chunk);
+                    chunk_ids.push(chunk.id.clone());
+                }
+                DecodeSpanItem::ParagraphBreak(_) => {
+                    if let Some(chunk_id) = chunk_ids.last() {
+                        if breaks.last() != Some(chunk_id) {
+                            breaks.push(chunk_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+        if used_segment_ids != accepted_ids {
+            return Err(invalid(
+                "accepted decode-span text is lost or duplicated across chunks",
+            ));
+        }
+        if let Some(chunk) = last_span_chunk {
+            let expected_reason =
+                if span.continuation_boundary == evidence.source.decoded_sample_count {
+                    ChunkBoundaryReason::SourceEnd
+                } else {
+                    ChunkBoundaryReason::Continuation
+                };
+            if chunk.boundary.reason != expected_reason {
+                return Err(invalid(
+                    "last decode-span chunk has the wrong boundary reason",
+                ));
+            }
+        }
+        expected_start = span.continuation_boundary;
+    }
+    if evidence.source.decoded_sample_count != 0
+        && evidence
+            .decode_spans
+            .last()
+            .is_none_or(|span| span.continuation_boundary != evidence.source.decoded_sample_count)
+    {
+        return Err(invalid("decode spans do not reach source end"));
+    }
+    if let Some(final_chunk_id) = chunk_ids.last() {
+        breaks.retain(|chunk_id| chunk_id != final_chunk_id);
+    }
+    Ok((chunk_ids, breaks))
 }
 
 fn validate_state(
@@ -237,6 +458,7 @@ fn validate_state(
     let mut paragraph_ids = HashSet::new();
     let mut chunk_ids = HashSet::new();
     let mut token_ids = HashSet::new();
+    let transcriptions = project.transcriptions();
     for p in paragraphs {
         if p.id().is_empty()
             || p.revision() == 0
@@ -252,8 +474,7 @@ fn validate_state(
             if !chunk_ids.insert(c.chunk_id()) {
                 return Err(invalid("duplicate chunk identity"));
             }
-            let t = project
-                .transcriptions()
+            let t = transcriptions
                 .iter()
                 .find(|t| t.id == c.transcription_id())
                 .ok_or_else(|| invalid("composition refers to an unknown transcription"))?;
@@ -313,8 +534,7 @@ fn validate_state(
             ));
         }
         validate_audio_range(project, c.source_id(), c.range())?;
-        if project
-            .transcriptions()
+        if transcriptions
             .iter()
             .filter(|t| t.chunk_id == c.chunk_id())
             .any(|t| t.audio_range != c.range())
