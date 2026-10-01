@@ -162,10 +162,10 @@ impl<'a> SessionState<'a> {
                     writeln!(
                         output,
                         "Built {} chunks from {}",
-                        run.chunks.len(),
+                        run.chunk_count(),
                         source.display()
                     )?;
-                    if !run.chunks.is_empty() {
+                    if run.chunk_count() != 0 {
                         writeln!(output)?;
                         render_session_document(
                             &document,
@@ -191,7 +191,7 @@ impl<'a> SessionState<'a> {
                         failure.reason()
                     )?;
                 }
-                if run.chunks.is_empty() {
+                if run.chunk_count() == 0 {
                     return Ok(None);
                 }
             }
@@ -1104,11 +1104,12 @@ mod tests {
                 crate::test_support::batch(&format!("decode-{}", request.revision), &[&text]);
             result.source = request.source;
             result.config.language = request.language;
-            result.chunks[0].audio_range = request.chunk_range;
-            result.segments[0].audio_range = request.chunk_range;
-            result.segments[0].tokens[0].audio_range = Some(request.chunk_range);
+            result.chunks_mut().next().unwrap().audio_range = request.chunk_range;
+            let segment = &mut result.decode_spans[0].hypotheses[0];
+            segment.audio_range = request.chunk_range;
+            segment.tokens[0].audio_range = Some(request.chunk_range);
             if !request.forced_tokens.is_empty() {
-                result.segments[0].tokens = request
+                segment.tokens = request
                     .forced_tokens
                     .iter()
                     .map(|id| crate::transcription::WhisperToken {
@@ -1124,24 +1125,18 @@ mod tests {
                         alternatives: Vec::new(),
                     })
                     .collect();
-                result.segments[0]
-                    .tokens
-                    .push(crate::transcription::WhisperToken {
-                        token_id: 999,
-                        text: " suffix".into(),
-                        probability: 0.1,
-                        is_special: false,
-                        audio_range: Some(request.chunk_range),
-                        alternatives: Vec::new(),
-                    });
+                segment.tokens.push(crate::transcription::WhisperToken {
+                    token_id: 999,
+                    text: " suffix".into(),
+                    probability: 0.1,
+                    is_special: false,
+                    audio_range: Some(request.chunk_range),
+                    alternatives: Vec::new(),
+                });
             }
-            result.windows[0].hypotheses = result.segments.clone();
-            result.windows[0].prompt_token_ids = request.forced_tokens;
-            Ok(result.transcription_for(
-                &result.chunks[0],
-                &request.chunk_id,
-                Some(request.previous_id),
-            ))
+            result.decode_spans[0].prompt_token_ids = request.forced_tokens;
+            let chunk = result.chunks().next().unwrap();
+            Ok(result.transcription_for(chunk, &request.chunk_id, Some(request.previous_id)))
         }
     }
     #[derive(Default)]
@@ -1174,6 +1169,7 @@ mod tests {
         let mut batch = crate::test_support::batch("initial", texts);
         batch.source.sha256 = wav.source_sha256;
         batch.config.language = "en".into();
+        crate::test_support::synchronize_initial_transcriptions(&mut batch);
         let mut project = Project::from_initial_transcription_with_source(&batch, Some(&path));
         project
             .configure_initial_settings(Some("old-model".into()), "en".into())
@@ -1379,7 +1375,8 @@ mod tests {
         let mut batch = crate::test_support::batch("alternatives", &["old"]);
         batch.source = source;
         batch.config.language = "en".into();
-        batch.segments[0].tokens[0]
+        crate::test_support::synchronize_initial_transcriptions(&mut batch);
+        batch.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0]
             .alternatives
             .push(crate::transcription::TokenAlternative {
                 token_id: 90,
@@ -1434,7 +1431,9 @@ mod tests {
         let mut batch = crate::test_support::batch("mismatch", &["old"]);
         batch.source = source;
         batch.config.language = "en".into();
-        batch.segments[0].tokens[0].text = "different evidence".into();
+        crate::test_support::synchronize_initial_transcriptions(&mut batch);
+        batch.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0].text =
+            "different evidence".into();
         state.project = Project::from_initial_transcription_with_source(&batch, Some(&path));
         state
             .project

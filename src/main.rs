@@ -7,7 +7,7 @@ use running_drafts_editor::backend::{
 use running_drafts_editor::persistence::{load_project, save_project};
 use running_drafts_editor::project::Project;
 use running_drafts_editor::session::{run_readline_session, run_session, Ffplay, SessionContext};
-use running_drafts_editor::transcription::{PostChunkConfig, TranscriptionConfig};
+use running_drafts_editor::transcription::{ChunkConstructionConfig, TranscriptionConfig};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -89,12 +89,12 @@ struct TranscriptionArgs {
     language: String,
     #[arg(long, default_value_t = 4)]
     threads: usize,
-    #[arg(long, default_value_t = 384_000)]
-    target_core_samples: u64,
+    /// Audio submitted in one initial-transcription step.
+    #[arg(long, default_value_t = 480_000)]
+    decode_span_samples: u64,
+    /// Area near a decode span's end searched for a continuation boundary.
     #[arg(long, default_value_t = 48_000)]
-    left_context_samples: u64,
-    #[arg(long, default_value_t = 48_000)]
-    right_context_samples: u64,
+    continuation_search_samples: u64,
     #[arg(long, default_value_t = 20)]
     top_candidates: usize,
     /// Minimum normal text tokens before a strong or usable pause may split a chunk.
@@ -275,13 +275,12 @@ fn transcribe_audio(
     let mut audio = LocalAudioBackend::new();
     let recording_id = audio.upload(input)?;
     let config = TranscriptionConfig {
-        target_core_samples: args.target_core_samples,
-        left_context_samples: args.left_context_samples,
-        right_context_samples: args.right_context_samples,
+        decode_span_samples: args.decode_span_samples,
+        continuation_search_samples: args.continuation_search_samples,
         language: args.language.clone(),
         threads: args.threads,
         top_candidates: args.top_candidates,
-        post_chunking: PostChunkConfig {
+        chunking: ChunkConstructionConfig {
             minimum_tokens: args.chunk_minimum_tokens,
             target_tokens: args.chunk_target_tokens,
             maximum_tokens: args.chunk_maximum_tokens,
@@ -290,7 +289,6 @@ fn transcribe_audio(
             long_pause_ms: args.chunk_long_pause_ms,
             distance_penalty_ms: args.chunk_distance_penalty_ms,
         },
-        ..TranscriptionConfig::default()
     };
     let mut recognition = LocalRecognitionBackend::new();
     let run = recognition.transcribe_recording(&mut audio, &recording_id, &args.model, config)?;
@@ -303,7 +301,7 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn open_audio_has_inspectable_whisper_window_defaults() {
+    fn open_audio_has_inspectable_decode_span_defaults() {
         let cli = Cli::try_parse_from(["rde", "open-audio", "audio.wav", "--model", "whisper.bin"])
             .unwrap();
         let Command::OpenAudio(args) = cli.command else {
@@ -316,9 +314,8 @@ mod tests {
         assert_eq!(args.transcription.model, PathBuf::from("whisper.bin"));
         assert_eq!(args.transcription.language, "auto");
         assert_eq!(args.transcription.threads, 4);
-        assert_eq!(args.transcription.target_core_samples, 384_000);
-        assert_eq!(args.transcription.left_context_samples, 48_000);
-        assert_eq!(args.transcription.right_context_samples, 48_000);
+        assert_eq!(args.transcription.decode_span_samples, 480_000);
+        assert_eq!(args.transcription.continuation_search_samples, 48_000);
         assert_eq!(args.transcription.top_candidates, 20);
         assert_eq!(args.transcription.chunk_minimum_tokens, 8);
         assert_eq!(args.transcription.chunk_target_tokens, 32);

@@ -6,7 +6,7 @@ records the boundary model, and
 [ADR-0014](adr/0014-store-document-content-inside-decode-spans.md) records
 the ownership direction. Code and tests remain the source for current
 parameter values and implemented behavior. [Issue #58](https://github.com/olpa/running_drafts_editor/issues/58)
-tracks the gap between the current implementation and this procedure.
+records the implementation work for disjoint finalized chunk ranges.
 
 ## Ownership model
 

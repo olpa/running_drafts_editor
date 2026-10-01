@@ -97,12 +97,10 @@ impl RecognitionBackend for ServerRecognition {
         let mut result = common::batch(&format!("server-{}", request.revision), &[text]);
         result.source = self.initial.source.clone();
         result.config.language = request.settings.language.clone();
-        result.chunks[0].audio_range = metadata.range;
-        let transcription = result.transcription_for(
-            &result.chunks[0],
-            &request.chunk_id,
-            Some(request.previous_id.clone()),
-        );
+        result.chunks_mut().next().unwrap().audio_range = metadata.range;
+        let chunk = result.chunks().next().unwrap().clone();
+        let transcription =
+            result.transcription_for(&chunk, &request.chunk_id, Some(request.previous_id.clone()));
         self.calls.borrow_mut().recognition.push(request);
         Ok(transcription)
     }
@@ -121,6 +119,7 @@ fn reopened_server_project_replays_corrects_and_restores_history_without_local_a
     let saved = dir.path().join("server.json");
     let mut initial = common::batch("server-initial", &["old"]);
     initial.config.language = "en".into();
+    common::synchronize_initial_transcriptions(&mut initial);
     let mut project = Project::from_initial_transcription_with_recording_id(
         &initial,
         "server-recording-42",
@@ -188,7 +187,7 @@ fn accepting_changed_source_circumstances_does_not_allow_changed_chunk_boundarie
     let before = project.clone();
     let mut result = common::batch("changed", &["changed"]);
     result.source.sha256 = "33".repeat(32);
-    result.chunks[0].audio_range.start_sample = 1;
+    result.chunks_mut().next().unwrap().audio_range.start_sample = 1;
     let transcription = common::proposal(&project, result);
     assert!(project
         .install_transcription(1, 1, transcription, project.settings().clone())

@@ -355,7 +355,7 @@ fn register_initial_chunks(
 ) -> Result<(), BackendError> {
     if run.status != TranscriptionStatus::Succeeded {
         let reason = run
-            .windows
+            .decode_spans
             .iter()
             .filter_map(|w| w.error.as_deref())
             .collect::<Vec<_>>()
@@ -367,12 +367,9 @@ fn register_initial_chunks(
     // Initial recognition owns finalization. Namespace IDs by recording and
     // result, so initial runs for different recordings/settings cannot retarget
     // an already finalized chunk.
-    for chunk in &mut run.chunks {
-        chunk.id = format!("chunk:{recording_id}:{}:{}", run.id, chunk.ordinal);
-    }
+    run.namespace_chunks(recording_id);
     audio.register_chunks(
-        &run.chunks
-            .iter()
+        &run.chunks()
             .map(|chunk| ChunkMetadata {
                 id: chunk.id.clone(),
                 recording_id: recording_id.into(),
@@ -423,9 +420,10 @@ mod tests {
             let mut run = crate::test_support::batch("recognized", &["one", "two"]);
             run.source = input.source;
             run.config = config.clone();
+            crate::test_support::synchronize_initial_transcriptions(&mut run);
             run.status = self.0;
             if self.0 != TranscriptionStatus::Succeeded {
-                run.windows[0].error = Some("synthetic recognition failure".into());
+                run.decode_spans[0].error = Some("synthetic recognition failure".into());
             }
             Ok((run, Box::new(UnusedEngine)))
         }
@@ -475,7 +473,7 @@ mod tests {
             );
             if status == TranscriptionStatus::Succeeded {
                 let result = result.unwrap();
-                for chunk in result.chunks {
+                for chunk in result.chunks() {
                     let metadata = audio.chunk(&chunk.id).unwrap();
                     assert_eq!(metadata.recording_id, recording);
                     assert_eq!(metadata.range, chunk.audio_range);
@@ -516,8 +514,10 @@ mod tests {
                     .unwrap(),
             );
         }
-        assert_ne!(produced[0].chunks[0].id, produced[1].chunks[0].id);
-        let original = audio.chunk(&produced[0].chunks[0].id).unwrap();
+        let first_id = &produced[0].chunks().next().unwrap().id;
+        let second_id = &produced[1].chunks().next().unwrap().id;
+        assert_ne!(first_id, second_id);
+        let original = audio.chunk(first_id).unwrap();
         let mut new = original.clone();
         new.id = "new".into();
         let mut changed = original.clone();
@@ -576,7 +576,7 @@ mod tests {
                 TranscriptionConfig::default(),
             )
             .unwrap();
-        let chunk = audio.chunk(&run.chunks[0].id).unwrap();
+        let chunk = audio.chunk(&run.chunks().next().unwrap().id).unwrap();
         write_audio(file.path(), 0.5, 300);
         let fetched = audio.read_chunk(&chunk.id).unwrap();
         assert_eq!(fetched.audio.samples, vec![0.5; 300]);
@@ -626,11 +626,8 @@ mod tests {
             assert_eq!(request.forced_tokens, vec![50_364, 1]);
             let mut result = crate::test_support::batch("broken", &["ignored prefix"]);
             result.source = request.source;
-            Ok(result.transcription_for(
-                &result.chunks[0],
-                &request.chunk_id,
-                Some(request.previous_id),
-            ))
+            let chunk = result.chunks().next().unwrap().clone();
+            Ok(result.transcription_for(&chunk, &request.chunk_id, Some(request.previous_id)))
         }
     }
 

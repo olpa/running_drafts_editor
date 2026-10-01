@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     document::{Document, Paragraph},
-    transcription::{InitialTranscriptionEvidence, Transcription},
+    transcription::{
+        Chunk, DecodeSpan, DecodeSpanItem, InitialTranscriptionEvidence, Transcription,
+    },
 };
 
 pub use crate::document::{
@@ -15,7 +17,7 @@ pub use crate::document::{
 };
 
 /// Experimental project format; older unreleased formats are not supported.
-pub const PROJECT_SCHEMA: &str = "rde-project/v1-experimental";
+pub const PROJECT_SCHEMA: &str = "rde-project/v2-experimental";
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
@@ -24,6 +26,9 @@ fn is_zero(value: &u64) -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub(crate) schema: String,
+    /// Materialized editing projection. Decode-span content is authoritative
+    /// for chunk order and paragraph breaks; persistence validates this cache.
+    /// Issue #67 will define the final mixed-content history representation.
     #[serde(flatten)]
     pub(crate) document: Document,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -32,8 +37,6 @@ pub struct Project {
     pub(crate) chunk_audio_mappings: Vec<ChunkAudioMapping>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) token_audio_mappings: Vec<TokenAudioMapping>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) transcriptions: Vec<Transcription>,
     #[serde(default)]
     pub(crate) initial_evidence: Option<InitialTranscriptionEvidence>,
     pub(crate) settings: TranscriptionSettings,
@@ -55,7 +58,10 @@ pub(crate) struct EditHistoryEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct EditableProjectState {
     pub(crate) settings: TranscriptionSettings,
+    /// Temporary history snapshot of the materialized Document projection.
     pub(crate) paragraphs: Vec<Paragraph>,
+    #[serde(default)]
+    pub(crate) current_transcriptions: Vec<(String, String)>,
     pub(crate) chunk_audio_mappings: Vec<ChunkAudioMapping>,
     pub(crate) token_audio_mappings: Vec<TokenAudioMapping>,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -82,6 +88,46 @@ impl Default for TranscriptionSettings {
 }
 
 impl Project {
+    pub fn decode_spans(&self) -> &[DecodeSpan] {
+        self.initial_evidence
+            .as_ref()
+            .map_or(&[], |evidence| evidence.decode_spans.as_slice())
+    }
+
+    pub fn chunks(&self) -> impl Iterator<Item = &Chunk> {
+        self.initial_evidence
+            .iter()
+            .flat_map(|evidence| &evidence.decode_spans)
+            .flat_map(|span| &span.content)
+            .filter_map(|item| match item {
+                DecodeSpanItem::Chunk(chunk) => Some(chunk),
+                DecodeSpanItem::ParagraphBreak(_) => None,
+            })
+    }
+
+    pub fn chunk(&self, chunk_id: &str) -> Option<&Chunk> {
+        self.chunks().find(|chunk| chunk.id == chunk_id)
+    }
+
+    pub(crate) fn chunk_mut(&mut self, chunk_id: &str) -> Option<&mut Chunk> {
+        self.initial_evidence
+            .as_mut()?
+            .decode_spans
+            .iter_mut()
+            .flat_map(|span| &mut span.content)
+            .filter_map(|item| match item {
+                DecodeSpanItem::Chunk(chunk) => Some(chunk),
+                DecodeSpanItem::ParagraphBreak(_) => None,
+            })
+            .find(|chunk| chunk.id == chunk_id)
+    }
+
+    pub fn transcriptions(&self) -> Vec<&Transcription> {
+        self.chunks()
+            .flat_map(|chunk| &chunk.transcriptions)
+            .collect()
+    }
+
     pub fn settings(&self) -> &TranscriptionSettings {
         &self.settings
     }
@@ -92,7 +138,7 @@ impl Project {
         language: String,
     ) -> Result<(), String> {
         if self
-            .transcriptions
+            .transcriptions()
             .iter()
             .any(|t| t.config.language != language)
         {
@@ -100,7 +146,10 @@ impl Project {
         }
         if !self.edit_history.is_empty()
             || !self.redo_history.is_empty()
-            || self.transcriptions.iter().any(|t| t.previous_id.is_some())
+            || self
+                .transcriptions()
+                .iter()
+                .any(|t| t.previous_id.is_some())
         {
             return Err("initial settings cannot replace settings after a user action".into());
         }

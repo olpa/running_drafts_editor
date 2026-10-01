@@ -303,7 +303,7 @@ mod tests {
 
     fn empty_chunks() -> Project {
         serde_json::from_value(json!({
-            "schema":"rde-project/v1-experimental", "id":"document:empty", "settings":{"model":null,"language":"auto"},
+            "schema":"rde-project/v2-experimental", "id":"document:empty", "settings":{"model":null,"language":"auto"},
             "paragraphs":[
                 {"id":"p1","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c1","transcription_id":"test","text":"","after_tokens":0},{"chunk_id":"c2","transcription_id":"test","text":"","after_tokens":0}]},
                 {"id":"p2","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c3","transcription_id":"test","text":"","after_tokens":0}]}

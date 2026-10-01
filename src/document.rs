@@ -1,7 +1,7 @@
 //! The editable document composition and its token-oriented visible projection.
 
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     path::{Path, PathBuf},
 };
 
@@ -10,9 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::chunking::SampleRange;
 
 use crate::project::{EditHistoryEntry, EditableProjectState};
-use crate::transcription::{
-    ChunkBoundaryReason, DecodedSegment, InitialTranscriptionResult, TranscriptionChunk,
-};
+use crate::transcription::{Chunk, DecodeSpanItem, InitialTranscriptionResult, Transcription};
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
@@ -286,7 +284,7 @@ impl crate::project::Project {
         recording_id: &str,
         path: Option<impl AsRef<Path>>,
     ) -> Self {
-        let mut document = Self::from_evidence(&run.id, &run.segments, &run.chunks);
+        let mut document = Self::from_evidence(run);
         let source_id = recording_id.to_owned();
         document.audio_sources.push(AudioSource {
             id: source_id.clone(),
@@ -295,8 +293,7 @@ impl crate::project::Project {
             canonical_sample_count: Some(run.source.decoded_sample_count),
         });
         document.chunk_audio_mappings = run
-            .chunks
-            .iter()
+            .chunks()
             .map(|chunk| ChunkAudioMapping {
                 chunk_id: chunk.id.clone(),
                 source_id: source_id.clone(),
@@ -315,8 +312,7 @@ impl crate::project::Project {
                         ..
                     } = &visible.id;
                     let range = run
-                        .segments
-                        .iter()
+                        .accepted_segments()
                         .find(|segment| &segment.id == segment_id)?
                         .tokens
                         .get(*token_index)?
@@ -332,53 +328,39 @@ impl crate::project::Project {
                 })
             })
             .collect();
-        document.transcriptions = run
-            .chunks
-            .iter()
-            .map(|c| run.transcription_for(c, &c.id, None))
-            .collect();
         document.initial_evidence = Some(run.evidence());
         document.settings.language = run.config.language.clone();
         document
     }
 
-    pub(crate) fn from_evidence(
-        run_id: &str,
-        segments: &[DecodedSegment],
-        chunks: &[TranscriptionChunk],
-    ) -> Self {
-        let segments = segments
-            .iter()
-            .map(|segment| (segment.id.as_str(), segment))
-            .collect::<HashMap<_, _>>();
+    pub(crate) fn from_evidence(run: &InitialTranscriptionResult) -> Self {
         let mut paragraphs = Vec::new();
         let mut paragraph_chunks = Vec::new();
 
-        for chunk in chunks {
-            paragraph_chunks.push(chunk);
-            if matches!(
-                chunk.boundary.reason,
-                ChunkBoundaryReason::LongPause | ChunkBoundaryReason::SourceEnd
-            ) {
-                paragraphs.push(Paragraph::from_chunks(run_id, &paragraph_chunks, &segments));
-                paragraph_chunks.clear();
+        for item in run.decode_spans.iter().flat_map(|span| span.content.iter()) {
+            match item {
+                DecodeSpanItem::Chunk(chunk) => paragraph_chunks.push(chunk),
+                DecodeSpanItem::ParagraphBreak(_) if !paragraph_chunks.is_empty() => {
+                    paragraphs.push(Paragraph::from_chunks(&paragraph_chunks));
+                    paragraph_chunks.clear();
+                }
+                DecodeSpanItem::ParagraphBreak(_) => {}
             }
         }
         if !paragraph_chunks.is_empty() {
-            paragraphs.push(Paragraph::from_chunks(run_id, &paragraph_chunks, &segments));
+            paragraphs.push(Paragraph::from_chunks(&paragraph_chunks));
         }
 
         Self {
             schema: crate::project::PROJECT_SCHEMA.into(),
             document: Document {
-                id: format!("document:{run_id}"),
+                id: format!("document:{}", run.id),
                 paragraphs,
                 next_structure_id: 0,
             },
             audio_sources: Vec::new(),
             chunk_audio_mappings: Vec::new(),
             token_audio_mappings: Vec::new(),
-            transcriptions: Vec::new(),
             initial_evidence: None,
             settings: crate::project::TranscriptionSettings::default(),
             resolved_issues: Vec::new(),
@@ -394,9 +376,9 @@ impl crate::project::Project {
             .flat_map(|p| p.chunk_boundaries())
             .filter_map(|c| {
                 let t = self
-                    .transcriptions
-                    .iter()
-                    .find(|t| t.id == c.transcription_id())?;
+                    .chunks()
+                    .find(|chunk| chunk.id == c.chunk_id())?
+                    .current_transcription()?;
                 let text = t
                     .segments
                     .iter()
@@ -427,8 +409,8 @@ impl crate::project::Project {
         &self,
         id: &TokenIdentity,
     ) -> Option<&crate::transcription::WhisperToken> {
-        self.transcriptions
-            .iter()
+        self.chunks()
+            .flat_map(|chunk| &chunk.transcriptions)
             .find(|t| t.id == id.transcription_id)?
             .segments
             .iter()
@@ -436,20 +418,18 @@ impl crate::project::Project {
             .tokens
             .get(id.token_index)
     }
-    pub fn transcriptions(&self) -> &[crate::transcription::Transcription] {
-        &self.transcriptions
-    }
     pub fn current_transcription(
         &self,
         paragraph: usize,
         chunk: usize,
     ) -> Option<&crate::transcription::Transcription> {
-        let id = self
+        let marker = self
             .paragraph(paragraph)?
             .chunk_boundaries
-            .get(chunk.checked_sub(1)?)?
-            .transcription_id();
-        self.transcriptions.iter().find(|t| t.id == id)
+            .get(chunk.checked_sub(1)?)?;
+        self.chunks()
+            .find(|chunk| chunk.id == marker.chunk_id)?
+            .current_transcription()
     }
     pub fn resolved_issues(&self) -> &[ResolvedIssue] {
         &self.resolved_issues
@@ -539,6 +519,10 @@ impl crate::project::Project {
         EditableProjectState {
             settings: self.settings.clone(),
             paragraphs: self.paragraphs.clone(),
+            current_transcriptions: self
+                .chunks()
+                .map(|chunk| (chunk.id.clone(), chunk.current_transcription_id.clone()))
+                .collect(),
             next_structure_id: self.next_structure_id,
             chunk_audio_mappings: self.chunk_audio_mappings.clone(),
             token_audio_mappings: self.token_audio_mappings.clone(),
@@ -551,10 +535,45 @@ impl crate::project::Project {
         self.settings = state.settings;
         self.document.paragraphs = state.paragraphs;
         self.document.next_structure_id = state.next_structure_id;
+        for (chunk_id, transcription_id) in state.current_transcriptions {
+            if let Some(chunk) = self.chunk_mut(&chunk_id) {
+                chunk.current_transcription_id = transcription_id;
+            }
+        }
         self.chunk_audio_mappings = state.chunk_audio_mappings;
         self.token_audio_mappings = state.token_audio_mappings;
         self.resolved_issues = state.resolved_issues;
         self.attention_marks = state.attention_marks;
+        self.sync_paragraph_breaks_from_document();
+    }
+
+    fn sync_paragraph_breaks_from_document(&mut self) {
+        let break_after = self
+            .document
+            .paragraphs
+            .iter()
+            .take(self.document.paragraphs.len().saturating_sub(1))
+            .filter_map(|paragraph| paragraph.chunk_boundaries.last())
+            .map(|marker| marker.chunk_id.clone())
+            .collect::<HashSet<_>>();
+        let Some(evidence) = &mut self.initial_evidence else {
+            return;
+        };
+        for span in &mut evidence.decode_spans {
+            let old = std::mem::take(&mut span.content);
+            for item in old {
+                let DecodeSpanItem::Chunk(chunk) = item else {
+                    continue;
+                };
+                let paragraph_break = break_after.contains(&chunk.id);
+                span.content.push(DecodeSpanItem::Chunk(chunk));
+                if paragraph_break {
+                    span.content.push(DecodeSpanItem::ParagraphBreak(
+                        crate::transcription::ParagraphBreak,
+                    ));
+                }
+            }
+        }
     }
 
     fn remember_editable_state(&mut self) {
@@ -647,7 +666,7 @@ impl crate::project::Project {
         mut transcription: crate::transcription::Transcription,
     ) -> Result<(), String> {
         if self
-            .transcriptions
+            .transcriptions()
             .iter()
             .any(|old| old.id == transcription.id)
         {
@@ -767,7 +786,12 @@ impl crate::project::Project {
                 }
             }
         }
-        self.transcriptions.push(transcription);
+        let transcription_id = transcription.id.clone();
+        let chunk = self
+            .chunk_mut(&chunk_id)
+            .ok_or("current chunk is missing from its decode span")?;
+        chunk.transcriptions.push(transcription);
+        chunk.current_transcription_id = transcription_id;
         Ok(())
     }
 
@@ -831,6 +855,7 @@ impl crate::project::Project {
         let outcome = next
             .document
             .split_paragraph(paragraph_number, marker_number)?;
+        next.sync_paragraph_breaks_from_document();
         let left = &next.document.paragraphs[paragraph_number - 1];
         let right = &next.document.paragraphs[paragraph_number];
         let destinations = [(&left.id, &left.tokens), (&right.id, &right.tokens)];
@@ -875,6 +900,7 @@ impl crate::project::Project {
             .clone();
         next.remember_editable_state();
         let outcome = next.document.merge_paragraphs(paragraph_number)?;
+        next.sync_paragraph_breaks_from_document();
         let merged = &next.document.paragraphs[index];
         let merged_id = merged.id.clone();
         for mapping in &mut next.token_audio_mappings {
@@ -897,15 +923,14 @@ pub struct Paragraph {
 }
 
 impl Paragraph {
-    fn from_chunks(
-        run_id: &str,
-        chunks: &[&TranscriptionChunk],
-        segments: &HashMap<&str, &DecodedSegment>,
-    ) -> Self {
+    fn from_chunks(chunks: &[&Chunk]) -> Self {
         let mut tokens = Vec::new();
         let mut chunk_boundaries = Vec::with_capacity(chunks.len());
         for chunk in chunks {
-            match transcription_tokens(run_id, chunk, segments) {
+            let transcription = chunk
+                .current_transcription()
+                .expect("a finalized chunk has a current transcription");
+            match transcription_tokens(transcription) {
                 Ok(chunk_tokens) => tokens.extend(chunk_tokens),
                 Err(_) => {
                     // Keep current text without inventing tokens.
@@ -914,15 +939,15 @@ impl Paragraph {
             chunk_boundaries.push(ChunkBoundaryMarker {
                 chunk_id: chunk.id.clone(),
                 after_tokens: tokens.len(),
-                transcription_id: format!("{run_id}:{}", chunk.id),
-                text: chunk.text.clone(),
+                transcription_id: transcription.id.clone(),
+                text: transcription.text.clone(),
             });
         }
         let first_chunk = chunks
             .first()
             .expect("paragraphs are built from at least one chunk");
         Self {
-            id: format!("paragraph:{run_id}:{}", first_chunk.id),
+            id: format!("paragraph:{}", first_chunk.id),
             revision: 1,
             tokens,
             chunk_boundaries,
@@ -953,17 +978,10 @@ impl Paragraph {
     }
 }
 
-fn transcription_tokens(
-    run_id: &str,
-    chunk: &TranscriptionChunk,
-    segments: &HashMap<&str, &DecodedSegment>,
-) -> Result<Vec<TextToken>, String> {
+fn transcription_tokens(transcription: &Transcription) -> Result<Vec<TextToken>, String> {
     let mut result = Vec::new();
     let mut text = String::new();
-    for segment_id in &chunk.segment_ids {
-        let segment = segments
-            .get(segment_id.as_str())
-            .ok_or_else(|| format!("accepted segment '{segment_id}' is unavailable"))?;
+    for segment in &transcription.segments {
         for (token_index, token) in segment.tokens.iter().enumerate() {
             if token.is_special {
                 continue;
@@ -971,7 +989,7 @@ fn transcription_tokens(
             text.push_str(&token.text);
             result.push(TextToken {
                 id: TokenIdentity {
-                    transcription_id: format!("{run_id}:{}", chunk.id),
+                    transcription_id: transcription.id.clone(),
                     segment_id: segment.id.clone(),
                     token_index,
                 },
@@ -980,7 +998,7 @@ fn transcription_tokens(
             });
         }
     }
-    if text != chunk.text {
+    if text != transcription.text {
         return Err("normal transcription tokens do not reproduce the chunk text".into());
     }
     Ok(result)
