@@ -1106,7 +1106,7 @@ mod tests {
             result.config.language = request.language;
             result.chunks_mut().next().unwrap().audio_range = request.chunk_range;
             let segment = &mut result.decode_spans[0].hypotheses[0];
-            segment.audio_range = request.chunk_range;
+            segment.audio_range = Some(request.chunk_range);
             segment.tokens[0].audio_range = Some(request.chunk_range);
             if !request.forced_tokens.is_empty() {
                 segment.tokens = request
@@ -1121,6 +1121,11 @@ mod tests {
                         },
                         probability: 0.1,
                         is_special: *id == 0,
+                        raw_timestamps: Some(crate::transcription::DecoderTimestamps {
+                            start: 0,
+                            end: 0,
+                            samples_per_unit: 1,
+                        }),
                         audio_range: Some(request.chunk_range),
                         alternatives: Vec::new(),
                     })
@@ -1130,13 +1135,20 @@ mod tests {
                     text: " suffix".into(),
                     probability: 0.1,
                     is_special: false,
+                    raw_timestamps: Some(crate::transcription::DecoderTimestamps {
+                        start: 0,
+                        end: 0,
+                        samples_per_unit: 1,
+                    }),
                     audio_range: Some(request.chunk_range),
                     alternatives: Vec::new(),
                 });
             }
-            result.decode_spans[0].prompt_token_ids = request.forced_tokens;
             let chunk = result.chunks().next().unwrap();
-            Ok(result.transcription_for(chunk, &request.chunk_id, Some(request.previous_id)))
+            let mut transcription =
+                result.transcription_for(chunk, &request.chunk_id, Some(request.previous_id));
+            transcription.forced_token_ids = request.forced_tokens;
+            Ok(transcription)
         }
     }
     #[derive(Default)]
@@ -1401,6 +1413,12 @@ mod tests {
                 .forced_token_ids,
             vec![0, 90]
         );
+        assert!(state
+            .project
+            .current_transcription(1, 1)
+            .unwrap()
+            .prompt_token_ids
+            .is_empty());
         assert!(state.project.attention_marks().is_empty());
         execute(&mut state, "undo");
         assert_eq!(state.project.attention_marks(), &[marked]);
