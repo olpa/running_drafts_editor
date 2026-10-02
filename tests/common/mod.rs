@@ -5,8 +5,8 @@ use running_drafts_editor::{
     project::Project,
     transcription::{
         AdvanceReason, Chunk, ChunkBoundary, ChunkBoundaryReason, DecodeSpan, DecodeSpanItem,
-        DecodedSegment, InitialTranscriptionResult, TranscriberIdentity, Transcription,
-        TranscriptionConfig, TranscriptionStatus, WhisperToken,
+        DecodedSegment, DecoderTimestamps, EmptyPromptReason, InitialTranscriptionResult,
+        TranscriberIdentity, Transcription, TranscriptionConfig, TranscriptionStatus, WhisperToken,
     },
 };
 
@@ -16,10 +16,15 @@ pub fn batch(id: &str, texts: &[&str]) -> InitialTranscriptionResult {
         .enumerate()
         .map(|(index, text)| DecodedSegment {
             id: format!("s{index}"),
-            audio_range: SampleRange {
+            raw_timestamps: Some(DecoderTimestamps {
+                start: index as i64 * 100,
+                end: (index as i64 + 1) * 100,
+                samples_per_unit: 1,
+            }),
+            audio_range: Some(SampleRange {
                 start_sample: index as u64 * 100,
                 end_sample: (index as u64 + 1) * 100,
-            },
+            }),
             text: (*text).into(),
             no_speech_probability: 0.1,
             tokens: vec![WhisperToken {
@@ -27,6 +32,11 @@ pub fn batch(id: &str, texts: &[&str]) -> InitialTranscriptionResult {
                 text: (*text).into(),
                 probability: 0.1,
                 is_special: false,
+                raw_timestamps: Some(DecoderTimestamps {
+                    start: index as i64 * 100,
+                    end: (index as i64 + 1) * 100,
+                    samples_per_unit: 1,
+                }),
                 audio_range: Some(SampleRange {
                     start_sample: index as u64 * 100,
                     end_sample: (index as u64 + 1) * 100,
@@ -65,7 +75,7 @@ pub fn batch(id: &str, texts: &[&str]) -> InitialTranscriptionResult {
                 id: chunk_id.clone(),
                 ordinal: index as u32 + 1,
                 segment_ids: vec![segment.id.clone()],
-                audio_range: segment.audio_range,
+                audio_range: segment.audio_range.unwrap(),
                 text: segment.text.clone(),
                 token_count: 1,
                 boundary: boundary.clone(),
@@ -77,9 +87,10 @@ pub fn batch(id: &str, texts: &[&str]) -> InitialTranscriptionResult {
                     source: source.clone(),
                     transcriber: transcriber.clone(),
                     config: config.clone(),
-                    audio_range: segment.audio_range,
+                    audio_range: segment.audio_range.unwrap(),
                     boundary,
                     segments: vec![segment.clone()],
+                    prompt_token_ids: Vec::new(),
                     forced_token_ids: Vec::new(),
                 }],
                 current_transcription_id: transcription_id,
@@ -101,7 +112,11 @@ pub fn batch(id: &str, texts: &[&str]) -> InitialTranscriptionResult {
             },
             continuation_boundary: texts.len() as u64 * 100,
             prompt_token_ids: Vec::new(),
+            prompt_limit: 223,
+            prompt_omitted_token_count: 0,
+            empty_prompt_reason: Some(EmptyPromptReason::FirstDecode),
             advance_reason: AdvanceReason::SourceEnd,
+            continuation_pause_samples: None,
             hypotheses: segments.clone(),
             accepted_segment_ids: segments.iter().map(|s| s.id.clone()).collect(),
             content: chunks.into_iter().map(DecodeSpanItem::Chunk).collect(),

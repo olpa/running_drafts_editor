@@ -13,8 +13,8 @@ use running_drafts_editor::{
     session::{run_session, AudioPlayer, PlaybackError, SessionContext},
     transcription::{
         transcribe_initial, AdvanceReason, ChunkBoundaryReason, ChunkConstructionConfig,
-        DecodeSpanDecoder, DecodeSpanItem, DecodeSpanSegment, TranscriberIdentity,
-        TranscriptionConfig, TranscriptionStatus, WhisperToken,
+        DecodeSpanDecoder, DecodeSpanItem, DecodeSpanSegment, DecoderTimestamps,
+        TranscriberIdentity, TranscriptionConfig, TranscriptionStatus, WhisperToken,
     },
 };
 
@@ -45,6 +45,7 @@ fn open_audio(
 struct FakeDecoder {
     calls: Vec<(usize, Vec<i32>)>,
     results: VecDeque<Result<Vec<DecodeSpanSegment>, String>>,
+    prompt_capacity: Option<usize>,
 }
 
 impl DecodeSpanDecoder for FakeDecoder {
@@ -54,6 +55,10 @@ impl DecodeSpanDecoder for FakeDecoder {
             implementation: "test".into(),
             model_sha256: "00".repeat(32),
         }
+    }
+
+    fn prompt_capacity(&self) -> usize {
+        self.prompt_capacity.unwrap_or(223)
     }
 
     fn decode(
@@ -70,12 +75,25 @@ fn segment(start: u64, end: u64, text: &str) -> DecodeSpanSegment {
     segment_with_tokens(start, end, text, &[])
 }
 
+fn segment_with_raw_timestamps(
+    raw_timestamps: Option<DecoderTimestamps>,
+    text: &str,
+) -> DecodeSpanSegment {
+    DecodeSpanSegment {
+        raw_timestamps,
+        text: text.into(),
+        no_speech_probability: 0.1,
+        tokens: Vec::new(),
+    }
+}
+
 fn segment_with_tokens(start: u64, end: u64, text: &str, token_ids: &[i32]) -> DecodeSpanSegment {
     DecodeSpanSegment {
-        audio_range: SampleRange {
-            start_sample: start,
-            end_sample: end,
-        },
+        raw_timestamps: Some(DecoderTimestamps {
+            start: i64::try_from(start).unwrap(),
+            end: i64::try_from(end).unwrap(),
+            samples_per_unit: 1,
+        }),
         text: text.into(),
         no_speech_probability: 0.1,
         tokens: token_ids
@@ -90,6 +108,11 @@ fn segment_with_tokens(start: u64, end: u64, text: &str, token_ids: &[i32]) -> D
                 },
                 probability: 0.9,
                 is_special: false,
+                raw_timestamps: Some(DecoderTimestamps {
+                    start: 0,
+                    end: 0,
+                    samples_per_unit: 1,
+                }),
                 audio_range: None,
                 alternatives: Vec::new(),
             })
@@ -104,10 +127,11 @@ fn segment_with_token_kinds(
     tokens: &[(i32, bool)],
 ) -> DecodeSpanSegment {
     DecodeSpanSegment {
-        audio_range: SampleRange {
-            start_sample: start,
-            end_sample: end,
-        },
+        raw_timestamps: Some(DecoderTimestamps {
+            start: i64::try_from(start).unwrap(),
+            end: i64::try_from(end).unwrap(),
+            samples_per_unit: 1,
+        }),
         text: text.into(),
         no_speech_probability: 0.1,
         tokens: tokens
@@ -117,6 +141,11 @@ fn segment_with_token_kinds(
                 text: format!("token-{token_id}"),
                 probability: 0.9,
                 is_special: *is_special,
+                raw_timestamps: Some(DecoderTimestamps {
+                    start: 0,
+                    end: 0,
+                    samples_per_unit: 1,
+                }),
                 audio_range: None,
                 alternatives: Vec::new(),
             })
@@ -166,6 +195,7 @@ fn small_config() -> TranscriptionConfig {
     TranscriptionConfig {
         decode_span_samples: 30,
         continuation_search_samples: 3,
+        continuation_strong_pause_ms: 800,
         language: "de".into(),
         threads: 1,
         top_candidates: 2,
@@ -188,7 +218,7 @@ fn continuation_boundaries_drive_overlapping_decode_spans_and_exact_prompts() {
                 ),
             ]),
             Ok(vec![
-                segment(0, 4, "old-B"),
+                segment(0, 3, "old-B"),
                 segment(3, 20, "C"),
                 segment_with_token_kinds(
                     20,
@@ -203,7 +233,7 @@ fn continuation_boundaries_drive_overlapping_decode_spans_and_exact_prompts() {
                     ],
                 ),
             ]),
-            Ok(vec![segment(0, 3, "old-D"), segment(3, 24, "E")]),
+            Ok(vec![segment(0, 3, "old-D"), segment(3, 14, "E")]),
         ]),
         ..FakeDecoder::default()
     };
@@ -213,7 +243,11 @@ fn continuation_boundaries_drive_overlapping_decode_spans_and_exact_prompts() {
     assert_eq!(run.status, TranscriptionStatus::Succeeded);
     assert_eq!(
         decoder.calls,
-        vec![(30, vec![]), (30, vec![30, 31]), (14, vec![40, 41, 42])]
+        vec![
+            (30, vec![]),
+            (30, vec![30, 31]),
+            (14, vec![30, 31, 40, 41, 42])
+        ]
     );
     assert_eq!(
         run.decode_spans
@@ -248,8 +282,8 @@ fn continuation_boundaries_drive_overlapping_decode_spans_and_exact_prompts() {
             .map(|span| span.advance_reason)
             .collect::<Vec<_>>(),
         vec![
-            AdvanceReason::WhisperTimestamp,
-            AdvanceReason::WhisperTimestamp,
+            AdvanceReason::LatestTimestamp,
+            AdvanceReason::LatestTimestamp,
             AdvanceReason::SourceEnd,
         ]
     );
@@ -261,7 +295,10 @@ fn continuation_boundaries_drive_overlapping_decode_spans_and_exact_prompts() {
     );
     assert_eq!(run.decode_spans[0].prompt_token_ids, Vec::<i32>::new());
     assert_eq!(run.decode_spans[1].prompt_token_ids, vec![30, 31]);
-    assert_eq!(run.decode_spans[2].prompt_token_ids, vec![40, 41, 42]);
+    assert_eq!(
+        run.decode_spans[2].prompt_token_ids,
+        vec![30, 31, 40, 41, 42]
+    );
     let tail = run
         .accepted_segments()
         .find(|segment| segment.text == "tail")
@@ -342,7 +379,7 @@ fn latest_timestamp_in_search_area_wins_and_trailing_silence_uses_last_segment_e
     );
     assert_eq!(
         run.decode_spans[0].advance_reason,
-        AdvanceReason::WhisperTimestamp
+        AdvanceReason::EarlyTimestampFallback
     );
 
     let mut early_only = FakeDecoder {
@@ -354,8 +391,181 @@ fn latest_timestamp_in_search_area_wins_and_trailing_silence_uses_last_segment_e
     assert_eq!(run.decode_spans[0].continuation_boundary, 2);
     assert_eq!(
         run.decode_spans[0].advance_reason,
-        AdvanceReason::WhisperTimestamp
+        AdvanceReason::EarlyTimestampFallback
     );
+}
+
+#[test]
+fn continuation_prefers_the_latest_strong_pause_over_later_ordinary_timestamps() {
+    let mut decoder = FakeDecoder {
+        results: VecDeque::from([
+            Ok(vec![
+                segment(0, 10_000, "a"),
+                segment(30_000, 40_000, "b"),
+                segment_with_tokens(40_000, 50_000, "c", &[7]),
+                segment(65_000, 70_000, "d"),
+                segment(70_000, 99_000, "later"),
+            ]),
+            Ok(Vec::new()),
+            Ok(Vec::new()),
+        ]),
+        ..FakeDecoder::default()
+    };
+    let config = TranscriptionConfig {
+        decode_span_samples: 100_000,
+        continuation_search_samples: 96_000,
+        continuation_strong_pause_ms: 800,
+        ..small_config()
+    };
+
+    let run = transcribe_initial(source(180_000), &[0.0; 180_000], config, &mut decoder).unwrap();
+
+    assert_eq!(run.decode_spans[0].continuation_boundary, 50_000);
+    assert_eq!(
+        run.decode_spans[0].advance_reason,
+        AdvanceReason::StrongPause
+    );
+    assert_eq!(run.decode_spans[0].continuation_pause_samples, Some(15_000));
+    assert_eq!(run.decode_spans[0].accepted_segment_ids.len(), 3);
+    assert_eq!(decoder.calls[1].1, vec![7]);
+}
+
+#[test]
+fn timestamp_defects_stop_the_prefix_but_preserve_all_raw_evidence() {
+    let later = DecoderTimestamps {
+        start: 20,
+        end: 25,
+        samples_per_unit: 1,
+    };
+    let defects = [
+        (None, None),
+        (
+            Some(DecoderTimestamps {
+                start: 20,
+                end: 15,
+                samples_per_unit: 1,
+            }),
+            None,
+        ),
+        (
+            Some(DecoderTimestamps {
+                start: 10,
+                end: 10,
+                samples_per_unit: 1,
+            }),
+            None,
+        ),
+        (
+            Some(DecoderTimestamps {
+                start: 5,
+                end: 12,
+                samples_per_unit: 1,
+            }),
+            Some(SampleRange {
+                start_sample: 5,
+                end_sample: 12,
+            }),
+        ),
+        (
+            Some(DecoderTimestamps {
+                start: 20,
+                end: 31,
+                samples_per_unit: 1,
+            }),
+            None,
+        ),
+    ];
+    for (defect, expected_range) in defects {
+        let mut decoder = FakeDecoder {
+            results: VecDeque::from([Ok(vec![
+                segment(0, 10, "accepted"),
+                segment_with_raw_timestamps(defect, "broken"),
+                segment_with_raw_timestamps(Some(later), "must-not-resume"),
+            ])]),
+            ..FakeDecoder::default()
+        };
+
+        let run = transcribe_initial(source(30), &[0.0; 30], small_config(), &mut decoder).unwrap();
+
+        assert_eq!(run.status, TranscriptionStatus::Partial);
+        assert_eq!(run.decode_spans[0].accepted_segment_ids.len(), 1);
+        assert_eq!(run.decode_spans[0].hypotheses.len(), 3);
+        assert_eq!(run.decode_spans[0].hypotheses[1].raw_timestamps, defect);
+        assert_eq!(
+            run.decode_spans[0].hypotheses[1].audio_range,
+            expected_range
+        );
+        assert_eq!(
+            run.decode_spans[0].hypotheses[2].audio_range,
+            Some(SampleRange {
+                start_sample: 20,
+                end_sample: 25,
+            })
+        );
+    }
+}
+
+#[test]
+fn rolling_prompt_is_truncated_oldest_first_and_resets_after_failure() {
+    let mut decoder = FakeDecoder {
+        results: VecDeque::from([
+            Ok(vec![segment_with_tokens(0, 27, "a", &[1, 2])]),
+            Ok(vec![segment_with_tokens(0, 29, "b", &[3, 4])]),
+            Err("gap".into()),
+            Ok(vec![segment_with_tokens(0, 14, "c", &[5])]),
+        ]),
+        prompt_capacity: Some(3),
+        ..FakeDecoder::default()
+    };
+
+    let run = transcribe_initial(source(100), &[0.0; 100], small_config(), &mut decoder).unwrap();
+
+    assert_eq!(
+        decoder.calls,
+        vec![
+            (30, vec![]),
+            (30, vec![1, 2]),
+            (30, vec![2, 3, 4]),
+            (14, vec![]),
+        ]
+    );
+    assert_eq!(run.decode_spans[2].prompt_omitted_token_count, 1);
+    assert_eq!(
+        run.decode_spans[3].empty_prompt_reason,
+        Some(running_drafts_editor::transcription::EmptyPromptReason::ResetAfterDecodeFailure)
+    );
+    assert_eq!(run.status, TranscriptionStatus::Partial);
+    assert!(run.chunks().all(|chunk| chunk.transcriptions.iter().all(|transcription| {
+        transcription.forced_token_ids.is_empty()
+            && transcription.prompt_token_ids
+                == run.decode_spans
+                    .iter()
+                    .find(|span| span.content.iter().any(|item| matches!(item, DecodeSpanItem::Chunk(candidate) if candidate.id == chunk.id)))
+                    .unwrap()
+                    .prompt_token_ids
+    })));
+}
+
+#[test]
+fn complete_fallback_without_text_resets_prompt_and_empty_text_tokens_remain_evidence() {
+    let mut decoder = FakeDecoder {
+        results: VecDeque::from([
+            Ok(vec![segment_with_tokens(0, 27, "", &[9])]),
+            Ok(Vec::new()),
+            Ok(Vec::new()),
+        ]),
+        ..FakeDecoder::default()
+    };
+
+    let run = transcribe_initial(source(80), &[0.0; 80], small_config(), &mut decoder).unwrap();
+
+    assert_eq!(decoder.calls[1].1, vec![9]);
+    assert!(decoder.calls[2].1.is_empty());
+    assert_eq!(
+        run.decode_spans[2].empty_prompt_reason,
+        Some(running_drafts_editor::transcription::EmptyPromptReason::ResetAfterUnknownGap)
+    );
+    assert_eq!(run.chunks().next().unwrap().token_count, 1);
 }
 
 #[test]
@@ -386,7 +596,7 @@ fn decode_failures_still_advance_by_complete_bounded_decode_spans() {
         ]
     );
     assert!(run.decode_spans.iter().all(|span| {
-        span.advance_reason == AdvanceReason::FixedDecodeFailure && span.error.is_some()
+        span.advance_reason == AdvanceReason::DecodeFailure && span.error.is_some()
     }));
 }
 
@@ -405,7 +615,7 @@ fn silence_only_span_advances_without_a_chunk_and_later_speech_is_finalized() {
     assert_eq!(run.decode_spans.len(), 2);
     assert_eq!(
         run.decode_spans[0].advance_reason,
-        AdvanceReason::FixedNoTimestamp
+        AdvanceReason::NoUsableTimestamp
     );
     assert!(run.decode_spans[0].content.is_empty());
     assert_eq!(run.decode_spans[1].submitted.start_sample, 30);

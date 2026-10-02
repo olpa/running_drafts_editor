@@ -17,7 +17,7 @@ pub use crate::document::{
 };
 
 /// Experimental project format; older unreleased formats are not supported.
-pub const PROJECT_SCHEMA: &str = "rde-project/v2-experimental";
+pub const PROJECT_SCHEMA: &str = "rde-project/v3-experimental";
 
 fn is_zero(value: &u64) -> bool {
     *value == 0

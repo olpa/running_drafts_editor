@@ -59,7 +59,7 @@ _Avoid_: Chunk address, chunk ordinal, audio range.
 
 **has_tokens**:
 A chunk property that is true exactly when its current transcription exposes at
-least one addressable token. Special tokens do not count, while an addressable
+least one addressable token. Control tokens do not count, while an addressable
 token with empty token text does.
 
 **Paragraph**:
@@ -85,10 +85,28 @@ retranscription, transcription iteration.
 The process that turns a recording into finalized chunks, assigns their chunk
 IDs, and produces each chunk's first transcription.
 
+**Whisper segment**:
+A timestamp-delimited group that the Whisper transcription API constructs from
+the decoder's token sequence. Timestamp tokens delimit the group; it is neither
+a sentence nor a finalized chunk.
+_Avoid_: Chunk, sentence.
+
 **Transcription circumstances**:
-The audio, model, software version, language, settings, text context, and edit
-instructions used to produce a transcription. Hardware and runtime details are
-optional diagnostics.
+The audio, model, software version, language, settings, transcription prompt,
+and edit instructions used to produce a transcription. Hardware and runtime
+details are optional diagnostics.
+
+**Transcription prompt**:
+The ordered sequence of compatible text-token IDs supplied before decoding to
+condition a transcription. It contains zero or more transcription prompt
+tokens.
+_Avoid_: Text context, recognition prompt.
+
+**Forced prefix**:
+Text-token IDs that the decoder must emit to apply a user edit while producing
+another transcription. It is distinct from a transcription prompt, which only
+conditions the decoder.
+_Avoid_: Transcription prompt, prompt.
 
 **Current transcription**:
 The completed transcription selected as a chunk's current state.
@@ -125,12 +143,25 @@ _Avoid_: Word, pseudo-token as synonyms for token.
 
 **Text token**:
 A token whose token text contributes to a transcription's text. Text tokens may
-appear in a document and receive user-facing addresses.
+appear in a document and receive user-facing addresses; a text token may have
+empty token text.
 
-**Special token**:
-A token carrying transcription control or metadata rather than text, such as a
-timestamp. It remains transcription data and does not contribute to current
-text.
+**Control token**:
+A token that controls decoding or carries decoder metadata rather than
+contributing to transcription text. Language, task, previous-text, start, end,
+and timestamp tokens are control tokens.
+_Avoid_: Special token except when referring to a decoder API.
+
+**Timestamp token**:
+A control token representing a decoder-relative audio position. Whisper uses
+timestamp tokens to delimit Whisper segments.
+_Avoid_: Time token, time stamp token.
+
+**Transcription prompt token**:
+One occurrence of a compatible text-token ID in a transcription prompt. It does
+not contribute to the resulting transcription unless the decoder emits it
+again.
+_Avoid_: Recognition prompt token.
 
 **Token ID**:
 The identifier of a token in Whisper's vocabulary. The same ID may occur more

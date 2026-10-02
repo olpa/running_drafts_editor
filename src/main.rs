@@ -93,8 +93,11 @@ struct TranscriptionArgs {
     #[arg(long, default_value_t = 480_000)]
     decode_span_samples: u64,
     /// Area near a decode span's end searched for a continuation boundary.
-    #[arg(long, default_value_t = 48_000)]
+    #[arg(long, default_value_t = 96_000)]
     continuation_search_samples: u64,
+    /// Pause after a continuation candidate that makes it preferred.
+    #[arg(long, default_value_t = 800)]
+    continuation_strong_pause_ms: u64,
     #[arg(long, default_value_t = 20)]
     top_candidates: usize,
     /// Minimum normal text tokens before a strong or usable pause may split a chunk.
@@ -277,6 +280,7 @@ fn transcribe_audio(
     let config = TranscriptionConfig {
         decode_span_samples: args.decode_span_samples,
         continuation_search_samples: args.continuation_search_samples,
+        continuation_strong_pause_ms: args.continuation_strong_pause_ms,
         language: args.language.clone(),
         threads: args.threads,
         top_candidates: args.top_candidates,
@@ -315,7 +319,8 @@ mod tests {
         assert_eq!(args.transcription.language, "auto");
         assert_eq!(args.transcription.threads, 4);
         assert_eq!(args.transcription.decode_span_samples, 480_000);
-        assert_eq!(args.transcription.continuation_search_samples, 48_000);
+        assert_eq!(args.transcription.continuation_search_samples, 96_000);
+        assert_eq!(args.transcription.continuation_strong_pause_ms, 800);
         assert_eq!(args.transcription.top_candidates, 20);
         assert_eq!(args.transcription.chunk_minimum_tokens, 8);
         assert_eq!(args.transcription.chunk_target_tokens, 32);

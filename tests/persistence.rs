@@ -2,7 +2,9 @@ mod common;
 use running_drafts_editor::{
     persistence::{export_text, load_project, save_project},
     project::{Project, TranscriptionSettings},
-    transcription::{ChunkBoundaryReason, DecodeSpanItem, ParagraphBreak},
+    transcription::{
+        ChunkBoundaryReason, DecodeSpanItem, DecoderTimestamps, ParagraphBreak, TranscriptionStatus,
+    },
 };
 use std::fs;
 
@@ -355,4 +357,40 @@ fn failed_initial_decoding_keeps_its_circumstances_even_without_finalized_chunks
         100
     );
     assert_eq!(value["initial_evidence"]["status"], "failed");
+}
+
+#[test]
+fn unlocated_raw_timestamp_evidence_survives_save_and_reopen() {
+    let mut result = common::batch("partial-initial", &["unlocated"]);
+    let span = &mut result.decode_spans[0];
+    span.content.clear();
+    span.accepted_segment_ids.clear();
+    span.hypotheses[0].raw_timestamps = Some(DecoderTimestamps {
+        start: 9,
+        end: 4,
+        samples_per_unit: 160,
+    });
+    span.hypotheses[0].audio_range = None;
+    span.hypotheses[0].tokens[0].raw_timestamps = Some(DecoderTimestamps {
+        start: -1,
+        end: -1,
+        samples_per_unit: 160,
+    });
+    span.hypotheses[0].tokens[0].audio_range = None;
+    result.status = TranscriptionStatus::Partial;
+    let project = Project::from_initial_transcription(&result);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("partial.rde.json");
+
+    save_project(&path, &project).unwrap();
+    let reopened = load_project(&path).unwrap();
+
+    assert_eq!(reopened, project);
+    let evidence = &reopened.decode_spans()[0].hypotheses[0];
+    assert_eq!(
+        evidence.raw_timestamps,
+        result.decode_spans[0].hypotheses[0].raw_timestamps
+    );
+    assert_eq!(evidence.audio_range, None);
+    assert_eq!(evidence.tokens[0].audio_range, None);
 }

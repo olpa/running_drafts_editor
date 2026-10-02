@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::project::{Project, PROJECT_SCHEMA};
-use crate::transcription::{ChunkBoundaryReason, DecodeSpanItem};
+use crate::transcription::{canonical_range, ChunkBoundaryReason, DecodeSpanItem};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectIoError {
@@ -346,9 +346,16 @@ fn validate_decode_spans(project: &Project) -> Result<(Vec<String>, Vec<String>)
             .collect::<HashSet<_>>();
         if hypothesis_ids.len() != span.hypotheses.len()
             || span.hypotheses.iter().any(|segment| {
-                segment.audio_range.is_empty()
-                    || segment.audio_range.start_sample < span.submitted.start_sample
-                    || segment.audio_range.end_sample > span.submitted.end_sample
+                segment.audio_range
+                    != segment
+                        .raw_timestamps
+                        .and_then(|timestamps| canonical_range(timestamps, span.submitted))
+                    || segment.tokens.iter().any(|token| {
+                        token.audio_range
+                            != token
+                                .raw_timestamps
+                                .and_then(|timestamps| canonical_range(timestamps, span.submitted))
+                    })
             })
             || span
                 .accepted_segment_ids
@@ -362,11 +369,20 @@ fn validate_decode_spans(project: &Project) -> Result<(Vec<String>, Vec<String>)
             .iter()
             .map(String::as_str)
             .collect::<HashSet<_>>();
-        if accepted_ids.len() != span.accepted_segment_ids.len()
+        let accepted_len = span.accepted_segment_ids.len();
+        if accepted_ids.len() != accepted_len
+            || span
+                .hypotheses
+                .iter()
+                .take(accepted_len)
+                .map(|segment| segment.id.as_str())
+                .ne(span.accepted_segment_ids.iter().map(String::as_str))
             || span.hypotheses.iter().any(|segment| {
                 accepted_ids.contains(segment.id.as_str())
-                    && (segment.audio_range.start_sample < span.submitted.start_sample
-                        || segment.audio_range.end_sample > span.continuation_boundary)
+                    && !segment.audio_range.is_some_and(|range| {
+                        range.start_sample >= span.submitted.start_sample
+                            && range.end_sample <= span.continuation_boundary
+                    })
             })
         {
             return Err(invalid("invalid accepted segment in decode span"));
@@ -394,6 +410,9 @@ fn validate_decode_spans(project: &Project) -> Result<(Vec<String>, Vec<String>)
                             transcription.chunk_id != chunk.id
                                 || transcription.audio_range != chunk.audio_range
                                 || transcription.boundary != chunk.boundary
+                                || (transcription.previous_id.is_none()
+                                    && (transcription.prompt_token_ids != span.prompt_token_ids
+                                        || !transcription.forced_token_ids.is_empty()))
                         })
                     {
                         return Err(invalid("invalid finalized chunk in decode-span content"));

@@ -19,6 +19,7 @@ const SAMPLES_PER_CENTISECOND: u64 = 160;
 pub struct TranscriptionConfig {
     pub decode_span_samples: u64,
     pub continuation_search_samples: u64,
+    pub continuation_strong_pause_ms: u64,
     pub language: String,
     pub threads: usize,
     pub top_candidates: usize,
@@ -29,7 +30,8 @@ impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
             decode_span_samples: 480_000,
-            continuation_search_samples: 48_000,
+            continuation_search_samples: 96_000,
+            continuation_strong_pause_ms: 800,
             language: "auto".into(),
             threads: 4,
             top_candidates: 20,
@@ -81,10 +83,19 @@ pub enum TranscriptionStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdvanceReason {
-    WhisperTimestamp,
+    StrongPause,
+    LatestTimestamp,
+    EarlyTimestampFallback,
     SourceEnd,
-    FixedNoTimestamp,
-    FixedDecodeFailure,
+    NoUsableTimestamp,
+    DecodeFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecoderTimestamps {
+    pub start: i64,
+    pub end: i64,
+    pub samples_per_unit: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,6 +111,8 @@ pub struct WhisperToken {
     pub text: String,
     pub probability: f32,
     pub is_special: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_timestamps: Option<DecoderTimestamps>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_range: Option<SampleRange>,
     pub alternatives: Vec<TokenAlternative>,
@@ -125,7 +138,10 @@ impl TokenAlternative {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DecodedSegment {
     pub id: String,
-    pub audio_range: SampleRange,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_timestamps: Option<DecoderTimestamps>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_range: Option<SampleRange>,
     pub text: String,
     pub no_speech_probability: f32,
     pub tokens: Vec<WhisperToken>,
@@ -186,12 +202,27 @@ pub struct DecodeSpan {
     pub submitted: SampleRange,
     pub continuation_boundary: u64,
     pub prompt_token_ids: Vec<i32>,
+    pub prompt_limit: usize,
+    pub prompt_omitted_token_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_prompt_reason: Option<EmptyPromptReason>,
     pub advance_reason: AdvanceReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuation_pause_samples: Option<u64>,
     pub hypotheses: Vec<DecodedSegment>,
     pub accepted_segment_ids: Vec<String>,
     pub content: Vec<DecodeSpanItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmptyPromptReason {
+    FirstDecode,
+    NoAcceptedText,
+    ResetAfterDecodeFailure,
+    ResetAfterUnknownGap,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -230,6 +261,7 @@ pub struct Transcription {
     pub audio_range: SampleRange,
     pub boundary: ChunkBoundary,
     pub segments: Vec<DecodedSegment>,
+    pub prompt_token_ids: Vec<i32>,
     pub forced_token_ids: Vec<i32>,
 }
 
@@ -321,7 +353,8 @@ impl InitialTranscriptionResult {
                         .filter(|segment| chunk.segment_ids.contains(&segment.id))
                         .cloned()
                         .collect(),
-                    forced_token_ids: prompt_token_ids.clone(),
+                    prompt_token_ids: prompt_token_ids.clone(),
+                    forced_token_ids: Vec::new(),
                 };
                 chunk.current_transcription_id = transcription.id.clone();
                 chunk.transcriptions.push(transcription);
@@ -352,7 +385,7 @@ impl InitialTranscriptionResult {
                 .filter(|s| chunk.segment_ids.contains(&s.id))
                 .cloned()
                 .collect(),
-            forced_token_ids: self
+            prompt_token_ids: self
                 .decode_spans
                 .iter()
                 .find(|span| {
@@ -362,6 +395,7 @@ impl InitialTranscriptionResult {
                 })
                 .map(|span| span.prompt_token_ids.clone())
                 .unwrap_or_default(),
+            forced_token_ids: Vec::new(),
         }
     }
 }
@@ -588,8 +622,12 @@ impl TranscriberSession {
             ordinal: 1,
             submitted: request.chunk_range,
             continuation_boundary: request.chunk_range.end_sample,
-            prompt_token_ids: request.forced_tokens,
+            prompt_token_ids: Vec::new(),
+            prompt_limit: 0,
+            prompt_omitted_token_count: 0,
+            empty_prompt_reason: Some(EmptyPromptReason::NoAcceptedText),
             advance_reason: AdvanceReason::SourceEnd,
+            continuation_pause_samples: None,
             hypotheses: segments.clone(),
             accepted_segment_ids: segments.iter().map(|s| s.id.clone()).collect(),
             content: vec![DecodeSpanItem::Chunk(chunk)],
@@ -614,13 +652,16 @@ impl TranscriberSession {
         };
         result.initialize_chunk_transcriptions();
         let chunk = result.chunks().next().expect("one correction chunk");
-        Ok(result.transcription_for(chunk, &request.chunk_id, Some(request.previous_id)))
+        let mut transcription =
+            result.transcription_for(chunk, &request.chunk_id, Some(request.previous_id));
+        transcription.forced_token_ids = request.forced_tokens;
+        Ok(transcription)
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodeSpanSegment {
-    pub audio_range: SampleRange,
+    pub raw_timestamps: Option<DecoderTimestamps>,
     pub text: String,
     pub no_speech_probability: f32,
     pub tokens: Vec<WhisperToken>,
@@ -628,6 +669,7 @@ pub struct DecodeSpanSegment {
 
 pub trait DecodeSpanDecoder {
     fn identity(&self) -> TranscriberIdentity;
+    fn prompt_capacity(&self) -> usize;
     fn decode(
         &mut self,
         audio: &[f32],
@@ -657,8 +699,10 @@ pub fn transcribe_initial<D: DecodeSpanDecoder>(
     let total = source.decoded_sample_count;
     let mut cursor = 0_u64;
     let mut decode_spans = Vec::new();
-    let mut prompt_token_ids = Vec::new();
+    let mut prompt_history = Vec::new();
+    let mut next_empty_prompt_reason = Some(EmptyPromptReason::FirstDecode);
     let mut failures = 0_usize;
+    let mut unplaceable_text = false;
     let mut next_chunk_ordinal = 1_u32;
     let mut previous_chunk_end = None;
     let mut previous_accepted_end = None;
@@ -674,40 +718,55 @@ pub fn transcribe_initial<D: DecodeSpanDecoder>(
             usize::try_from(submitted_start).map_err(|_| TranscriptionError::AudioTooLong)?;
         let end = usize::try_from(submitted_end).map_err(|_| TranscriptionError::AudioTooLong)?;
         let ordinal = u32::try_from(decode_spans.len() + 1).unwrap_or(u32::MAX);
-        let span_prompt_token_ids = prompt_token_ids.clone();
+        let prompt_limit = decoder.prompt_capacity();
+        let prompt_omitted_token_count = prompt_history.len().saturating_sub(prompt_limit);
+        let span_prompt_token_ids = prompt_history[prompt_omitted_token_count..].to_vec();
+        let empty_prompt_reason = span_prompt_token_ids.is_empty().then(|| {
+            next_empty_prompt_reason
+                .take()
+                .unwrap_or(EmptyPromptReason::NoAcceptedText)
+        });
 
         let decoded = decoder.decode(&samples[start..end], &span_prompt_token_ids);
-        let (hypotheses, boundary, advance_reason, error) = match decoded {
+        let (hypotheses, decision, error) = match decoded {
             Ok(relative) => {
                 let hypotheses = normalize_segments(relative, submitted, ordinal);
-                let (boundary, reason) =
-                    choose_continuation_boundary(submitted, total, &hypotheses, &config);
-                (hypotheses, boundary, reason, None)
+                let decision = choose_continuation_boundary(submitted, total, &hypotheses, &config);
+                unplaceable_text |= hypotheses
+                    .iter()
+                    .skip(decision.valid_prefix_len)
+                    .any(segment_has_text_evidence);
+                (hypotheses, decision, None)
             }
             Err(error) => {
                 failures += 1;
+                prompt_history.clear();
+                next_empty_prompt_reason = Some(EmptyPromptReason::ResetAfterDecodeFailure);
                 (
                     Vec::new(),
-                    submitted_end,
-                    AdvanceReason::FixedDecodeFailure,
+                    BoundaryDecision {
+                        boundary: submitted_end,
+                        reason: AdvanceReason::DecodeFailure,
+                        pause_samples: None,
+                        accepted_len: 0,
+                        valid_prefix_len: 0,
+                    },
                     Some(error),
                 )
             }
         };
 
         let mut accepted_ids = Vec::new();
-        let mut next_prompt_token_ids = None;
         let accepted = hypotheses
             .iter()
-            .filter(|segment| {
-                segment.audio_range.start_sample >= cursor
-                    && segment.audio_range.end_sample <= boundary
-                    && !segment.audio_range.is_empty()
-            })
+            .take(decision.accepted_len)
             .cloned()
             .collect::<Vec<_>>();
         if let (Some(previous_end), Some(first)) = (previous_accepted_end, accepted.first()) {
-            let pause_samples = first.audio_range.start_sample.saturating_sub(previous_end);
+            let first_range = first
+                .audio_range
+                .expect("accepted segments always have a canonical range");
+            let pause_samples = first_range.start_sample.saturating_sub(previous_end);
             let pause_ms = pause_samples.saturating_mul(1_000) / u64::from(source.sample_rate_hz);
             if pause_ms >= config.chunking.long_pause_ms {
                 append_paragraph_break_after_last_chunk(&mut decode_spans);
@@ -718,23 +777,26 @@ pub fn transcribe_initial<D: DecodeSpanDecoder>(
             // Preserve the exact accepted token sequence. A text round trip
             // could retokenize it, while special tokens belong to this
             // decode span's control and timestamp context.
-            next_prompt_token_ids = Some(
+            prompt_history.extend(
                 segment
                     .tokens
                     .iter()
                     .filter(|token| !token.is_special)
-                    .map(|token| token.token_id)
-                    .collect(),
+                    .map(|token| token.token_id),
             );
         }
-        if let Some(next) = next_prompt_token_ids {
-            prompt_token_ids = next;
-        }
         if let Some(last) = accepted.last() {
-            previous_accepted_end = Some(last.audio_range.end_sample);
+            previous_accepted_end = last.audio_range.map(|range| range.end_sample);
+        }
+        if error.is_none()
+            && decision.reason == AdvanceReason::NoUsableTimestamp
+            && accepted.is_empty()
+        {
+            prompt_history.clear();
+            next_empty_prompt_reason = Some(EmptyPromptReason::ResetAfterUnknownGap);
         }
 
-        let terminal_reason = if boundary == total {
+        let terminal_reason = if decision.boundary == total {
             ChunkBoundaryReason::SourceEnd
         } else {
             ChunkBoundaryReason::Continuation
@@ -759,21 +821,25 @@ pub fn transcribe_initial<D: DecodeSpanDecoder>(
         decode_spans.push(DecodeSpan {
             ordinal,
             submitted,
-            continuation_boundary: boundary,
+            continuation_boundary: decision.boundary,
             prompt_token_ids: span_prompt_token_ids,
-            advance_reason,
+            prompt_limit,
+            prompt_omitted_token_count,
+            empty_prompt_reason,
+            advance_reason: decision.reason,
+            continuation_pause_samples: decision.pause_samples,
             hypotheses,
             accepted_segment_ids: accepted_ids,
             content,
             error,
         });
-        cursor = boundary;
+        cursor = decision.boundary;
     }
 
-    let status = if failures == 0 {
-        TranscriptionStatus::Succeeded
-    } else if failures == decode_spans.len() {
+    let status = if failures == decode_spans.len() {
         TranscriptionStatus::Failed
+    } else if failures == 0 && !unplaceable_text {
+        TranscriptionStatus::Succeeded
     } else {
         TranscriptionStatus::Partial
     };
@@ -961,11 +1027,16 @@ fn build_chunks(
             choice.pause_samples = None;
         }
         let selected = &segments[start..choice.end];
-        let range_start = previous_chunk_end
-            .map_or(selected[0].audio_range.start_sample, |previous| {
-                previous.max(selected[0].audio_range.start_sample)
-            });
-        let range_end = selected[selected.len() - 1].audio_range.end_sample;
+        let first_range = selected[0]
+            .audio_range
+            .expect("chunk segments always have a canonical range");
+        let last_range = selected[selected.len() - 1]
+            .audio_range
+            .expect("chunk segments always have a canonical range");
+        let range_start = previous_chunk_end.map_or(first_range.start_sample, |previous| {
+            previous.max(first_range.start_sample)
+        });
+        let range_end = last_range.end_sample;
         if range_start >= range_end {
             if let Some(previous) = chunks.last_mut() {
                 previous
@@ -1025,10 +1096,13 @@ fn normal_token_count(segment: &DecodedSegment) -> usize {
 
 fn pause_after(segments: &[DecodedSegment], end: usize) -> Option<u64> {
     (end < segments.len()).then(|| {
-        segments[end]
+        let next = segments[end]
             .audio_range
-            .start_sample
-            .saturating_sub(segments[end - 1].audio_range.end_sample)
+            .expect("chunk segments always have a canonical range");
+        let previous = segments[end - 1]
+            .audio_range
+            .expect("chunk segments always have a canonical range");
+        next.start_sample.saturating_sub(previous.end_sample)
     })
 }
 
@@ -1050,57 +1124,61 @@ fn normalize_segments(
     submitted: SampleRange,
     span_ordinal: u32,
 ) -> Vec<DecodedSegment> {
-    let mut normalized = segments
+    segments
         .into_iter()
         .enumerate()
-        .filter_map(|(index, segment)| {
-            let start = submitted
-                .start_sample
-                .saturating_add(segment.audio_range.start_sample)
-                .min(submitted.end_sample);
-            let end = submitted
-                .start_sample
-                .saturating_add(segment.audio_range.end_sample)
-                .min(submitted.end_sample);
-            (start < end).then(|| DecodedSegment {
+        .map(|(index, segment)| {
+            let audio_range = segment
+                .raw_timestamps
+                .and_then(|timestamps| canonical_range(timestamps, submitted));
+            DecodedSegment {
                 id: format!("decode-span-{span_ordinal}-segment-{}", index + 1),
-                audio_range: SampleRange {
-                    start_sample: start,
-                    end_sample: end,
-                },
+                raw_timestamps: segment.raw_timestamps,
+                audio_range,
                 text: segment.text,
                 no_speech_probability: segment.no_speech_probability,
                 tokens: segment
                     .tokens
                     .into_iter()
                     .map(|mut token| {
-                        token.audio_range = token.audio_range.and_then(|range| {
-                            let token_start = submitted
-                                .start_sample
-                                .saturating_add(range.start_sample)
-                                .min(submitted.end_sample);
-                            let token_end = submitted
-                                .start_sample
-                                .saturating_add(range.end_sample)
-                                .min(submitted.end_sample);
-                            (token_start < token_end).then_some(SampleRange {
-                                start_sample: token_start,
-                                end_sample: token_end,
-                            })
-                        });
+                        token.audio_range = token
+                            .raw_timestamps
+                            .and_then(|timestamps| canonical_range(timestamps, submitted));
                         token
                     })
                     .collect(),
-            })
+            }
         })
-        .collect::<Vec<_>>();
-    normalized.sort_by_key(|segment| {
-        (
-            segment.audio_range.start_sample,
-            segment.audio_range.end_sample,
-        )
-    });
-    normalized
+        .collect()
+}
+
+pub(crate) fn canonical_range(
+    timestamps: DecoderTimestamps,
+    submitted: SampleRange,
+) -> Option<SampleRange> {
+    let start = u64::try_from(timestamps.start)
+        .ok()?
+        .checked_mul(timestamps.samples_per_unit)?
+        .checked_add(submitted.start_sample)?;
+    let end = u64::try_from(timestamps.end)
+        .ok()?
+        .checked_mul(timestamps.samples_per_unit)?
+        .checked_add(submitted.start_sample)?;
+    (start < end && start >= submitted.start_sample && end <= submitted.end_sample).then_some(
+        SampleRange {
+            start_sample: start,
+            end_sample: end,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BoundaryDecision {
+    boundary: u64,
+    reason: AdvanceReason,
+    pause_samples: Option<u64>,
+    accepted_len: usize,
+    valid_prefix_len: usize,
 }
 
 fn choose_continuation_boundary(
@@ -1108,29 +1186,94 @@ fn choose_continuation_boundary(
     total: u64,
     segments: &[DecodedSegment],
     config: &TranscriptionConfig,
-) -> (u64, AdvanceReason) {
+) -> BoundaryDecision {
+    let mut previous_end = submitted.start_sample;
+    let valid_prefix_len = segments
+        .iter()
+        .take_while(|segment| {
+            let Some(range) = segment.audio_range else {
+                return false;
+            };
+            let valid =
+                range.start_sample >= previous_end && range.end_sample > submitted.start_sample;
+            if valid {
+                previous_end = range.end_sample;
+            }
+            valid
+        })
+        .count();
     if submitted.end_sample == total {
-        return (total, AdvanceReason::SourceEnd);
+        return BoundaryDecision {
+            boundary: total,
+            reason: AdvanceReason::SourceEnd,
+            pause_samples: None,
+            accepted_len: valid_prefix_len,
+            valid_prefix_len,
+        };
     }
     let search_start = submitted
         .end_sample
         .saturating_sub(config.continuation_search_samples)
         .max(submitted.start_sample.saturating_add(1));
-    let late_candidate = segments
-        .iter()
-        .map(|segment| segment.audio_range.end_sample)
-        .filter(|end| *end >= search_start && *end <= submitted.end_sample)
-        .max();
-    late_candidate
+    let pause_after_candidate = |index: usize| -> Option<u64> {
+        let current = segments[index].audio_range?;
+        if index + 1 < valid_prefix_len {
+            let next = segments[index + 1].audio_range?;
+            Some(next.start_sample.saturating_sub(current.end_sample))
+        } else if index + 1 == segments.len() {
+            Some(submitted.end_sample.saturating_sub(current.end_sample))
+        } else {
+            None
+        }
+    };
+    let latest_strong = (0..valid_prefix_len).rev().find(|index| {
+        let range = segments[*index]
+            .audio_range
+            .expect("valid prefix has canonical ranges");
+        range.end_sample >= search_start
+            && pause_after_candidate(*index).is_some_and(|pause| {
+                pause.saturating_mul(1_000) / u64::from(WHISPER_SAMPLE_RATE_HZ)
+                    >= config.continuation_strong_pause_ms
+            })
+    });
+    let latest_in_search = (0..valid_prefix_len).rev().find(|index| {
+        segments[*index]
+            .audio_range
+            .is_some_and(|range| range.end_sample >= search_start)
+    });
+    let choice = latest_strong
+        .map(|index| (index, AdvanceReason::StrongPause))
+        .or_else(|| latest_in_search.map(|index| (index, AdvanceReason::LatestTimestamp)))
         .or_else(|| {
-            segments
-                .iter()
-                .map(|segment| segment.audio_range.end_sample)
-                .filter(|end| *end > submitted.start_sample && *end <= submitted.end_sample)
-                .max()
-        })
-        .map(|boundary| (boundary, AdvanceReason::WhisperTimestamp))
-        .unwrap_or((submitted.end_sample, AdvanceReason::FixedNoTimestamp))
+            valid_prefix_len
+                .checked_sub(1)
+                .map(|index| (index, AdvanceReason::EarlyTimestampFallback))
+        });
+    let Some((index, reason)) = choice else {
+        return BoundaryDecision {
+            boundary: submitted.end_sample,
+            reason: AdvanceReason::NoUsableTimestamp,
+            pause_samples: None,
+            accepted_len: 0,
+            valid_prefix_len,
+        };
+    };
+    let range = segments[index]
+        .audio_range
+        .expect("selected candidates have canonical ranges");
+    BoundaryDecision {
+        boundary: range.end_sample,
+        reason,
+        pause_samples: (reason == AdvanceReason::StrongPause)
+            .then(|| pause_after_candidate(index))
+            .flatten(),
+        accepted_len: index + 1,
+        valid_prefix_len,
+    }
+}
+
+fn segment_has_text_evidence(segment: &DecodedSegment) -> bool {
+    !segment.text.is_empty() || segment.tokens.iter().any(|token| !token.is_special)
 }
 
 fn run_id(
@@ -1192,7 +1335,11 @@ impl WhisperDecoder {
                     .get_token(token_index)
                     .ok_or_else(|| format!("Whisper returned invalid token {token_index}"))?;
                 let data = token.token_data();
-                let audio_range = centiseconds_range(data.t0, data.t1);
+                let raw_timestamps = Some(DecoderTimestamps {
+                    start: data.t0,
+                    end: data.t1,
+                    samples_per_unit: SAMPLES_PER_CENTISECOND,
+                });
                 let alternatives = token
                     .get_all_top_candidates()
                     .into_iter()
@@ -1210,17 +1357,17 @@ impl WhisperDecoder {
                     text: token.to_string().unwrap_or_default(),
                     probability: token.token_probability(),
                     is_special: token.token_id() >= self.context.token_eot(),
-                    audio_range,
+                    raw_timestamps,
+                    audio_range: None,
                     alternatives,
                 });
             }
-            let Some(audio_range) =
-                centiseconds_range(segment.start_timestamp(), segment.end_timestamp())
-            else {
-                continue;
-            };
             output.push(DecodeSpanSegment {
-                audio_range,
+                raw_timestamps: Some(DecoderTimestamps {
+                    start: segment.start_timestamp(),
+                    end: segment.end_timestamp(),
+                    samples_per_unit: SAMPLES_PER_CENTISECOND,
+                }),
                 text: segment.to_string().unwrap_or_default(),
                 no_speech_probability: segment.no_speech_probability(),
                 tokens,
@@ -1237,8 +1384,7 @@ impl WhisperDecoder {
         Ok(transcription
             .segments
             .iter()
-            .filter_map(|segment| {
-                let audio_range = milliseconds_range(segment.start_time_ms, segment.end_time_ms)?;
+            .map(|segment| {
                 let tokens = segment
                     .tokens
                     .iter()
@@ -1258,17 +1404,26 @@ impl WhisperDecoder {
                             text: token.text.clone(),
                             probability: token.probability,
                             is_special: token.token_id >= self.context.token_eot(),
-                            audio_range: milliseconds_range(token.start_time_ms, token.end_time_ms),
+                            raw_timestamps: Some(DecoderTimestamps {
+                                start: token.start_time_ms,
+                                end: token.end_time_ms,
+                                samples_per_unit: 16,
+                            }),
+                            audio_range: None,
                             alternatives,
                         }
                     })
                     .collect();
-                Some(DecodeSpanSegment {
-                    audio_range,
+                DecodeSpanSegment {
+                    raw_timestamps: Some(DecoderTimestamps {
+                        start: segment.start_time_ms,
+                        end: segment.end_time_ms,
+                        samples_per_unit: 16,
+                    }),
                     text: segment.text.clone(),
                     no_speech_probability: segment.no_speech_prob,
                     tokens,
-                })
+                }
             })
             .collect())
     }
@@ -1303,6 +1458,13 @@ impl DecodeSpanDecoder for WhisperDecoder {
         self.identity.clone()
     }
 
+    fn prompt_capacity(&self) -> usize {
+        usize::try_from(self.context.n_text_ctx())
+            .unwrap_or(0)
+            .saturating_div(2)
+            .saturating_sub(1)
+    }
+
     fn decode(
         &mut self,
         audio: &[f32],
@@ -1321,28 +1483,6 @@ impl DecodeSpanDecoder for WhisperDecoder {
             .map_err(|error| error.to_string())?;
         self.extract_segments(&state)
     }
-}
-
-fn centiseconds_range(start: i64, end: i64) -> Option<SampleRange> {
-    let start = u64::try_from(start)
-        .ok()?
-        .checked_mul(SAMPLES_PER_CENTISECOND)?;
-    let end = u64::try_from(end)
-        .ok()?
-        .checked_mul(SAMPLES_PER_CENTISECOND)?;
-    (start < end).then_some(SampleRange {
-        start_sample: start,
-        end_sample: end,
-    })
-}
-
-fn milliseconds_range(start: i64, end: i64) -> Option<SampleRange> {
-    let start = u64::try_from(start).ok()?.checked_mul(16)?;
-    let end = u64::try_from(end).ok()?.checked_mul(16)?;
-    (start < end).then_some(SampleRange {
-        start_sample: start,
-        end_sample: end,
-    })
 }
 
 fn hash_file(path: &Path) -> Result<String, std::io::Error> {

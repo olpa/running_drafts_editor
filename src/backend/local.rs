@@ -8,7 +8,7 @@ use crate::{
     document::{AlignmentState, AudioSource, ChunkAudioMapping},
     transcription::{
         transcribe_initial, ChunkTranscriber, ChunkTranscriptionRequest, TranscriberSession,
-        TranscriptionConfig, TranscriptionError, TranscriptionStatus, WhisperDecoder,
+        TranscriptionConfig, TranscriptionError, WhisperDecoder,
     },
 };
 
@@ -353,17 +353,6 @@ fn register_initial_chunks(
     recording_id: &str,
     run: &mut InitialTranscriptionResult,
 ) -> Result<(), BackendError> {
-    if run.status != TranscriptionStatus::Succeeded {
-        let reason = run
-            .decode_spans
-            .iter()
-            .filter_map(|w| w.error.as_deref())
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(BackendError::Other(format!(
-            "transcription failed: {reason}"
-        )));
-    }
     // Initial recognition owns finalization. Namespace IDs by recording and
     // result, so initial runs for different recordings/settings cannot retarget
     // an already finalized chunk.
@@ -383,6 +372,7 @@ fn register_initial_chunks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transcription::TranscriptionStatus;
 
     fn write_audio(path: &Path, sample: f32, count: usize) {
         let mut writer = hound::WavWriter::create(
@@ -425,6 +415,11 @@ mod tests {
             if self.0 != TranscriptionStatus::Succeeded {
                 run.decode_spans[0].error = Some("synthetic recognition failure".into());
             }
+            if self.0 == TranscriptionStatus::Failed {
+                run.decode_spans[0].content.clear();
+                run.decode_spans[0].accepted_segment_ids.clear();
+                run.decode_spans[0].hypotheses.clear();
+            }
             Ok((run, Box::new(UnusedEngine)))
         }
     }
@@ -449,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_recognition_registers_fetchable_chunks_only_on_complete_success() {
+    fn initial_transcription_preserves_every_status_and_registers_finalized_chunks() {
         for status in [
             TranscriptionStatus::Succeeded,
             TranscriptionStatus::Partial,
@@ -471,24 +466,21 @@ mod tests {
                 Path::new("fake"),
                 TranscriptionConfig::default(),
             );
-            if status == TranscriptionStatus::Succeeded {
-                let result = result.unwrap();
-                for chunk in result.chunks() {
-                    let metadata = audio.chunk(&chunk.id).unwrap();
-                    assert_eq!(metadata.recording_id, recording);
-                    assert_eq!(metadata.range, chunk.audio_range);
-                    let fetched = audio.read_chunk(&chunk.id).unwrap();
-                    assert_eq!(fetched.range, chunk.audio_range);
-                    assert_eq!(fetched.audio.samples, vec![0.25; 200]);
-                }
-            } else {
-                assert!(result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("synthetic recognition failure"));
-                assert!(audio.chunks.is_empty());
-                assert!(audio.recording(&recording).is_ok());
+            let result = result.unwrap();
+            assert_eq!(result.status, status);
+            for chunk in result.chunks() {
+                let metadata = audio.chunk(&chunk.id).unwrap();
+                assert_eq!(metadata.recording_id, recording);
+                assert_eq!(metadata.range, chunk.audio_range);
+                let fetched = audio.read_chunk(&chunk.id).unwrap();
+                assert_eq!(fetched.range, chunk.audio_range);
+                assert_eq!(fetched.audio.samples, vec![0.25; 200]);
             }
+            assert_eq!(
+                audio.chunks.is_empty(),
+                status == TranscriptionStatus::Failed
+            );
+            assert!(audio.recording(&recording).is_ok());
         }
     }
 

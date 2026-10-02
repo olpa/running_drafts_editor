@@ -4,8 +4,10 @@ This document preserves the cross-cutting initial-transcription procedure.
 [ADR-0013](adr/0013-finalize-chunks-incrementally-from-decode-spans.md)
 records the boundary model, and
 [ADR-0014](adr/0014-store-document-content-inside-decode-spans.md) records
-the ownership direction. Code and tests remain the source for current
-parameter values and implemented behavior. [Issue #58](https://github.com/olpa/running_drafts_editor/issues/58)
+the ownership direction. [ADR-0015](adr/0015-use-timestamp-closed-continuation-and-exact-transcription-prompts.md)
+records the continuation-candidate and transcription-prompt policy. Code and
+tests remain the source for current parameter values and implemented behavior.
+[Issue #58](https://github.com/olpa/running_drafts_editor/issues/58)
 records the implementation work for disjoint finalized chunk ranges.
 
 ## Ownership model
@@ -32,25 +34,27 @@ finalized chunk ranges.
 4. Feed the result into the forward-only paragraph-construction fold so it can
    identify chunk and paragraph boundaries. It does not revise content
    finalized by an earlier step.
-5. Choose a suitable continuation boundary near the right end of the span and
-   finalize zero, one, or several chunks and paragraph breaks from the accepted
-   prefix through that boundary. A practical temporary heuristic may prefer a
-   late complete Whisper segment end or the end before trailing silence. The
-   exact heuristic is follow-up work.
+5. Form the longest ordered prefix of Whisper segments with valid, advancing,
+   non-overlapping timestamps. Within the final six seconds, prefer the latest
+   segment end followed by at least 800 ms of silence; otherwise use the latest
+   segment end there, then the latest earlier end. Put the boundary before the
+   pause. If there is no usable end, advance the complete submitted span without
+   accepting unlocated text.
 6. Retain the processed decode span, its evidence, and its produced content in
    the project. It is no longer the active span.
 7. Start the next decode span at the continuation boundary. The suffix is
    decoded again and may produce visible text only in this later pass.
-8. Until prompt handling is decided separately, pass the exact text-token IDs
-   from the last accepted Whisper segment as the next prompt. Do not recreate
-   those IDs with a text round trip, and do not pass timestamp or other special
-   tokens.
+8. Accumulate the exact accepted text-token IDs in recording order. Before the
+   next decode, retain the newest suffix that fits the loaded model's prompt
+   capacity and pass it as the transcription prompt. Do not recreate IDs with a
+   text round trip, and do not pass control tokens. Clear the history after a
+   decode failure or a complete fallback span with no accepted text.
 
 Every non-final step must advance. A silence-only span may produce no chunk and
 advance to its submitted end. If decoding fails or useful timestamps are
-missing, a bounded-progress fallback retains the evidence but does not invent
-an audio range for unlocated text. At source end, the fold finalizes eligible
-remaining content and trailing silence stays unowned.
+missing, a bounded-progress fallback retains raw timestamp and text evidence
+but does not invent an audio range for unlocated text. At source end, the fold
+finalizes the valid prefix and trailing silence stays unowned.
 
 ## Incremental chunk and paragraph construction
 
