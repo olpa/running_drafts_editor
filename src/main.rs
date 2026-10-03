@@ -2,7 +2,7 @@ use std::{io::IsTerminal, path::PathBuf, process::ExitCode};
 
 use clap::{Args, Parser, Subcommand};
 use running_drafts_editor::backend::{
-    AudioBackend, LocalAudioBackend, LocalRecognitionBackend, RecognitionBackend,
+    AudioBackend, LocalAudioBackend, LocalTranscriptionBackend, TranscriptionBackend,
 };
 use running_drafts_editor::persistence::{load_project, save_project};
 use running_drafts_editor::project::Project;
@@ -210,7 +210,7 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
     if let Some(path) = &args.output {
         validate_output_target(path)?;
     }
-    let (run, recording_id, audio, recognition) =
+    let (run, recording_id, audio, transcription_backend) =
         transcribe_audio(&args.input, &args.transcription)?;
     let mut project = Project::from_initial_transcription_with_recording_id(
         &run,
@@ -238,7 +238,7 @@ fn run_open_audio_command(args: OpenAudioArgs) -> Result<(), Box<dyn std::error:
         args.output.as_deref(),
         Some(&args.transcription.model),
     )
-    .with_backends(Box::new(audio), Box::new(recognition));
+    .with_backends(Box::new(audio), Box::new(transcription_backend));
     if stdin.is_terminal() && stdout.is_terminal() {
         run_readline_session(
             &project,
@@ -271,7 +271,7 @@ fn transcribe_audio(
         running_drafts_editor::transcription::InitialTranscriptionResult,
         String,
         LocalAudioBackend,
-        LocalRecognitionBackend,
+        LocalTranscriptionBackend,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -294,9 +294,14 @@ fn transcribe_audio(
             distance_penalty_ms: args.chunk_distance_penalty_ms,
         },
     };
-    let mut recognition = LocalRecognitionBackend::new();
-    let run = recognition.transcribe_recording(&mut audio, &recording_id, &args.model, config)?;
-    Ok((run, recording_id, audio, recognition))
+    let mut transcription_backend = LocalTranscriptionBackend::new();
+    let run = transcription_backend.transcribe_recording(
+        &mut audio,
+        &recording_id,
+        &args.model,
+        config,
+    )?;
+    Ok((run, recording_id, audio, transcription_backend))
 }
 
 #[cfg(test)]

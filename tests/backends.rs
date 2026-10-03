@@ -5,8 +5,8 @@ mod common;
 use running_drafts_editor::{
     backend::{
         AudioBackend, AudioPlayer, BackendError, ChunkAudio, ChunkMetadata,
-        ChunkRecognitionRequest, LocalAudioBackend, PlaybackError, RecognitionBackend,
-        RecordingAudio, RecordingMetadata, ReplayRequest,
+        ChunkTranscriptionRequest, LocalAudioBackend, PlaybackError, RecordingAudio,
+        RecordingMetadata, ReplayRequest, TranscriptionBackend,
     },
     chunking::SampleRange,
     document::{AudioSource, ChunkAudioMapping},
@@ -19,7 +19,7 @@ use std::{cell::RefCell, io::Cursor, path::Path, rc::Rc};
 
 #[derive(Default)]
 struct Calls {
-    recognition: Vec<ChunkRecognitionRequest>,
+    transcription_requests: Vec<ChunkTranscriptionRequest>,
     replay: Vec<(String, Vec<String>, SampleRange)>,
 }
 
@@ -70,11 +70,11 @@ impl AudioBackend for ServerAudio {
     }
 }
 
-struct ServerRecognition {
+struct ServerTranscriptionBackend {
     initial: InitialTranscriptionResult,
     calls: Rc<RefCell<Calls>>,
 }
-impl RecognitionBackend for ServerRecognition {
+impl TranscriptionBackend for ServerTranscriptionBackend {
     fn transcribe_recording(
         &mut self,
         _: &mut dyn AudioBackend,
@@ -87,7 +87,7 @@ impl RecognitionBackend for ServerRecognition {
     fn transcribe_chunk(
         &mut self,
         audio: &mut dyn AudioBackend,
-        request: ChunkRecognitionRequest,
+        request: ChunkTranscriptionRequest,
     ) -> Result<Transcription, BackendError> {
         let metadata = audio.chunk(&request.chunk_id)?;
         let text = request
@@ -101,7 +101,7 @@ impl RecognitionBackend for ServerRecognition {
         let chunk = result.chunks().next().unwrap().clone();
         let transcription =
             result.transcription_for(&chunk, &request.chunk_id, Some(request.previous_id.clone()));
-        self.calls.borrow_mut().recognition.push(request);
+        self.calls.borrow_mut().transcription_requests.push(request);
         Ok(transcription)
     }
 }
@@ -135,12 +135,12 @@ fn reopened_server_project_replays_corrects_and_restores_history_without_local_a
         metadata: LocalAudioBackend::new(),
         calls: calls.clone(),
     };
-    let recognition = ServerRecognition {
+    let transcription_backend = ServerTranscriptionBackend {
         initial,
         calls: calls.clone(),
     };
     let context = SessionContext::saved_project(&saved, None)
-        .with_backends(Box::new(audio), Box::new(recognition));
+        .with_backends(Box::new(audio), Box::new(transcription_backend));
     let final_path = dir.path().join("final.json");
     let commands = format!("play\nreplay\n1.1.1,1.1.2replace corrected\nlanguage de\n2undo\n2redo\nsave {}\nload {}\nplay\nquit\n", final_path.display(), final_path.display());
     let mut output = Vec::new();
@@ -157,13 +157,17 @@ fn reopened_server_project_replays_corrects_and_restores_history_without_local_a
     .unwrap();
     assert!(errors.is_empty(), "{}", String::from_utf8_lossy(&errors));
     let calls = calls.borrow();
-    assert_eq!(calls.recognition.len(), 2);
-    assert_eq!(calls.recognition[0].chunk_id, "c0");
+    assert_eq!(calls.transcription_requests.len(), 2);
+    assert_eq!(calls.transcription_requests[0].chunk_id, "c0");
     assert_eq!(
-        calls.recognition[0].correction.as_ref().unwrap().prefix,
+        calls.transcription_requests[0]
+            .correction
+            .as_ref()
+            .unwrap()
+            .prefix,
         "corrected"
     );
-    assert_eq!(calls.recognition[1].settings.language, "de");
+    assert_eq!(calls.transcription_requests[1].settings.language, "de");
     assert_eq!(calls.replay.len(), 3);
     assert!(calls
         .replay
