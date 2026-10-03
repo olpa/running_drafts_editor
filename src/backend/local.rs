@@ -7,7 +7,7 @@ use crate::{
     chunking::read_canonical_wav,
     document::{AlignmentState, AudioSource, ChunkAudioMapping},
     transcription::{
-        transcribe_initial, ChunkTranscriber, ChunkTranscriptionRequest, TranscriberSession,
+        transcribe_initial, ChunkDecodeRequest, ChunkTranscriber, TranscriberSession,
         TranscriptionConfig, TranscriptionError, WhisperDecoder,
     },
 };
@@ -215,13 +215,13 @@ impl TranscriberFactory for WhisperFactory {
     }
 }
 
-pub struct LocalRecognitionBackend {
+pub struct LocalTranscriptionBackend {
     engine: Option<Box<dyn ChunkTranscriber>>,
     settings: Option<TranscriptionSettings>,
     factory: Box<dyn TranscriberFactory>,
 }
 
-impl Default for LocalRecognitionBackend {
+impl Default for LocalTranscriptionBackend {
     fn default() -> Self {
         Self {
             engine: None,
@@ -230,7 +230,7 @@ impl Default for LocalRecognitionBackend {
         }
     }
 }
-impl LocalRecognitionBackend {
+impl LocalTranscriptionBackend {
     pub fn new() -> Self {
         Self::default()
     }
@@ -244,7 +244,7 @@ impl LocalRecognitionBackend {
     }
 }
 
-impl RecognitionBackend for LocalRecognitionBackend {
+impl TranscriptionBackend for LocalTranscriptionBackend {
     fn transcribe_recording(
         &mut self,
         audio: &mut dyn AudioBackend,
@@ -266,7 +266,7 @@ impl RecognitionBackend for LocalRecognitionBackend {
     fn transcribe_chunk(
         &mut self,
         audio: &mut dyn AudioBackend,
-        request: ChunkRecognitionRequest,
+        request: ChunkTranscriptionRequest,
     ) -> Result<Transcription, BackendError> {
         let model = request
             .settings
@@ -299,7 +299,7 @@ impl RecognitionBackend for LocalRecognitionBackend {
         let forced = prepare_correction(engine.as_ref(), request.correction)?;
         let input = audio.read_chunk(&request.chunk_id)?;
         let run = engine.transcribe_chunk(
-            ChunkTranscriptionRequest {
+            ChunkDecodeRequest {
                 chunk_id: request.chunk_id,
                 previous_id: request.previous_id,
                 source: input.audio.source,
@@ -353,7 +353,7 @@ fn register_initial_chunks(
     recording_id: &str,
     run: &mut InitialTranscriptionResult,
 ) -> Result<(), BackendError> {
-    // Initial recognition owns finalization. Namespace IDs by recording and
+    // Initial transcription owns finalization. Namespace IDs by recording and
     // result, so initial runs for different recordings/settings cannot retarget
     // an already finalized chunk.
     run.namespace_chunks(recording_id);
@@ -413,7 +413,7 @@ mod tests {
             crate::test_support::synchronize_initial_transcriptions(&mut run);
             run.status = self.0;
             if self.0 != TranscriptionStatus::Succeeded {
-                run.decode_spans[0].error = Some("synthetic recognition failure".into());
+                run.decode_spans[0].error = Some("synthetic transcription failure".into());
             }
             if self.0 == TranscriptionStatus::Failed {
                 run.decode_spans[0].content.clear();
@@ -436,7 +436,7 @@ mod tests {
         }
         fn transcribe_chunk(
             &mut self,
-            _: ChunkTranscriptionRequest,
+            _: ChunkDecodeRequest,
             _: &[f32],
         ) -> Result<Transcription, TranscriptionError> {
             unreachable!()
@@ -458,9 +458,9 @@ mod tests {
                 audio.chunk("c0"),
                 Err(BackendError::UnknownChunk(_))
             ));
-            let mut recognition =
-                LocalRecognitionBackend::with_factory(Box::new(InitialFactory(status)));
-            let result = recognition.transcribe_recording(
+            let mut transcription_backend =
+                LocalTranscriptionBackend::with_factory(Box::new(InitialFactory(status)));
+            let result = transcription_backend.transcribe_recording(
                 &mut audio,
                 &recording,
                 Path::new("fake"),
@@ -487,16 +487,16 @@ mod tests {
     #[test]
     fn finalized_ids_do_not_collide_between_recordings_and_registration_is_atomic() {
         let mut audio = LocalAudioBackend::new();
-        let mut recognition = LocalRecognitionBackend::with_factory(Box::new(InitialFactory(
-            TranscriptionStatus::Succeeded,
-        )));
+        let mut transcription_backend = LocalTranscriptionBackend::with_factory(Box::new(
+            InitialFactory(TranscriptionStatus::Succeeded),
+        ));
         let file = tempfile::NamedTempFile::new().unwrap();
         let mut produced = Vec::new();
         for sample in [0.0, 0.5] {
             write_audio(file.path(), sample, 200);
             let id = audio.upload(file.path()).unwrap();
             produced.push(
-                recognition
+                transcription_backend
                     .transcribe_recording(
                         &mut audio,
                         &id,
@@ -557,10 +557,10 @@ mod tests {
         let mut audio = LocalAudioBackend::new();
         let id = audio.upload(file.path()).unwrap();
         let original_hash = audio.recording(&id).unwrap().sha256;
-        let mut recognition = LocalRecognitionBackend::with_factory(Box::new(InitialFactory(
-            TranscriptionStatus::Succeeded,
-        )));
-        let run = recognition
+        let mut transcription_backend = LocalTranscriptionBackend::with_factory(Box::new(
+            InitialFactory(TranscriptionStatus::Succeeded),
+        ));
+        let run = transcription_backend
             .transcribe_recording(
                 &mut audio,
                 &id,
@@ -612,7 +612,7 @@ mod tests {
         }
         fn transcribe_chunk(
             &mut self,
-            request: ChunkTranscriptionRequest,
+            request: ChunkDecodeRequest,
             _: &[f32],
         ) -> Result<Transcription, TranscriptionError> {
             assert_eq!(request.forced_tokens, vec![50_364, 1]);
@@ -634,14 +634,14 @@ mod tests {
         for tokenizer_mismatch in [true, false] {
             let mut audio = LocalAudioBackend::new();
             audio.restore(project.audio_sources(), project.chunk_audio_mappings());
-            let mut recognition =
-                LocalRecognitionBackend::with_factory(Box::new(BrokenCorrectionFactory {
+            let mut transcription_backend =
+                LocalTranscriptionBackend::with_factory(Box::new(BrokenCorrectionFactory {
                     tokenizer_mismatch,
                 }));
-            let error = recognition
+            let error = transcription_backend
                 .transcribe_chunk(
                     &mut audio,
-                    ChunkRecognitionRequest {
+                    ChunkTranscriptionRequest {
                         chunk_id: "c0".into(),
                         previous_id: project.transcriptions()[0].id.clone(),
                         revision: 2,

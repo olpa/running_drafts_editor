@@ -1,10 +1,10 @@
-//! Audio storage and recognition boundaries. Only implementations and playback
+//! Audio storage and transcription boundaries. Only implementations and playback
 //! adapters handle audio paths and samples; application requests use stable IDs.
 
 pub(crate) mod local;
 mod playback;
 
-pub use local::{LocalAudioBackend, LocalRecognitionBackend};
+pub use local::{LocalAudioBackend, LocalTranscriptionBackend};
 pub use playback::{AudioPlayer, Ffplay, PlaybackError, PlaybackSpeed};
 
 use std::path::Path;
@@ -33,8 +33,8 @@ pub struct ChunkMetadata {
     pub alignment: AlignmentState,
 }
 
-/// Backend-to-backend data for local recognition. Application callers never
-/// need this operation; remote recognition may keep all audio on its server.
+/// Backend-to-backend data for local transcription. Application callers never
+/// need this operation; remote transcription may keep all audio on its server.
 pub struct RecordingAudio {
     pub source: SourceFacts,
     pub samples: Vec<f32>,
@@ -81,7 +81,7 @@ pub struct CorrectionContext {
 }
 
 #[derive(Debug, Clone)]
-pub struct ChunkRecognitionRequest {
+pub struct ChunkTranscriptionRequest {
     pub chunk_id: String,
     pub previous_id: String,
     pub revision: u64,
@@ -89,7 +89,7 @@ pub struct ChunkRecognitionRequest {
     pub correction: Option<CorrectionContext>,
 }
 
-pub trait RecognitionBackend {
+pub trait TranscriptionBackend {
     fn transcribe_recording(
         &mut self,
         audio: &mut dyn AudioBackend,
@@ -100,7 +100,7 @@ pub trait RecognitionBackend {
     fn transcribe_chunk(
         &mut self,
         audio: &mut dyn AudioBackend,
-        request: ChunkRecognitionRequest,
+        request: ChunkTranscriptionRequest,
     ) -> Result<Transcription, BackendError>;
 }
 
@@ -124,7 +124,7 @@ pub enum BackendError {
     #[error("transcription requires a model: start with --model MODEL or use: model PATH")]
     MissingModel,
     #[error("{0}")]
-    Recognition(#[from] TranscriptionError),
+    Transcription(#[from] TranscriptionError),
     #[error("playback failed: {0}")]
     Playback(#[from] PlaybackError),
     #[error("{0}")]

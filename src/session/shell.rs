@@ -9,7 +9,8 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 
 use crate::{
     backend::{
-        AudioBackend, BackendError, LocalAudioBackend, LocalRecognitionBackend, RecognitionBackend,
+        AudioBackend, BackendError, LocalAudioBackend, LocalTranscriptionBackend,
+        TranscriptionBackend,
     },
     navigation::NavigationState,
     persistence::{export_text, load_project, save_project},
@@ -36,7 +37,7 @@ pub struct SessionContext<'a> {
     initial_result: Option<&'a InitialTranscriptionResult>,
     start: SessionStart<'a>,
     model: Option<&'a Path>,
-    recognition: Option<Box<dyn RecognitionBackend>>,
+    transcription_backend: Option<Box<dyn TranscriptionBackend>>,
     audio: Option<Box<dyn AudioBackend>>,
 }
 
@@ -53,7 +54,7 @@ impl<'a> SessionContext<'a> {
             initial_result: None,
             start: SessionStart::SavedDocument,
             model,
-            recognition: None,
+            transcription_backend: None,
             audio: None,
         }
     }
@@ -69,7 +70,7 @@ impl<'a> SessionContext<'a> {
             initial_result: Some(initial_result),
             start: SessionStart::TranscribedAudio { source },
             model,
-            recognition: None,
+            transcription_backend: None,
             audio: None,
         }
     }
@@ -78,10 +79,10 @@ impl<'a> SessionContext<'a> {
     pub fn with_backends(
         mut self,
         audio: Box<dyn AudioBackend>,
-        recognition: Box<dyn RecognitionBackend>,
+        transcription_backend: Box<dyn TranscriptionBackend>,
     ) -> Self {
         self.audio = Some(audio);
-        self.recognition = Some(recognition);
+        self.transcription_backend = Some(transcription_backend);
         self
     }
 }
@@ -94,7 +95,7 @@ struct SessionState<'a> {
     navigation: NavigationState,
     last_playback: Option<super::playback::LastPlayback>,
     language: String,
-    recognition: Box<dyn RecognitionBackend>,
+    transcription_backend: Box<dyn TranscriptionBackend>,
     audio: Box<dyn AudioBackend>,
     model_path: Option<PathBuf>,
     issue_thresholds: IssueThresholds,
@@ -121,13 +122,14 @@ impl<'a> SessionState<'a> {
             initial_result,
             start,
             model,
-            recognition,
+            transcription_backend,
             audio,
         } = context;
         let document = project.clone();
         let mut audio = audio.unwrap_or_else(|| Box::new(LocalAudioBackend::new()));
         audio.restore(document.audio_sources(), document.chunk_audio_mappings());
-        let recognition = recognition.unwrap_or_else(|| Box::new(LocalRecognitionBackend::new()));
+        let transcription_backend =
+            transcription_backend.unwrap_or_else(|| Box::new(LocalTranscriptionBackend::new()));
         let initial_model = document.settings().model.clone();
         let startup_model = model
             .map(Path::to_path_buf)
@@ -207,7 +209,7 @@ impl<'a> SessionState<'a> {
             navigation,
             last_playback: None,
             language: initial_language,
-            recognition,
+            transcription_backend,
             audio,
             model_path,
             issue_thresholds: IssueThresholds::default(),
@@ -238,7 +240,7 @@ impl<'a> SessionState<'a> {
             navigation,
             last_playback,
             language,
-            recognition,
+            transcription_backend,
             audio,
             model_path,
             issue_thresholds,
@@ -493,7 +495,7 @@ impl<'a> SessionState<'a> {
                     document,
                     navigation,
                     audio.as_mut(),
-                    recognition.as_mut(),
+                    transcription_backend.as_mut(),
                     language,
                     address.paragraph,
                     address.chunk,
@@ -543,7 +545,7 @@ impl<'a> SessionState<'a> {
                     document,
                     navigation,
                     audio.as_mut(),
-                    recognition.as_mut(),
+                    transcription_backend.as_mut(),
                     language,
                     address.paragraph,
                     address.chunk,
@@ -586,7 +588,7 @@ impl<'a> SessionState<'a> {
                         document,
                         navigation,
                         audio.as_mut(),
-                        recognition.as_mut(),
+                        transcription_backend.as_mut(),
                         language,
                         c.paragraph,
                         c.chunk,
@@ -619,7 +621,7 @@ impl<'a> SessionState<'a> {
                     document,
                     navigation,
                     audio.as_mut(),
-                    recognition.as_mut(),
+                    transcription_backend.as_mut(),
                     language,
                     start.paragraph,
                     start.chunk,
@@ -674,7 +676,7 @@ impl<'a> SessionState<'a> {
                     document,
                     navigation,
                     audio.as_mut(),
-                    recognition.as_mut(),
+                    transcription_backend.as_mut(),
                     &settings,
                     paragraph,
                     chunk,
@@ -1086,7 +1088,7 @@ mod tests {
         }
         fn transcribe_chunk(
             &mut self,
-            request: crate::transcription::ChunkTranscriptionRequest,
+            request: crate::transcription::ChunkDecodeRequest,
             _: &[f32],
         ) -> Result<crate::transcription::Transcription, TranscriptionError> {
             if self.fail {
@@ -1196,7 +1198,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let loads = Rc::new(RefCell::new(Vec::new()));
-        state.recognition = Box::new(LocalRecognitionBackend::with_factory(Box::new(
+        state.transcription_backend = Box::new(LocalTranscriptionBackend::with_factory(Box::new(
             FakeFactory {
                 loads: loads.clone(),
                 fail_load: false,
@@ -1266,13 +1268,13 @@ mod tests {
             state.navigation = NavigationState::new(&state.project);
             let project = state.project.clone();
             let navigation = state.navigation.clone();
-            state.recognition = Box::new(LocalRecognitionBackend::with_factory(Box::new(
-                FakeFactory {
+            state.transcription_backend = Box::new(LocalTranscriptionBackend::with_factory(
+                Box::new(FakeFactory {
                     loads,
                     fail_load,
                     fail_decode: !fail_load,
-                },
-            )));
+                }),
+            ));
             let errors = execute(&mut state, "language de");
             assert!(errors.contains("failure"), "{errors}");
             assert_eq!(state.project, project);
@@ -1355,13 +1357,13 @@ mod tests {
         .unwrap();
         assert_eq!(reopened.project, state.project);
         let model = reopened.startup_model.take().unwrap();
-        reopened.recognition = Box::new(LocalRecognitionBackend::with_factory(Box::new(
-            FakeFactory {
+        reopened.transcription_backend = Box::new(LocalTranscriptionBackend::with_factory(
+            Box::new(FakeFactory {
                 loads: loads.clone(),
                 fail_load: false,
                 fail_decode: false,
-            },
-        )));
+            }),
+        ));
         assert!(execute(&mut reopened, &format!("model {}", model.display())).is_empty());
         assert_eq!(
             reopened.project.settings().model.as_deref(),

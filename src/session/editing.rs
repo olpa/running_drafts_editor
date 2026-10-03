@@ -4,7 +4,8 @@ use std::io::{self, Write};
 
 use crate::{
     backend::{
-        AudioBackend, BackendError, ChunkRecognitionRequest, CorrectionContext, RecognitionBackend,
+        AudioBackend, BackendError, ChunkTranscriptionRequest, CorrectionContext,
+        TranscriptionBackend,
     },
     navigation::{tokens_in_range, Address, NavigationState, PositionAddress, TokenAddress},
     project::Project,
@@ -179,7 +180,7 @@ pub(crate) fn run_correction(
     document: &mut Project,
     navigation: &mut NavigationState,
     audio: &mut dyn AudioBackend,
-    recognition: &mut dyn RecognitionBackend,
+    transcription_backend: &mut dyn TranscriptionBackend,
     language: &str,
     paragraph: usize,
     chunk: usize,
@@ -194,7 +195,7 @@ pub(crate) fn run_correction(
         document,
         navigation,
         audio,
-        recognition,
+        transcription_backend,
         &settings,
         paragraph,
         chunk,
@@ -212,7 +213,7 @@ pub(crate) fn run_transcription(
     document: &mut Project,
     navigation: &mut NavigationState,
     audio: &mut dyn AudioBackend,
-    recognition: &mut dyn RecognitionBackend,
+    transcription_backend: &mut dyn TranscriptionBackend,
     settings: &crate::project::TranscriptionSettings,
     paragraph: usize,
     marker: usize,
@@ -245,9 +246,9 @@ pub(crate) fn run_transcription(
             "transcription failed: chunk audio mapping is unavailable"
         );
     }
-    let run = match recognition.transcribe_chunk(
+    let run = match transcription_backend.transcribe_chunk(
         audio,
-        ChunkRecognitionRequest {
+        ChunkTranscriptionRequest {
             chunk_id,
             previous_id: document
                 .current_transcription(paragraph, marker)

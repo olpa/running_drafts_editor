@@ -401,7 +401,7 @@ impl InitialTranscriptionResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct ChunkTranscriptionRequest {
+pub struct ChunkDecodeRequest {
     pub chunk_id: String,
     pub previous_id: String,
     pub source: SourceFacts,
@@ -419,7 +419,7 @@ pub trait ChunkTranscriber {
     fn beginning_timestamp_token(&self) -> i32;
     fn transcribe_chunk(
         &mut self,
-        request: ChunkTranscriptionRequest,
+        request: ChunkDecodeRequest,
         samples: &[f32],
     ) -> Result<Transcription, TranscriptionError>;
 }
@@ -436,7 +436,7 @@ impl ChunkTranscriber for TranscriberSession {
     }
     fn transcribe_chunk(
         &mut self,
-        request: ChunkTranscriptionRequest,
+        request: ChunkDecodeRequest,
         samples: &[f32],
     ) -> Result<Transcription, TranscriptionError> {
         self.transcribe_chunk(request, samples)
@@ -512,7 +512,7 @@ impl TranscriberSession {
 
     pub fn transcribe_chunk(
         &mut self,
-        request: ChunkTranscriptionRequest,
+        request: ChunkDecodeRequest,
         samples: &[f32],
     ) -> Result<Transcription, TranscriptionError> {
         if request.source.sample_rate_hz != WHISPER_SAMPLE_RATE_HZ
