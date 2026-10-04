@@ -311,6 +311,7 @@ pub(crate) fn render_transcription_info(
 ) -> io::Result<()> {
     let chunk = crate::transcription::Chunk {
         id: t.chunk_id.clone(),
+        previous_chunk_id: None,
         ordinal: 1,
         segment_ids: t.segments.iter().map(|s| s.id.clone()).collect(),
         audio_range: t.audio_range,
@@ -322,8 +323,9 @@ pub(crate) fn render_transcription_info(
             .filter(|t| !t.is_special)
             .count(),
         boundary: t.boundary.clone(),
-        transcriptions: Vec::new(),
-        current_transcription_id: String::new(),
+        audio: None,
+        transcription: None,
+        annotations: Vec::new(),
     };
     let run = InitialTranscriptionResult {
         id: t.id.clone(),

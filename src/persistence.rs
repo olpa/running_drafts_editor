@@ -37,11 +37,12 @@ pub fn load_project(path: &Path) -> Result<Project, ProjectIoError> {
         path: path.into(),
         source,
     })?;
-    let project =
+    let mut project: Project =
         serde_json::from_reader(BufReader::new(file)).map_err(|source| ProjectIoError::Read {
             path: path.into(),
             source,
         })?;
+    project.rebuild_runtime_state();
     validate(&project)?;
     Ok(project)
 }
@@ -159,13 +160,48 @@ pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
     if project.id().is_empty() {
         return Err(invalid("document ID is empty"));
     }
-    let (stored_chunk_ids, stored_breaks) = validate_decode_spans(project)?;
+    let profile_ids = project
+        .transcription_profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect::<HashSet<_>>();
+    if profile_ids.len() != project.transcription_profiles.len()
+        || profile_ids.contains("")
+        || !profile_ids.contains(project.active_transcription_profile_id.as_str())
+    {
+        return Err(invalid(
+            "invalid transcription profile identity or active profile",
+        ));
+    }
+    let active_profile = project
+        .transcription_profiles
+        .iter()
+        .find(|profile| profile.id == project.active_transcription_profile_id)
+        .expect("the active profile identity was checked above");
+    if active_profile.model != project.settings.model
+        || active_profile.config.language != project.settings.language
+    {
+        return Err(invalid("active settings differ from their profile"));
+    }
+    let (stored_chunk_ids, stored_breaks) = validate_document_content(project)?;
     let mut ids = HashSet::new();
     for t in project.transcriptions() {
-        if t.id.is_empty() || t.chunk_id.is_empty() || !ids.insert(&t.id) {
+        if t.id.is_empty()
+            || t.chunk_id.is_empty()
+            || !ids.insert(&t.id)
+            || !profile_ids.contains(t.profile_id.as_str())
+        {
             return Err(invalid(
                 "transcription identities must be nonempty and unique",
             ));
+        }
+        let profile = project
+            .transcription_profiles
+            .iter()
+            .find(|profile| profile.id == t.profile_id)
+            .expect("the profile identity was checked above");
+        if t.config != profile.config {
+            return Err(invalid("transcription differs from its profile"));
         }
         if t.source.sample_rate_hz != 16_000
             || t.source.channels != 1
@@ -181,9 +217,20 @@ pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
             }
         }
     }
-    for (index, t) in project.transcriptions().iter().enumerate() {
+    let historical_transcriptions = project
+        .edit_history
+        .iter()
+        .map(|entry| &entry.before)
+        .chain(project.redo_history.iter())
+        .flat_map(|state| &state.document.content)
+        .filter_map(|item| match item {
+            crate::project::DocumentItem::Chunk { chunk } => chunk.current_transcription(),
+            crate::project::DocumentItem::ParagraphBreak => None,
+        })
+        .collect::<Vec<_>>();
+    for t in project.transcriptions() {
         if let Some(previous) = &t.previous_id {
-            if !project.transcriptions()[..index].iter().any(|p| {
+            if !historical_transcriptions.iter().any(|p| {
                 p.id == *previous && p.chunk_id == t.chunk_id && p.audio_range == t.audio_range
             }) {
                 return Err(invalid("transcription predecessor must identify an earlier proposal for the same chunk"));
@@ -200,7 +247,7 @@ pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
     }
     validate_state(
         project,
-        &project.document.paragraphs,
+        &project.view.paragraphs,
         &project.chunk_audio_mappings,
         &project.token_audio_mappings,
         &project.attention_marks,
@@ -226,7 +273,8 @@ pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
         let selected = project
             .chunks()
             .find(|chunk| chunk.id == marker.chunk_id())
-            .map(|chunk| chunk.current_transcription_id.as_str());
+            .and_then(|chunk| chunk.current_transcription())
+            .map(|transcription| transcription.id.as_str());
         if selected != Some(marker.transcription_id()) {
             return Err(invalid(
                 "document projection differs from selected chunk transcription",
@@ -254,18 +302,43 @@ pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
         .map(|e| &e.before)
         .chain(project.redo_history.iter())
     {
-        validate_selected_transcriptions(
-            project,
-            &state.paragraphs,
-            &state.current_transcriptions,
-            stored_chunk_ids.len(),
-        )?;
+        let historical_profile = project
+            .transcription_profiles
+            .iter()
+            .find(|profile| profile.id == state.active_transcription_profile_id)
+            .ok_or_else(|| invalid("history selects an unknown transcription profile"))?;
+        if historical_profile.model != state.settings.model
+            || historical_profile.config.language != state.settings.language
+            || state.document.content.iter().any(|item| match item {
+                crate::project::DocumentItem::Chunk { chunk } => {
+                    chunk.current_transcription().is_none_or(|transcription| {
+                        !profile_ids.contains(transcription.profile_id.as_str())
+                    })
+                }
+                crate::project::DocumentItem::ParagraphBreak => false,
+            })
+        {
+            return Err(invalid("invalid transcription profile in history"));
+        }
+        let mut historical = project.clone();
+        historical.document = state.document.clone();
+        historical.settings = state.settings.clone();
+        historical
+            .active_transcription_profile_id
+            .clone_from(&state.active_transcription_profile_id);
+        historical.token_audio_mappings = state.token_audio_mappings.clone();
+        historical.resolved_issues = state.resolved_issues.clone();
+        historical.rebuild_runtime_state();
+        let (historical_chunk_ids, _) = validate_document_content(&historical)?;
+        if historical_chunk_ids != stored_chunk_ids {
+            return Err(invalid("history changes finalized Chunk identity or order"));
+        }
         validate_state(
-            project,
-            &state.paragraphs,
-            &state.chunk_audio_mappings,
+            &historical,
+            &historical.view.paragraphs,
+            &historical.chunk_audio_mappings,
             &state.token_audio_mappings,
-            &state.attention_marks,
+            &historical.attention_marks,
             &state.resolved_issues,
             &sources,
         )?;
@@ -273,51 +346,58 @@ pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
     Ok(())
 }
 
-fn validate_selected_transcriptions(
+fn validate_document_content(
     project: &Project,
-    paragraphs: &[crate::document::Paragraph],
-    selected: &[(String, String)],
-    chunk_count: usize,
-) -> Result<(), ProjectIoError> {
+) -> Result<(Vec<String>, Vec<String>), ProjectIoError> {
     let invalid = |message: &str| ProjectIoError::Invalid(message.into());
-    let unique = selected
-        .iter()
-        .map(|(chunk_id, _)| chunk_id.as_str())
-        .collect::<HashSet<_>>();
-    if selected.len() != chunk_count || unique.len() != selected.len() {
-        return Err(invalid(
-            "history has incomplete chunk transcription selection",
-        ));
-    }
-    for (chunk_id, transcription_id) in selected {
-        let valid = project.chunks().any(|chunk| {
-            chunk.id == *chunk_id
-                && chunk
-                    .transcriptions
-                    .iter()
-                    .any(|transcription| transcription.id == *transcription_id)
-        });
-        if !valid {
-            return Err(invalid("history selects an unknown chunk transcription"));
+    let mut chunk_ids = Vec::new();
+    let mut breaks = Vec::new();
+    let mut seen_chunk_ids = HashSet::new();
+    let mut previous_chunk_end = None;
+    let mut previous_chunk_id: Option<&str> = None;
+
+    for item in &project.document.content {
+        match item {
+            crate::project::DocumentItem::Chunk { chunk } => {
+                if chunk.id.is_empty()
+                    || !seen_chunk_ids.insert(chunk.id.as_str())
+                    || chunk.previous_chunk_id.as_deref() != previous_chunk_id
+                    || chunk.audio_range.is_empty()
+                    || previous_chunk_end.is_some_and(|end| end > chunk.audio_range.start_sample)
+                    || chunk.transcription.is_none()
+                    || chunk.current_transcription().is_none()
+                    || chunk.transcription.iter().any(|transcription| {
+                        transcription.chunk_id != chunk.id
+                            || transcription.audio_range != chunk.audio_range
+                            || transcription.boundary != chunk.boundary
+                    })
+                {
+                    return Err(invalid("invalid Chunk in Document content"));
+                }
+                previous_chunk_end = Some(chunk.audio_range.end_sample);
+                previous_chunk_id = Some(chunk.id.as_str());
+                chunk_ids.push(chunk.id.clone());
+            }
+            crate::project::DocumentItem::ParagraphBreak => {
+                let Some(chunk_id) = chunk_ids.last() else {
+                    return Err(invalid("ParagraphBreak must follow a Chunk"));
+                };
+                if breaks.last() == Some(chunk_id) {
+                    return Err(invalid("consecutive ParagraphBreak items are invalid"));
+                }
+                breaks.push(chunk_id.clone());
+            }
         }
     }
-    for marker in paragraphs
-        .iter()
-        .flat_map(|paragraph| paragraph.chunk_boundaries())
-    {
-        let transcription_id = selected
-            .iter()
-            .find(|(chunk_id, _)| chunk_id == marker.chunk_id())
-            .map(|(_, transcription_id)| transcription_id.as_str());
-        if transcription_id != Some(marker.transcription_id()) {
-            return Err(invalid(
-                "historical document differs from its selected chunk transcription",
-            ));
+    if let Some(final_chunk_id) = chunk_ids.last() {
+        if breaks.last() == Some(final_chunk_id) {
+            return Err(invalid("ParagraphBreak cannot follow the final Chunk"));
         }
     }
-    Ok(())
+    Ok((chunk_ids, breaks))
 }
 
+#[allow(dead_code)]
 fn validate_decode_spans(project: &Project) -> Result<(Vec<String>, Vec<String>), ProjectIoError> {
     let invalid = |message: &str| ProjectIoError::Invalid(message.into());
     let Some(evidence) = &project.initial_evidence else {
@@ -404,9 +484,9 @@ fn validate_decode_spans(project: &Project) -> Result<(Vec<String>, Vec<String>)
                                 || !used_segment_ids.insert(id.as_str())
                         })
                         || chunk.segment_ids.is_empty()
-                        || chunk.transcriptions.is_empty()
+                        || chunk.transcription.is_none()
                         || chunk.current_transcription().is_none()
-                        || chunk.transcriptions.iter().any(|transcription| {
+                        || chunk.transcription.iter().any(|transcription| {
                             transcription.chunk_id != chunk.id
                                 || transcription.audio_range != chunk.audio_range
                                 || transcription.boundary != chunk.boundary
@@ -563,12 +643,18 @@ fn validate_state(
     }
     let mut mapped_tokens = HashSet::new();
     for m in mappings {
-        let p = paragraphs
-            .iter()
-            .find(|p| p.id() == m.paragraph_id())
-            .ok_or_else(|| invalid("unknown mapped paragraph"))?;
-        if p.revision() != m.paragraph_revision()
-            || !p.tokens().iter().any(|t| t.id() == m.token_identity())
+        let valid_target = paragraphs.iter().any(|p| {
+            let mut start = 0;
+            p.chunk_boundaries().iter().any(|chunk| {
+                let contains = chunk.chunk_id() == m.chunk_id()
+                    && p.tokens()[start..chunk.after_tokens()]
+                        .iter()
+                        .any(|token| token.id() == m.token_identity());
+                start = chunk.after_tokens();
+                contains
+            })
+        });
+        if !valid_target
             || !sources.contains(m.source_id())
             || !mapped_tokens.insert(m.token_identity())
         {

@@ -1,0 +1,1068 @@
+{
+  "schema": "rde-project/v4-experimental",
+  "document": {
+    "id": "document:fixture-initial",
+    "content": [
+      {
+        "type": "chunk",
+        "id": "c0",
+        "audio": {
+          "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+          "range": {
+            "start_sample": 0,
+            "end_sample": 100
+          },
+          "alignment": "exact"
+        },
+        "transcription": {
+          "id": "fixture-correction:c0",
+          "profile_id": "profile:1",
+          "chunk_id": "c0",
+          "previous_id": "fixture-initial:c0",
+          "text": "First chunk.",
+          "source": {
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "sample_rate_hz": 16000,
+            "channels": 1,
+            "decoded_sample_count": 100
+          },
+          "transcriber": {
+            "name": "synthetic Whisper decoder",
+            "implementation": "test",
+            "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "audio_range": {
+            "start_sample": 0,
+            "end_sample": 100
+          },
+          "boundary": {
+            "reason": "scored_pause"
+          },
+          "segments": [
+            {
+              "id": "s0",
+              "raw_timestamps": {
+                "start": 0,
+                "end": 100,
+                "samples_per_unit": 1
+              },
+              "audio_range": {
+                "start_sample": 0,
+                "end_sample": 100
+              },
+              "text": "First chunk.",
+              "no_speech_probability": 0.1,
+              "tokens": [
+                {
+                  "token_id": 1,
+                  "text": "First chunk.",
+                  "probability": 0.1,
+                  "is_special": false,
+                  "raw_timestamps": {
+                    "start": 0,
+                    "end": 100,
+                    "samples_per_unit": 1
+                  },
+                  "audio_range": {
+                    "start_sample": 0,
+                    "end_sample": 100
+                  },
+                  "alternatives": []
+                }
+              ]
+            }
+          ],
+          "_inspection": {
+            "prompt": {
+              "token_ids": [
+                50364,
+                440,
+                291
+              ],
+              "text": "Previous spoken context"
+            }
+          }
+        }
+      },
+      {
+        "type": "paragraph_break"
+      },
+      {
+        "type": "chunk",
+        "id": "c1",
+        "previous_chunk_id": "c0",
+        "audio": {
+          "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+          "range": {
+            "start_sample": 100,
+            "end_sample": 200
+          },
+          "alignment": "exact"
+        },
+        "transcription": {
+          "id": "fixture-initial:c1",
+          "profile_id": "profile:1",
+          "chunk_id": "c1",
+          "previous_id": null,
+          "text": "Second chunk.",
+          "source": {
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "sample_rate_hz": 16000,
+            "channels": 1,
+            "decoded_sample_count": 200
+          },
+          "transcriber": {
+            "name": "synthetic Whisper decoder",
+            "implementation": "test",
+            "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "audio_range": {
+            "start_sample": 100,
+            "end_sample": 200
+          },
+          "boundary": {
+            "reason": "source_end"
+          },
+          "segments": [
+            {
+              "id": "s1",
+              "raw_timestamps": {
+                "start": 100,
+                "end": 200,
+                "samples_per_unit": 1
+              },
+              "audio_range": {
+                "start_sample": 100,
+                "end_sample": 200
+              },
+              "text": "Second chunk.",
+              "no_speech_probability": 0.1,
+              "tokens": [
+                {
+                  "token_id": 2,
+                  "text": "Second chunk.",
+                  "probability": 0.1,
+                  "is_special": false,
+                  "raw_timestamps": {
+                    "start": 100,
+                    "end": 200,
+                    "samples_per_unit": 1
+                  },
+                  "audio_range": {
+                    "start_sample": 100,
+                    "end_sample": 200
+                  },
+                  "alternatives": []
+                }
+              ]
+            }
+          ]
+        },
+        "annotations": [
+          {
+            "type": "attention_mark",
+            "token_identity": {
+              "transcription_id": "fixture-initial:c1",
+              "segment_id": "s1",
+              "token_index": 0
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "audio_sources": [
+    {
+      "id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "canonical_sample_count": 200
+    }
+  ],
+  "token_audio_mappings": [
+    {
+      "chunk_id": "c1",
+      "token_identity": {
+        "transcription_id": "fixture-initial:c1",
+        "segment_id": "s1",
+        "token_index": 0
+      },
+      "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+      "range": {
+        "start_sample": 100,
+        "end_sample": 200
+      },
+      "alignment": "exact"
+    },
+    {
+      "chunk_id": "c0",
+      "token_identity": {
+        "transcription_id": "fixture-correction:c0",
+        "segment_id": "s0",
+        "token_index": 0
+      },
+      "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+      "range": {
+        "start_sample": 0,
+        "end_sample": 100
+      },
+      "alignment": "exact"
+    }
+  ],
+  "_inspection": {
+    "id": "fixture-initial",
+    "source": {
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "sample_rate_hz": 16000,
+      "channels": 1,
+      "decoded_sample_count": 200
+    },
+    "transcriber": {
+      "name": "synthetic Whisper decoder",
+      "implementation": "test",
+      "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "config": {
+      "decode_span_samples": 480000,
+      "continuation_search_samples": 96000,
+      "continuation_strong_pause_ms": 800,
+      "language": "auto",
+      "threads": 4,
+      "top_candidates": 20,
+      "chunking": {
+        "minimum_tokens": 8,
+        "target_tokens": 32,
+        "maximum_tokens": 64,
+        "usable_pause_ms": 300,
+        "strong_pause_ms": 800,
+        "long_pause_ms": 2000,
+        "distance_penalty_ms": 20
+      }
+    },
+    "status": "partial",
+    "decode_spans": [
+      {
+        "ordinal": 1,
+        "submitted": {
+          "start_sample": 0,
+          "end_sample": 200
+        },
+        "continuation_boundary": 200,
+        "prompt_token_ids": [],
+        "prompt_limit": 223,
+        "prompt_omitted_token_count": 0,
+        "empty_prompt_reason": "first_decode",
+        "advance_reason": "source_end",
+        "hypotheses": [
+          {
+            "id": "s0",
+            "raw_timestamps": {
+              "start": 0,
+              "end": 100,
+              "samples_per_unit": 1
+            },
+            "audio_range": {
+              "start_sample": 0,
+              "end_sample": 100
+            },
+            "text": "First chunk. ",
+            "no_speech_probability": 0.1,
+            "tokens": [
+              {
+                "token_id": 1,
+                "text": "First chunk. ",
+                "probability": 0.1,
+                "is_special": false,
+                "raw_timestamps": {
+                  "start": 0,
+                  "end": 100,
+                  "samples_per_unit": 1
+                },
+                "audio_range": {
+                  "start_sample": 0,
+                  "end_sample": 100
+                },
+                "alternatives": []
+              }
+            ]
+          },
+          {
+            "id": "s1",
+            "raw_timestamps": {
+              "start": 100,
+              "end": 200,
+              "samples_per_unit": 1
+            },
+            "audio_range": {
+              "start_sample": 100,
+              "end_sample": 200
+            },
+            "text": "Second chunk.",
+            "no_speech_probability": 0.1,
+            "tokens": [
+              {
+                "token_id": 2,
+                "text": "Second chunk.",
+                "probability": 0.1,
+                "is_special": false,
+                "raw_timestamps": {
+                  "start": 100,
+                  "end": 200,
+                  "samples_per_unit": 1
+                },
+                "audio_range": {
+                  "start_sample": 100,
+                  "end_sample": 200
+                },
+                "alternatives": []
+              }
+            ]
+          }
+        ],
+        "accepted_segment_ids": [
+          "s0",
+          "s1"
+        ],
+        "content": [
+          {
+            "type": "chunk",
+            "value": {
+              "id": "c0",
+              "transcription": {
+                "id": "fixture-initial:c0",
+                "profile_id": "profile:1",
+                "chunk_id": "c0",
+                "previous_id": null,
+                "text": "First chunk. ",
+                "source": {
+                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "sample_rate_hz": 16000,
+                  "channels": 1,
+                  "decoded_sample_count": 200
+                },
+                "transcriber": {
+                  "name": "synthetic Whisper decoder",
+                  "implementation": "test",
+                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                },
+                "audio_range": {
+                  "start_sample": 0,
+                  "end_sample": 100
+                },
+                "boundary": {
+                  "reason": "scored_pause"
+                },
+                "segments": [
+                  {
+                    "id": "s0",
+                    "raw_timestamps": {
+                      "start": 0,
+                      "end": 100,
+                      "samples_per_unit": 1
+                    },
+                    "audio_range": {
+                      "start_sample": 0,
+                      "end_sample": 100
+                    },
+                    "text": "First chunk. ",
+                    "no_speech_probability": 0.1,
+                    "tokens": [
+                      {
+                        "token_id": 1,
+                        "text": "First chunk. ",
+                        "probability": 0.1,
+                        "is_special": false,
+                        "raw_timestamps": {
+                          "start": 0,
+                          "end": 100,
+                          "samples_per_unit": 1
+                        },
+                        "audio_range": {
+                          "start_sample": 0,
+                          "end_sample": 100
+                        },
+                        "alternatives": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "type": "chunk",
+            "value": {
+              "id": "c1",
+              "previous_chunk_id": "c0",
+              "transcription": {
+                "id": "fixture-initial:c1",
+                "profile_id": "profile:1",
+                "chunk_id": "c1",
+                "previous_id": null,
+                "text": "Second chunk.",
+                "source": {
+                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "sample_rate_hz": 16000,
+                  "channels": 1,
+                  "decoded_sample_count": 200
+                },
+                "transcriber": {
+                  "name": "synthetic Whisper decoder",
+                  "implementation": "test",
+                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                },
+                "audio_range": {
+                  "start_sample": 100,
+                  "end_sample": 200
+                },
+                "boundary": {
+                  "reason": "source_end"
+                },
+                "segments": [
+                  {
+                    "id": "s1",
+                    "raw_timestamps": {
+                      "start": 100,
+                      "end": 200,
+                      "samples_per_unit": 1
+                    },
+                    "audio_range": {
+                      "start_sample": 100,
+                      "end_sample": 200
+                    },
+                    "text": "Second chunk.",
+                    "no_speech_probability": 0.1,
+                    "tokens": [
+                      {
+                        "token_id": 2,
+                        "text": "Second chunk.",
+                        "probability": 0.1,
+                        "is_special": false,
+                        "raw_timestamps": {
+                          "start": 100,
+                          "end": 200,
+                          "samples_per_unit": 1
+                        },
+                        "audio_range": {
+                          "start_sample": 100,
+                          "end_sample": 200
+                        },
+                        "alternatives": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "error": "example trailing decode observation"
+      }
+    ]
+  },
+  "transcription_profiles": [
+    {
+      "id": "profile:1",
+      "model": null,
+      "config": {
+        "decode_span_samples": 480000,
+        "continuation_search_samples": 96000,
+        "continuation_strong_pause_ms": 800,
+        "language": "auto",
+        "threads": 4,
+        "top_candidates": 20,
+        "chunking": {
+          "minimum_tokens": 8,
+          "target_tokens": 32,
+          "maximum_tokens": 64,
+          "usable_pause_ms": 300,
+          "strong_pause_ms": 800,
+          "long_pause_ms": 2000,
+          "distance_penalty_ms": 20
+        }
+      }
+    }
+  ],
+  "active_transcription_profile_id": "profile:1",
+  "edit_history": [
+    {
+      "before": {
+        "settings": {
+          "model": null,
+          "language": "auto"
+        },
+        "active_transcription_profile_id": "profile:1",
+        "document": {
+          "id": "document:fixture-initial",
+          "content": [
+            {
+              "type": "chunk",
+              "id": "c0",
+              "audio": {
+                "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+                "range": {
+                  "start_sample": 0,
+                  "end_sample": 100
+                },
+                "alignment": "exact"
+              },
+              "transcription": {
+                "id": "fixture-initial:c0",
+                "profile_id": "profile:1",
+                "chunk_id": "c0",
+                "previous_id": null,
+                "text": "First chunk. ",
+                "source": {
+                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "sample_rate_hz": 16000,
+                  "channels": 1,
+                  "decoded_sample_count": 200
+                },
+                "transcriber": {
+                  "name": "synthetic Whisper decoder",
+                  "implementation": "test",
+                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                },
+                "audio_range": {
+                  "start_sample": 0,
+                  "end_sample": 100
+                },
+                "boundary": {
+                  "reason": "scored_pause"
+                },
+                "segments": [
+                  {
+                    "id": "s0",
+                    "raw_timestamps": {
+                      "start": 0,
+                      "end": 100,
+                      "samples_per_unit": 1
+                    },
+                    "audio_range": {
+                      "start_sample": 0,
+                      "end_sample": 100
+                    },
+                    "text": "First chunk. ",
+                    "no_speech_probability": 0.1,
+                    "tokens": [
+                      {
+                        "token_id": 1,
+                        "text": "First chunk. ",
+                        "probability": 0.1,
+                        "is_special": false,
+                        "raw_timestamps": {
+                          "start": 0,
+                          "end": 100,
+                          "samples_per_unit": 1
+                        },
+                        "audio_range": {
+                          "start_sample": 0,
+                          "end_sample": 100
+                        },
+                        "alternatives": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "type": "chunk",
+              "id": "c1",
+              "previous_chunk_id": "c0",
+              "audio": {
+                "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+                "range": {
+                  "start_sample": 100,
+                  "end_sample": 200
+                },
+                "alignment": "exact"
+              },
+              "transcription": {
+                "id": "fixture-initial:c1",
+                "profile_id": "profile:1",
+                "chunk_id": "c1",
+                "previous_id": null,
+                "text": "Second chunk.",
+                "source": {
+                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "sample_rate_hz": 16000,
+                  "channels": 1,
+                  "decoded_sample_count": 200
+                },
+                "transcriber": {
+                  "name": "synthetic Whisper decoder",
+                  "implementation": "test",
+                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                },
+                "audio_range": {
+                  "start_sample": 100,
+                  "end_sample": 200
+                },
+                "boundary": {
+                  "reason": "source_end"
+                },
+                "segments": [
+                  {
+                    "id": "s1",
+                    "raw_timestamps": {
+                      "start": 100,
+                      "end": 200,
+                      "samples_per_unit": 1
+                    },
+                    "audio_range": {
+                      "start_sample": 100,
+                      "end_sample": 200
+                    },
+                    "text": "Second chunk.",
+                    "no_speech_probability": 0.1,
+                    "tokens": [
+                      {
+                        "token_id": 2,
+                        "text": "Second chunk.",
+                        "probability": 0.1,
+                        "is_special": false,
+                        "raw_timestamps": {
+                          "start": 100,
+                          "end": 200,
+                          "samples_per_unit": 1
+                        },
+                        "audio_range": {
+                          "start_sample": 100,
+                          "end_sample": 200
+                        },
+                        "alternatives": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "token_audio_mappings": [
+          {
+            "chunk_id": "c0",
+            "token_identity": {
+              "transcription_id": "fixture-initial:c0",
+              "segment_id": "s0",
+              "token_index": 0
+            },
+            "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+            "range": {
+              "start_sample": 0,
+              "end_sample": 100
+            },
+            "alignment": "exact"
+          },
+          {
+            "chunk_id": "c1",
+            "token_identity": {
+              "transcription_id": "fixture-initial:c1",
+              "segment_id": "s1",
+              "token_index": 0
+            },
+            "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+            "range": {
+              "start_sample": 100,
+              "end_sample": 200
+            },
+            "alignment": "exact"
+          }
+        ],
+        "resolved_issues": []
+      }
+    },
+    {
+      "before": {
+        "settings": {
+          "model": null,
+          "language": "auto"
+        },
+        "active_transcription_profile_id": "profile:1",
+        "document": {
+          "id": "document:fixture-initial",
+          "content": [
+            {
+              "type": "chunk",
+              "id": "c0",
+              "audio": {
+                "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+                "range": {
+                  "start_sample": 0,
+                  "end_sample": 100
+                },
+                "alignment": "exact"
+              },
+              "transcription": {
+                "id": "fixture-initial:c0",
+                "profile_id": "profile:1",
+                "chunk_id": "c0",
+                "previous_id": null,
+                "text": "First chunk. ",
+                "source": {
+                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "sample_rate_hz": 16000,
+                  "channels": 1,
+                  "decoded_sample_count": 200
+                },
+                "transcriber": {
+                  "name": "synthetic Whisper decoder",
+                  "implementation": "test",
+                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                },
+                "audio_range": {
+                  "start_sample": 0,
+                  "end_sample": 100
+                },
+                "boundary": {
+                  "reason": "scored_pause"
+                },
+                "segments": [
+                  {
+                    "id": "s0",
+                    "raw_timestamps": {
+                      "start": 0,
+                      "end": 100,
+                      "samples_per_unit": 1
+                    },
+                    "audio_range": {
+                      "start_sample": 0,
+                      "end_sample": 100
+                    },
+                    "text": "First chunk. ",
+                    "no_speech_probability": 0.1,
+                    "tokens": [
+                      {
+                        "token_id": 1,
+                        "text": "First chunk. ",
+                        "probability": 0.1,
+                        "is_special": false,
+                        "raw_timestamps": {
+                          "start": 0,
+                          "end": 100,
+                          "samples_per_unit": 1
+                        },
+                        "audio_range": {
+                          "start_sample": 0,
+                          "end_sample": 100
+                        },
+                        "alternatives": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "type": "paragraph_break"
+            },
+            {
+              "type": "chunk",
+              "id": "c1",
+              "previous_chunk_id": "c0",
+              "audio": {
+                "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+                "range": {
+                  "start_sample": 100,
+                  "end_sample": 200
+                },
+                "alignment": "exact"
+              },
+              "transcription": {
+                "id": "fixture-initial:c1",
+                "profile_id": "profile:1",
+                "chunk_id": "c1",
+                "previous_id": null,
+                "text": "Second chunk.",
+                "source": {
+                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "sample_rate_hz": 16000,
+                  "channels": 1,
+                  "decoded_sample_count": 200
+                },
+                "transcriber": {
+                  "name": "synthetic Whisper decoder",
+                  "implementation": "test",
+                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                },
+                "audio_range": {
+                  "start_sample": 100,
+                  "end_sample": 200
+                },
+                "boundary": {
+                  "reason": "source_end"
+                },
+                "segments": [
+                  {
+                    "id": "s1",
+                    "raw_timestamps": {
+                      "start": 100,
+                      "end": 200,
+                      "samples_per_unit": 1
+                    },
+                    "audio_range": {
+                      "start_sample": 100,
+                      "end_sample": 200
+                    },
+                    "text": "Second chunk.",
+                    "no_speech_probability": 0.1,
+                    "tokens": [
+                      {
+                        "token_id": 2,
+                        "text": "Second chunk.",
+                        "probability": 0.1,
+                        "is_special": false,
+                        "raw_timestamps": {
+                          "start": 100,
+                          "end": 200,
+                          "samples_per_unit": 1
+                        },
+                        "audio_range": {
+                          "start_sample": 100,
+                          "end_sample": 200
+                        },
+                        "alternatives": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "token_audio_mappings": [
+          {
+            "chunk_id": "c0",
+            "token_identity": {
+              "transcription_id": "fixture-initial:c0",
+              "segment_id": "s0",
+              "token_index": 0
+            },
+            "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+            "range": {
+              "start_sample": 0,
+              "end_sample": 100
+            },
+            "alignment": "exact"
+          },
+          {
+            "chunk_id": "c1",
+            "token_identity": {
+              "transcription_id": "fixture-initial:c1",
+              "segment_id": "s1",
+              "token_index": 0
+            },
+            "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+            "range": {
+              "start_sample": 100,
+              "end_sample": 200
+            },
+            "alignment": "exact"
+          }
+        ],
+        "resolved_issues": []
+      }
+    },
+    {
+      "before": {
+        "settings": {
+          "model": null,
+          "language": "auto"
+        },
+        "active_transcription_profile_id": "profile:1",
+        "document": {
+          "id": "document:fixture-initial",
+          "content": [
+            {
+              "type": "chunk",
+              "id": "c0",
+              "audio": {
+                "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+                "range": {
+                  "start_sample": 0,
+                  "end_sample": 100
+                },
+                "alignment": "exact"
+              },
+              "transcription": {
+                "id": "fixture-correction:c0",
+                "profile_id": "profile:1",
+                "chunk_id": "c0",
+                "previous_id": "fixture-initial:c0",
+                "text": "First chunk.",
+                "source": {
+                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "sample_rate_hz": 16000,
+                  "channels": 1,
+                  "decoded_sample_count": 100
+                },
+                "transcriber": {
+                  "name": "synthetic Whisper decoder",
+                  "implementation": "test",
+                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                },
+                "audio_range": {
+                  "start_sample": 0,
+                  "end_sample": 100
+                },
+                "boundary": {
+                  "reason": "scored_pause"
+                },
+                "segments": [
+                  {
+                    "id": "s0",
+                    "raw_timestamps": {
+                      "start": 0,
+                      "end": 100,
+                      "samples_per_unit": 1
+                    },
+                    "audio_range": {
+                      "start_sample": 0,
+                      "end_sample": 100
+                    },
+                    "text": "First chunk.",
+                    "no_speech_probability": 0.1,
+                    "tokens": [
+                      {
+                        "token_id": 1,
+                        "text": "First chunk.",
+                        "probability": 0.1,
+                        "is_special": false,
+                        "raw_timestamps": {
+                          "start": 0,
+                          "end": 100,
+                          "samples_per_unit": 1
+                        },
+                        "audio_range": {
+                          "start_sample": 0,
+                          "end_sample": 100
+                        },
+                        "alternatives": []
+                      }
+                    ]
+                  }
+                ],
+                "_inspection": {
+                  "prompt": {
+                    "token_ids": [
+                      50364,
+                      440,
+                      291
+                    ],
+                    "text": "Previous spoken context"
+                  }
+                }
+              }
+            },
+            {
+              "type": "paragraph_break"
+            },
+            {
+              "type": "chunk",
+              "id": "c1",
+              "previous_chunk_id": "c0",
+              "audio": {
+                "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+                "range": {
+                  "start_sample": 100,
+                  "end_sample": 200
+                },
+                "alignment": "exact"
+              },
+              "transcription": {
+                "id": "fixture-initial:c1",
+                "profile_id": "profile:1",
+                "chunk_id": "c1",
+                "previous_id": null,
+                "text": "Second chunk.",
+                "source": {
+                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "sample_rate_hz": 16000,
+                  "channels": 1,
+                  "decoded_sample_count": 200
+                },
+                "transcriber": {
+                  "name": "synthetic Whisper decoder",
+                  "implementation": "test",
+                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                },
+                "audio_range": {
+                  "start_sample": 100,
+                  "end_sample": 200
+                },
+                "boundary": {
+                  "reason": "source_end"
+                },
+                "segments": [
+                  {
+                    "id": "s1",
+                    "raw_timestamps": {
+                      "start": 100,
+                      "end": 200,
+                      "samples_per_unit": 1
+                    },
+                    "audio_range": {
+                      "start_sample": 100,
+                      "end_sample": 200
+                    },
+                    "text": "Second chunk.",
+                    "no_speech_probability": 0.1,
+                    "tokens": [
+                      {
+                        "token_id": 2,
+                        "text": "Second chunk.",
+                        "probability": 0.1,
+                        "is_special": false,
+                        "raw_timestamps": {
+                          "start": 100,
+                          "end": 200,
+                          "samples_per_unit": 1
+                        },
+                        "audio_range": {
+                          "start_sample": 100,
+                          "end_sample": 200
+                        },
+                        "alternatives": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "token_audio_mappings": [
+          {
+            "chunk_id": "c1",
+            "token_identity": {
+              "transcription_id": "fixture-initial:c1",
+              "segment_id": "s1",
+              "token_index": 0
+            },
+            "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+            "range": {
+              "start_sample": 100,
+              "end_sample": 200
+            },
+            "alignment": "exact"
+          },
+          {
+            "chunk_id": "c0",
+            "token_identity": {
+              "transcription_id": "fixture-correction:c0",
+              "segment_id": "s0",
+              "token_index": 0
+            },
+            "source_id": "audio:1111111111111111111111111111111111111111111111111111111111111111",
+            "range": {
+              "start_sample": 0,
+              "end_sample": 100
+            },
+            "alignment": "exact"
+          }
+        ],
+        "resolved_issues": []
+      }
+    }
+  ]
+}

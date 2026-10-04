@@ -14,8 +14,9 @@ and history.
 _Avoid_: Document as a name for the complete working set.
 
 **Document**:
-The editable composition derived by reading the mixed content of ordered decode
-spans. Its visible text comes from each chunk's current transcription.
+The editable composition stored as ordered mixed content of chunks and
+paragraph breaks. Its visible text comes from each chunk's current
+transcription, while paragraphs and displayed addresses are derived.
 Supporting audio, transcription evidence, review state, and history belong to
 the project rather than the document.
 _Avoid_: Draft, project, visible document.
@@ -34,8 +35,9 @@ later user-supplied audio may provide another one.
 _Avoid_: Recording as a synonym when discussing source identity.
 
 **Decode span**:
-Audio processed in one step of initial transcription, together with its decoder
-evidence and produced content. Decode spans may overlap.
+Audio processed in one step of initial transcription, together with its
+decoder evidence. Decode spans may overlap and may produce zero or more
+finalized chunks, but they do not own those chunks.
 _Avoid_: Provisional chunk, processing window, submitted window,
 transcription window.
 
@@ -46,9 +48,8 @@ _Avoid_: Good break point, handoff boundary, core boundary, cursor.
 
 **Chunk**:
 A finalized, disjoint portion of input audio, limited to about 30 seconds,
-together with its metadata, edits, and transcriptions. Its identity and
-boundaries remain stable while overlapping decode-span data remains available
-as evidence.
+together with the references and current state needed to replay or transcribe
+it. Its identity and boundaries remain stable; its Document owns it directly.
 _Avoid_: Decode span, provisional chunk, replay unit, processing window.
 
 **Chunk ID**:
@@ -95,6 +96,10 @@ _Avoid_: Chunk, sentence.
 The audio, model, software version, language, settings, transcription prompt,
 and edit instructions used to produce a transcription. Hardware and runtime
 details are optional diagnostics.
+
+**Transcription profile**:
+An immutable, identifiable selection of model, language, and other settings
+used to produce a transcription or selected for the next transcription.
 
 **Transcription prompt**:
 The ordered sequence of compatible text-token IDs supplied before decoding to
@@ -190,10 +195,10 @@ confirmed error or proposed correction.
 _Avoid_: Review item, warning, error, suggestion.
 
 **Attention mark**:
-A project-owned marker before a current token in a particular chunk, indicating
-that nearby text should be reviewed later. Moving the chunk between paragraphs
-does not change the mark; replacing the targeted token removes it, while undo
-may restore both. It is distinct from a system-generated issue.
+A chunk-owned annotation before a current token, indicating that nearby text
+should be reviewed later. Moving the chunk between paragraphs does not change
+the mark; replacing the targeted token removes it, while undo may restore both.
+It is distinct from a system-generated issue.
 _Avoid_: Issue, flag.
 
 ### Interaction

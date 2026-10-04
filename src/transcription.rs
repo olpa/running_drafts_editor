@@ -1,6 +1,6 @@
 //! Immutable Whisper transcription evidence and bounded decode-span orchestration.
 
-use std::{fs::File, io::Read, path::Path, sync::Arc};
+use std::{collections::HashMap, fs::File, io::Read, path::Path, sync::Arc};
 
 use hfvc_lib::{InteractiveSession, SessionConfig, Transcription as DecoderTranscription};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,7 @@ use whisper_rs::{
 };
 
 use crate::chunking::{SampleRange, SourceFacts};
+use crate::document::{AlignmentState, ChunkAnnotation};
 
 const WHISPER_SAMPLE_RATE_HZ: u32 = 16_000;
 const WHISPER_MAX_SAMPLES: u64 = 480_000;
@@ -166,23 +167,60 @@ pub struct ChunkBoundary {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Chunk {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_chunk_id: Option<String>,
+    #[serde(default, skip)]
     pub ordinal: u32,
+    #[serde(default, skip)]
     pub segment_ids: Vec<String>,
+    #[serde(skip, default = "empty_sample_range")]
     pub audio_range: SampleRange,
+    #[serde(default, skip)]
     pub text: String,
+    #[serde(default, skip)]
     pub token_count: usize,
+    #[serde(skip, default = "default_chunk_boundary")]
     pub boundary: ChunkBoundary,
-    pub transcriptions: Vec<Transcription>,
-    pub current_transcription_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<ChunkAudioReference>,
+    pub transcription: Option<Transcription>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<ChunkAnnotation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChunkAudioReference {
+    pub source_id: String,
+    pub range: SampleRange,
+    #[serde(default = "exact_audio_alignment")]
+    pub alignment: AlignmentState,
+}
+
+fn exact_audio_alignment() -> AlignmentState {
+    AlignmentState::Exact
+}
+
+fn empty_sample_range() -> SampleRange {
+    SampleRange {
+        start_sample: 0,
+        end_sample: 0,
+    }
+}
+
+fn default_chunk_boundary() -> ChunkBoundary {
+    ChunkBoundary {
+        reason: ChunkBoundaryReason::SourceEnd,
+        pause_samples: None,
+    }
 }
 
 impl Chunk {
     pub fn current_transcription(&self) -> Option<&Transcription> {
-        self.transcriptions
-            .iter()
-            .find(|transcription| transcription.id == self.current_transcription_id)
+        self.transcription.as_ref()
     }
 }
 
@@ -190,9 +228,9 @@ impl Chunk {
 pub struct ParagraphBreak;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum DecodeSpanItem {
-    Chunk(Chunk),
+    Chunk(Box<Chunk>),
     ParagraphBreak(ParagraphBreak),
 }
 
@@ -250,19 +288,54 @@ pub struct InitialTranscriptionEvidence {
 
 /// One immutable proposal for one finalized chunk.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Transcription {
     pub id: String,
+    pub profile_id: String,
     pub chunk_id: String,
     pub previous_id: Option<String>,
     pub text: String,
     pub source: SourceFacts,
     pub transcriber: TranscriberIdentity,
+    #[serde(skip)]
     pub config: TranscriptionConfig,
     pub audio_range: SampleRange,
     pub boundary: ChunkBoundary,
     pub segments: Vec<DecodedSegment>,
+    #[serde(skip)]
     pub prompt_token_ids: Vec<i32>,
+    #[serde(skip)]
     pub forced_token_ids: Vec<i32>,
+    #[serde(
+        default,
+        rename = "_inspection",
+        deserialize_with = "ignore_transcription_inspection",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inspection: Option<TranscriptionInspection>,
+}
+
+fn ignore_transcription_inspection<'de, D>(
+    deserializer: D,
+) -> Result<Option<TranscriptionInspection>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(None)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptionInspection {
+    pub prompt: PromptInspection,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forced_prefix_token_ids: Vec<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptInspection {
+    pub token_ids: Vec<i32>,
+    pub text: String,
 }
 
 impl InitialTranscriptionResult {
@@ -280,7 +353,7 @@ impl InitialTranscriptionResult {
     pub fn chunks(&self) -> impl Iterator<Item = &Chunk> {
         self.decode_spans.iter().flat_map(|span| {
             span.content.iter().filter_map(|item| match item {
-                DecodeSpanItem::Chunk(chunk) => Some(chunk),
+                DecodeSpanItem::Chunk(chunk) => Some(chunk.as_ref()),
                 DecodeSpanItem::ParagraphBreak(_) => None,
             })
         })
@@ -289,7 +362,7 @@ impl InitialTranscriptionResult {
     pub fn chunks_mut(&mut self) -> impl Iterator<Item = &mut Chunk> {
         self.decode_spans.iter_mut().flat_map(|span| {
             span.content.iter_mut().filter_map(|item| match item {
-                DecodeSpanItem::Chunk(chunk) => Some(chunk),
+                DecodeSpanItem::Chunk(chunk) => Some(chunk.as_mut()),
                 DecodeSpanItem::ParagraphBreak(_) => None,
             })
         })
@@ -309,20 +382,17 @@ impl InitialTranscriptionResult {
 
     pub fn namespace_chunks(&mut self, recording_id: &str) {
         let run_id = self.id.clone();
+        let mut previous_chunk_id = None;
         for chunk in self.chunks_mut() {
             let chunk_id = format!("chunk:{recording_id}:{run_id}:{}", chunk.ordinal);
             chunk.id.clone_from(&chunk_id);
-            for transcription in &mut chunk.transcriptions {
+            if let Some(transcription) = &mut chunk.transcription {
                 transcription.chunk_id.clone_from(&chunk_id);
                 if transcription.previous_id.is_none() {
                     transcription.id = format!("{run_id}:{chunk_id}");
                 }
             }
-            chunk.current_transcription_id = chunk
-                .transcriptions
-                .first()
-                .map(|transcription| transcription.id.clone())
-                .unwrap_or_default();
+            chunk.previous_chunk_id = previous_chunk_id.replace(chunk_id);
         }
     }
 
@@ -331,6 +401,14 @@ impl InitialTranscriptionResult {
         let source = self.source.clone();
         let transcriber = self.transcriber.clone();
         let config = self.config.clone();
+        let prompt_texts = self
+            .decode_spans
+            .iter()
+            .flat_map(|span| &span.hypotheses)
+            .flat_map(|segment| &segment.tokens)
+            .filter(|token| !token.is_special)
+            .map(|token| (token.token_id, token.text.clone()))
+            .collect::<HashMap<_, _>>();
         for span in &mut self.decode_spans {
             let prompt_token_ids = span.prompt_token_ids.clone();
             let hypotheses = span.hypotheses.clone();
@@ -338,8 +416,13 @@ impl InitialTranscriptionResult {
                 let DecodeSpanItem::Chunk(chunk) = item else {
                     continue;
                 };
+                let prompt_text = prompt_token_ids
+                    .iter()
+                    .filter_map(|prompt_id| prompt_texts.get(prompt_id).map(String::as_str))
+                    .collect::<String>();
                 let transcription = Transcription {
                     id: format!("{run_id}:{}", chunk.id),
+                    profile_id: "profile:1".into(),
                     chunk_id: chunk.id.clone(),
                     previous_id: None,
                     text: chunk.text.clone(),
@@ -355,9 +438,15 @@ impl InitialTranscriptionResult {
                         .collect(),
                     prompt_token_ids: prompt_token_ids.clone(),
                     forced_token_ids: Vec::new(),
+                    inspection: Some(TranscriptionInspection {
+                        prompt: PromptInspection {
+                            token_ids: prompt_token_ids.clone(),
+                            text: prompt_text,
+                        },
+                        forced_prefix_token_ids: Vec::new(),
+                    }),
                 };
-                chunk.current_transcription_id = transcription.id.clone();
-                chunk.transcriptions.push(transcription);
+                chunk.transcription = Some(transcription);
             }
         }
     }
@@ -370,6 +459,7 @@ impl InitialTranscriptionResult {
     ) -> Transcription {
         Transcription {
             id: format!("{}:{}", self.id, chunk.id),
+            profile_id: String::new(),
             chunk_id: chunk_id.into(),
             previous_id,
             text: chunk.text.clone(),
@@ -396,6 +486,7 @@ impl InitialTranscriptionResult {
                 .map(|span| span.prompt_token_ids.clone())
                 .unwrap_or_default(),
             forced_token_ids: Vec::new(),
+            inspection: None,
         }
     }
 }
@@ -596,6 +687,7 @@ impl TranscriberSession {
         let segment_ids = segments.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
         let chunk = Chunk {
             id: "decoded-chunk".into(),
+            previous_chunk_id: None,
             ordinal: 1,
             segment_ids,
             audio_range: request.chunk_range,
@@ -609,8 +701,9 @@ impl TranscriberSession {
                 reason: ChunkBoundaryReason::SourceEnd,
                 pause_samples: None,
             },
-            transcriptions: Vec::new(),
-            current_transcription_id: String::new(),
+            audio: None,
+            transcription: None,
+            annotations: Vec::new(),
         };
         let config = TranscriptionConfig {
             language: request.language,
@@ -630,7 +723,7 @@ impl TranscriberSession {
             continuation_pause_samples: None,
             hypotheses: segments.clone(),
             accepted_segment_ids: segments.iter().map(|s| s.id.clone()).collect(),
-            content: vec![DecodeSpanItem::Chunk(chunk)],
+            content: vec![DecodeSpanItem::Chunk(Box::new(chunk))],
             error: None,
         };
         let transcriber = self.decoder.identity.clone();
@@ -655,6 +748,13 @@ impl TranscriberSession {
         let mut transcription =
             result.transcription_for(chunk, &request.chunk_id, Some(request.previous_id));
         transcription.forced_token_ids = request.forced_tokens;
+        transcription.inspection = Some(TranscriptionInspection {
+            prompt: PromptInspection {
+                token_ids: Vec::new(),
+                text: String::new(),
+            },
+            forced_prefix_token_ids: transcription.forced_token_ids.clone(),
+        });
         Ok(transcription)
     }
 }
@@ -812,7 +912,7 @@ pub fn transcribe_initial<D: DecodeSpanDecoder>(
         let mut content = Vec::new();
         for chunk in chunks {
             let paragraph_break = chunk.boundary.reason == ChunkBoundaryReason::LongPause;
-            content.push(DecodeSpanItem::Chunk(chunk));
+            content.push(DecodeSpanItem::Chunk(Box::new(chunk)));
             if paragraph_break {
                 content.push(DecodeSpanItem::ParagraphBreak(ParagraphBreak));
             }
@@ -1060,6 +1160,7 @@ fn build_chunks(
         *next_ordinal = next_ordinal.saturating_add(1);
         let chunk = Chunk {
             id: format!("chunk-{ordinal}"),
+            previous_chunk_id: None,
             ordinal,
             segment_ids: selected.iter().map(|segment| segment.id.clone()).collect(),
             audio_range: SampleRange {
@@ -1075,8 +1176,9 @@ fn build_chunks(
                 reason: choice.reason,
                 pause_samples: choice.pause_samples,
             },
-            transcriptions: Vec::new(),
-            current_transcription_id: String::new(),
+            audio: None,
+            transcription: None,
+            annotations: Vec::new(),
         };
         *previous_chunk_end = Some(chunk.audio_range.end_sample);
         chunks.push(chunk);

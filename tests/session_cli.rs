@@ -87,8 +87,16 @@ fn paragraph_operations_preserve_chunks_and_recalculate_issue_addresses() {
 #[test]
 fn text_without_matching_tokens_is_visible_and_structurally_selectable() {
     let mut result = common::batch("initial", &["exact text", "two"]);
-    result.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0].text =
-        "bad evidence".into();
+    result
+        .chunks_mut()
+        .next()
+        .unwrap()
+        .transcription
+        .as_mut()
+        .unwrap()
+        .segments[0]
+        .tokens[0]
+        .text = "bad evidence".into();
     let project = Project::from_initial_transcription(&result);
     let (output, errors, saved) = run(
         &project,

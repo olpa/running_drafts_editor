@@ -73,14 +73,17 @@ pub fn batch(id: &str, texts: &[&str]) -> InitialTranscriptionResult {
             };
             Chunk {
                 id: chunk_id.clone(),
+                previous_chunk_id: index.checked_sub(1).map(|previous| format!("c{previous}")),
                 ordinal: index as u32 + 1,
                 segment_ids: vec![segment.id.clone()],
                 audio_range: segment.audio_range.unwrap(),
                 text: segment.text.clone(),
                 token_count: 1,
                 boundary: boundary.clone(),
-                transcriptions: vec![Transcription {
+                audio: None,
+                transcription: Some(Transcription {
                     id: transcription_id.clone(),
+                    profile_id: "profile:1".into(),
                     chunk_id,
                     previous_id: None,
                     text: segment.text.clone(),
@@ -92,8 +95,9 @@ pub fn batch(id: &str, texts: &[&str]) -> InitialTranscriptionResult {
                     segments: vec![segment.clone()],
                     prompt_token_ids: Vec::new(),
                     forced_token_ids: Vec::new(),
-                }],
-                current_transcription_id: transcription_id,
+                    inspection: None,
+                }),
+                annotations: Vec::new(),
             }
         })
         .collect::<Vec<_>>();
@@ -119,7 +123,10 @@ pub fn batch(id: &str, texts: &[&str]) -> InitialTranscriptionResult {
             continuation_pause_samples: None,
             hypotheses: segments.clone(),
             accepted_segment_ids: segments.iter().map(|s| s.id.clone()).collect(),
-            content: chunks.into_iter().map(DecodeSpanItem::Chunk).collect(),
+            content: chunks
+                .into_iter()
+                .map(|chunk| DecodeSpanItem::Chunk(Box::new(chunk)))
+                .collect(),
             error: None,
         }],
     }
@@ -134,7 +141,7 @@ pub fn synchronize_initial_transcriptions(result: &mut InitialTranscriptionResul
     let transcriber = result.transcriber.clone();
     let config = result.config.clone();
     for chunk in result.chunks_mut() {
-        for transcription in &mut chunk.transcriptions {
+        if let Some(transcription) = &mut chunk.transcription {
             transcription.source = source.clone();
             transcription.transcriber = transcriber.clone();
             transcription.config = config.clone();

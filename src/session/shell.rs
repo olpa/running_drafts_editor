@@ -1237,7 +1237,8 @@ mod tests {
                 .language,
             "de"
         );
-        assert!(execute(&mut state, "model new-model").is_empty());
+        let error = execute(&mut state, "model new-model");
+        assert!(error.is_empty(), "{error}");
         assert_eq!(
             state.project.settings().model.as_deref(),
             Some(Path::new("new-model"))
@@ -1390,7 +1391,15 @@ mod tests {
         batch.source = source;
         batch.config.language = "en".into();
         crate::test_support::synchronize_initial_transcriptions(&mut batch);
-        batch.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0]
+        batch
+            .chunks_mut()
+            .next()
+            .unwrap()
+            .transcription
+            .as_mut()
+            .unwrap()
+            .segments[0]
+            .tokens[0]
             .alternatives
             .push(crate::transcription::TokenAlternative {
                 token_id: 90,
@@ -1452,8 +1461,16 @@ mod tests {
         batch.source = source;
         batch.config.language = "en".into();
         crate::test_support::synchronize_initial_transcriptions(&mut batch);
-        batch.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0].text =
-            "different evidence".into();
+        batch
+            .chunks_mut()
+            .next()
+            .unwrap()
+            .transcription
+            .as_mut()
+            .unwrap()
+            .segments[0]
+            .tokens[0]
+            .text = "different evidence".into();
         state.project = Project::from_initial_transcription_with_source(&batch, Some(&path));
         state
             .project
@@ -1462,7 +1479,8 @@ mod tests {
         state.navigation = NavigationState::new(&state.project);
         assert_eq!(state.project.chunk_has_tokens(1, 1), Some(false));
         execute(&mut state, "1.1,1.2select");
-        assert!(execute(&mut state, "replace corrected").is_empty());
+        let error = execute(&mut state, "replace corrected");
+        assert!(error.is_empty(), "{error}");
         assert_eq!(
             state.project.paragraph(1).unwrap().text(),
             "corrected suffix"
