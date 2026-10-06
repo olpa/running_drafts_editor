@@ -125,6 +125,15 @@ initial-transcription documentation.
   referenced by `profile_id`; the profile owns model, language, and the full
   decode configuration. Previous current Transcriptions remain reachable only
   through Project undo/redo history.
+- Do not repeat audio-source facts or transcriber implementation identity in a
+  Transcription. Its containing Chunk owns the audio-source reference and its
+  profile identifies the relevant transcription configuration. Initial-process
+  source facts may still appear in ignored `_inspection` evidence when they
+  explain failures or audio that produced no Chunk.
+- Omit the standard Whisper timestamp scale of 160 samples per timestamp unit;
+  write `samples_per_unit` only for a nonstandard scale. Render each token's
+  alternatives array compactly on one line so candidate evidence remains easy
+  to scan.
 - Keep token-to-audio mappings and resolved multi-token issues at Project scope.
   They are cross-cutting indexes or review state rather than intrinsic Chunk
   content. Keep attention marks in their target Chunk.

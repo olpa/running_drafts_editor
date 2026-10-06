@@ -86,12 +86,18 @@ pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError
     };
     let result = (|| {
         let mut writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(&mut writer, project).map_err(|source| {
-            ProjectIoError::Encode {
+        let pretty =
+            serde_json::to_string_pretty(project).map_err(|source| ProjectIoError::Encode {
                 path: path.into(),
                 source,
-            }
-        })?;
+            })?;
+        let encoded = compact_alternative_arrays(&pretty);
+        writer
+            .write_all(encoded.as_bytes())
+            .map_err(|source| ProjectIoError::Save {
+                path: path.into(),
+                source,
+            })?;
         writer
             .write_all(b"\n")
             .map_err(|source| ProjectIoError::Save {
@@ -118,6 +124,82 @@ pub fn save_project(path: &Path, project: &Project) -> Result<(), ProjectIoError
         let _ = fs::remove_file(&temporary_path);
     }
     result
+}
+
+fn compact_alternative_arrays(pretty: &str) -> String {
+    const MARKER: &str = "\"alternatives\": ";
+
+    let mut output = String::with_capacity(pretty.len());
+    let mut cursor = 0;
+    while let Some(relative_marker) = pretty[cursor..].find(MARKER) {
+        let marker = cursor + relative_marker;
+        let Some(relative_start) = pretty[marker + MARKER.len()..].find('[') else {
+            break;
+        };
+        let start = marker + MARKER.len() + relative_start;
+        let Some(end) = matching_array_end(pretty, start) else {
+            break;
+        };
+        output.push_str(&pretty[cursor..start]);
+        output.push_str(&without_json_whitespace(&pretty[start..=end]));
+        cursor = end + 1;
+    }
+    output.push_str(&pretty[cursor..]);
+    output
+}
+
+fn matching_array_end(json: &str, start: usize) -> Option<usize> {
+    let mut depth = 0_u32;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (relative, byte) in json.as_bytes()[start..].iter().copied().enumerate() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'[' => depth += 1,
+            b']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(start + relative);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn without_json_whitespace(json: &str) -> String {
+    let mut compact = String::with_capacity(json.len());
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in json.chars() {
+        if quoted {
+            compact.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+        } else if character == '"' {
+            quoted = true;
+            compact.push(character);
+        } else if !character.is_whitespace() {
+            compact.push(character);
+        }
+    }
+    compact
 }
 
 /// Write disposable plain text, including intentional attention flags but no
@@ -203,11 +285,7 @@ pub(crate) fn validate(project: &Project) -> Result<(), ProjectIoError> {
         if t.config != profile.config {
             return Err(invalid("transcription differs from its profile"));
         }
-        if t.source.sample_rate_hz != 16_000
-            || t.source.channels != 1
-            || t.audio_range.is_empty()
-            || t.audio_range.end_sample > t.source.decoded_sample_count
-        {
+        if t.audio_range.is_empty() {
             return Err(invalid("invalid transcription audio coordinates"));
         }
         let mut segments = HashSet::new();

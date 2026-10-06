@@ -96,7 +96,19 @@ pub enum AdvanceReason {
 pub struct DecoderTimestamps {
     pub start: i64,
     pub end: i64,
+    #[serde(
+        default = "whisper_samples_per_timestamp",
+        skip_serializing_if = "is_whisper_samples_per_timestamp"
+    )]
     pub samples_per_unit: u64,
+}
+
+fn whisper_samples_per_timestamp() -> u64 {
+    SAMPLES_PER_CENTISECOND
+}
+
+fn is_whisper_samples_per_timestamp(value: &u64) -> bool {
+    *value == SAMPLES_PER_CENTISECOND
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -280,7 +292,6 @@ pub struct InitialTranscriptionResult {
 pub struct InitialTranscriptionEvidence {
     pub id: String,
     pub source: SourceFacts,
-    pub transcriber: TranscriberIdentity,
     pub config: TranscriptionConfig,
     pub status: TranscriptionStatus,
     pub decode_spans: Vec<DecodeSpan>,
@@ -295,8 +306,6 @@ pub struct Transcription {
     pub chunk_id: String,
     pub previous_id: Option<String>,
     pub text: String,
-    pub source: SourceFacts,
-    pub transcriber: TranscriberIdentity,
     #[serde(skip)]
     pub config: TranscriptionConfig,
     pub audio_range: SampleRange,
@@ -343,7 +352,6 @@ impl InitialTranscriptionResult {
         InitialTranscriptionEvidence {
             id: self.id.clone(),
             source: self.source.clone(),
-            transcriber: self.transcriber.clone(),
             config: self.config.clone(),
             status: self.status,
             decode_spans: self.decode_spans.clone(),
@@ -398,8 +406,6 @@ impl InitialTranscriptionResult {
 
     fn initialize_chunk_transcriptions(&mut self) {
         let run_id = self.id.clone();
-        let source = self.source.clone();
-        let transcriber = self.transcriber.clone();
         let config = self.config.clone();
         let prompt_texts = self
             .decode_spans
@@ -426,8 +432,6 @@ impl InitialTranscriptionResult {
                     chunk_id: chunk.id.clone(),
                     previous_id: None,
                     text: chunk.text.clone(),
-                    source: source.clone(),
-                    transcriber: transcriber.clone(),
                     config: config.clone(),
                     audio_range: chunk.audio_range,
                     boundary: chunk.boundary.clone(),
@@ -463,8 +467,6 @@ impl InitialTranscriptionResult {
             chunk_id: chunk_id.into(),
             previous_id,
             text: chunk.text.clone(),
-            source: self.source.clone(),
-            transcriber: self.transcriber.clone(),
             config: self.config.clone(),
             audio_range: chunk.audio_range,
             boundary: chunk.boundary.clone(),

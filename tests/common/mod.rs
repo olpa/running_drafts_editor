@@ -87,8 +87,6 @@ pub fn batch(id: &str, texts: &[&str]) -> InitialTranscriptionResult {
                     chunk_id,
                     previous_id: None,
                     text: segment.text.clone(),
-                    source: source.clone(),
-                    transcriber: transcriber.clone(),
                     config: config.clone(),
                     audio_range: segment.audio_range.unwrap(),
                     boundary,
@@ -137,13 +135,9 @@ pub fn project(texts: &[&str]) -> Project {
 }
 
 pub fn synchronize_initial_transcriptions(result: &mut InitialTranscriptionResult) {
-    let source = result.source.clone();
-    let transcriber = result.transcriber.clone();
     let config = result.config.clone();
     for chunk in result.chunks_mut() {
         if let Some(transcription) = &mut chunk.transcription {
-            transcription.source = source.clone();
-            transcription.transcriber = transcriber.clone();
             transcription.config = config.clone();
             transcription.audio_range = chunk.audio_range;
             transcription.boundary = chunk.boundary.clone();

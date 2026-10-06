@@ -327,35 +327,16 @@ pub(crate) fn render_transcription_info(
         transcription: None,
         annotations: Vec::new(),
     };
-    let run = InitialTranscriptionResult {
-        id: t.id.clone(),
-        revision: 0,
-        source: t.source.clone(),
-        transcriber: t.transcriber.clone(),
-        config: t.config.clone(),
-        status: crate::transcription::TranscriptionStatus::Succeeded,
-        decode_spans: Vec::new(),
-    };
-    render_chunk_info(&run, &chunk, paragraph, chunk_number, output)
-}
-
-fn render_chunk_info(
-    run: &InitialTranscriptionResult,
-    chunk: &crate::transcription::Chunk,
-    paragraph: usize,
-    chunk_number: usize,
-    output: &mut impl Write,
-) -> io::Result<()> {
     writeln!(
         output,
         "{}.{}  {} – {}  {:>9}  {:>3} tokens  {}",
         paragraph,
         chunk_number,
-        Timestamp::new(chunk.audio_range.start_sample, run.source.sample_rate_hz),
-        Timestamp::new(chunk.audio_range.end_sample, run.source.sample_rate_hz),
-        Duration::new(chunk.audio_range.len(), run.source.sample_rate_hz),
+        Timestamp::new(chunk.audio_range.start_sample, 16_000),
+        Timestamp::new(chunk.audio_range.end_sample, 16_000),
+        Duration::new(chunk.audio_range.len(), 16_000),
         chunk.token_count,
-        chunk_boundary_label(chunk, run.source.sample_rate_hz)
+        chunk_boundary_label(&chunk, 16_000)
     )?;
     writeln!(output, "     {}", chunk.text)
 }

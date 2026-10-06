@@ -19,8 +19,12 @@ fn representative_v4_fixture_is_readable_and_recoverable() {
 
     assert!(encoded.find("\"document\"").unwrap() < encoded.find("\"_inspection\"").unwrap());
     assert!(!encoded.contains("\"kind\""));
+    assert!(!encoded.contains("\"transcriber\""));
     assert!(encoded.contains("\"text\": \"First chunk.\""));
     assert!(encoded.contains("\"text\": \"Previous spoken context\""));
+    assert!(encoded.contains(
+        "\"alternatives\": [{\"token_id\":50364,\"text\":\"[_BEG_]\",\"probability\":0.68888783}]"
+    ));
     assert!(encoded.contains("example trailing decode observation"));
     assert_eq!(project.paragraphs().len(), 2);
     assert_eq!(project.paragraph(1).unwrap().text(), "First chunk.");
@@ -32,6 +36,9 @@ fn representative_v4_fixture_is_readable_and_recoverable() {
     let round_trip = directory.path().join("round-trip.rde.json");
     save_project(&round_trip, &project).unwrap();
     assert_eq!(load_project(&round_trip).unwrap(), project);
+    assert!(fs::read_to_string(round_trip).unwrap().contains(
+        "\"alternatives\": [{\"token_id\":50364,\"text\":\"[_BEG_]\",\"probability\":0.68888783}]"
+    ));
 }
 
 #[test]
@@ -86,6 +93,12 @@ fn one_current_transcription_per_chunk_and_optional_inspection_export() {
     );
     assert!(value["document"]["content"][0]["transcription"]
         .get("config")
+        .is_none());
+    assert!(value["document"]["content"][0]["transcription"]
+        .get("source")
+        .is_none());
+    assert!(value["document"]["content"][0]["transcription"]
+        .get("transcriber")
         .is_none());
     assert_eq!(
         value["transcription_profiles"][0]["config"]["language"],
@@ -503,6 +516,10 @@ fn unlocated_raw_timestamp_evidence_is_exported_but_ignored_on_import() {
             .unwrap()
             .start
     );
+    assert!(evidence["raw_timestamps"].get("samples_per_unit").is_none());
+    assert!(evidence["tokens"][0]["raw_timestamps"]
+        .get("samples_per_unit")
+        .is_none());
     assert!(evidence.get("audio_range").is_none());
     assert!(evidence["tokens"][0].get("audio_range").is_none());
 }

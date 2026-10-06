@@ -20,17 +20,6 @@
           "chunk_id": "c0",
           "previous_id": "fixture-initial:c0",
           "text": "First chunk.",
-          "source": {
-            "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-            "sample_rate_hz": 16000,
-            "channels": 1,
-            "decoded_sample_count": 100
-          },
-          "transcriber": {
-            "name": "synthetic Whisper decoder",
-            "implementation": "test",
-            "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
-          },
           "audio_range": {
             "start_sample": 0,
             "end_sample": 100
@@ -67,7 +56,7 @@
                     "start_sample": 0,
                     "end_sample": 100
                   },
-                  "alternatives": []
+                  "alternatives": [{"token_id":50364,"text":"[_BEG_]","probability":0.68888783}]
                 }
               ]
             }
@@ -105,17 +94,6 @@
           "chunk_id": "c1",
           "previous_id": null,
           "text": "Second chunk.",
-          "source": {
-            "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-            "sample_rate_hz": 16000,
-            "channels": 1,
-            "decoded_sample_count": 200
-          },
-          "transcriber": {
-            "name": "synthetic Whisper decoder",
-            "implementation": "test",
-            "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
-          },
           "audio_range": {
             "start_sample": 100,
             "end_sample": 200
@@ -215,11 +193,6 @@
       "sample_rate_hz": 16000,
       "channels": 1,
       "decoded_sample_count": 200
-    },
-    "transcriber": {
-      "name": "synthetic Whisper decoder",
-      "implementation": "test",
-      "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
     },
     "config": {
       "decode_span_samples": 480000,
@@ -333,17 +306,6 @@
                 "chunk_id": "c0",
                 "previous_id": null,
                 "text": "First chunk. ",
-                "source": {
-                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "sample_rate_hz": 16000,
-                  "channels": 1,
-                  "decoded_sample_count": 200
-                },
-                "transcriber": {
-                  "name": "synthetic Whisper decoder",
-                  "implementation": "test",
-                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
-                },
                 "audio_range": {
                   "start_sample": 0,
                   "end_sample": 100
@@ -399,17 +361,6 @@
                 "chunk_id": "c1",
                 "previous_id": null,
                 "text": "Second chunk.",
-                "source": {
-                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "sample_rate_hz": 16000,
-                  "channels": 1,
-                  "decoded_sample_count": 200
-                },
-                "transcriber": {
-                  "name": "synthetic Whisper decoder",
-                  "implementation": "test",
-                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
-                },
                 "audio_range": {
                   "start_sample": 100,
                   "end_sample": 200
@@ -511,17 +462,6 @@
                 "chunk_id": "c0",
                 "previous_id": null,
                 "text": "First chunk. ",
-                "source": {
-                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "sample_rate_hz": 16000,
-                  "channels": 1,
-                  "decoded_sample_count": 200
-                },
-                "transcriber": {
-                  "name": "synthetic Whisper decoder",
-                  "implementation": "test",
-                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
-                },
                 "audio_range": {
                   "start_sample": 0,
                   "end_sample": 100
@@ -583,17 +523,6 @@
                 "chunk_id": "c1",
                 "previous_id": null,
                 "text": "Second chunk.",
-                "source": {
-                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "sample_rate_hz": 16000,
-                  "channels": 1,
-                  "decoded_sample_count": 200
-                },
-                "transcriber": {
-                  "name": "synthetic Whisper decoder",
-                  "implementation": "test",
-                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
-                },
                 "audio_range": {
                   "start_sample": 100,
                   "end_sample": 200
@@ -699,17 +628,6 @@
                 "chunk_id": "c0",
                 "previous_id": null,
                 "text": "First chunk. ",
-                "source": {
-                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "sample_rate_hz": 16000,
-                  "channels": 1,
-                  "decoded_sample_count": 200
-                },
-                "transcriber": {
-                  "name": "synthetic Whisper decoder",
-                  "implementation": "test",
-                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
-                },
                 "audio_range": {
                   "start_sample": 0,
                   "end_sample": 100
@@ -774,17 +692,6 @@
                 "chunk_id": "c1",
                 "previous_id": null,
                 "text": "Second chunk.",
-                "source": {
-                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "sample_rate_hz": 16000,
-                  "channels": 1,
-                  "decoded_sample_count": 200
-                },
-                "transcriber": {
-                  "name": "synthetic Whisper decoder",
-                  "implementation": "test",
-                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
-                },
                 "audio_range": {
                   "start_sample": 100,
                   "end_sample": 200
@@ -890,17 +797,6 @@
                 "chunk_id": "c0",
                 "previous_id": "fixture-initial:c0",
                 "text": "First chunk.",
-                "source": {
-                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "sample_rate_hz": 16000,
-                  "channels": 1,
-                  "decoded_sample_count": 100
-                },
-                "transcriber": {
-                  "name": "synthetic Whisper decoder",
-                  "implementation": "test",
-                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
-                },
                 "audio_range": {
                   "start_sample": 0,
                   "end_sample": 100
@@ -975,17 +871,6 @@
                 "chunk_id": "c1",
                 "previous_id": null,
                 "text": "Second chunk.",
-                "source": {
-                  "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "sample_rate_hz": 16000,
-                  "channels": 1,
-                  "decoded_sample_count": 200
-                },
-                "transcriber": {
-                  "name": "synthetic Whisper decoder",
-                  "implementation": "test",
-                  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
-                },
                 "audio_range": {
                   "start_sample": 100,
                   "end_sample": 200
