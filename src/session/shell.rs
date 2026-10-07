@@ -1237,7 +1237,8 @@ mod tests {
                 .language,
             "de"
         );
-        assert!(execute(&mut state, "model new-model").is_empty());
+        let error = execute(&mut state, "model new-model");
+        assert!(error.is_empty(), "{error}");
         assert_eq!(
             state.project.settings().model.as_deref(),
             Some(Path::new("new-model"))
@@ -1315,8 +1316,6 @@ mod tests {
         let current = state.project.current_transcription(1, 1).unwrap();
         assert_eq!(current.chunk_id, original.chunk_id);
         assert_eq!(current.audio_range, original.audio_range);
-        assert_ne!(current.source.sha256, original.source.sha256);
-        assert_eq!(current.source.decoded_sample_count, 200);
         let saved = path.with_extension("json");
         save_project(&saved, &state.project).unwrap();
         let reopened = load_project(&saved).unwrap();
@@ -1381,16 +1380,22 @@ mod tests {
     #[test]
     fn choosing_a_whisper_alternative_forces_its_vocabulary_id_and_undo_restores_the_mark() {
         let (_dir, mut state, _) = state(&["old"]);
-        let source = state.project.transcriptions()[0].source.clone();
         let path = state.project.audio_sources()[0]
             .path()
             .unwrap()
             .to_path_buf();
         let mut batch = crate::test_support::batch("alternatives", &["old"]);
-        batch.source = source;
         batch.config.language = "en".into();
         crate::test_support::synchronize_initial_transcriptions(&mut batch);
-        batch.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0]
+        batch
+            .chunks_mut()
+            .next()
+            .unwrap()
+            .transcription
+            .as_mut()
+            .unwrap()
+            .segments[0]
+            .tokens[0]
             .alternatives
             .push(crate::transcription::TokenAlternative {
                 token_id: 90,
@@ -1443,17 +1448,23 @@ mod tests {
     fn complete_chunk_correction_without_token_alignment_produces_only_whisper_tokens() {
         let (_dir, mut state, _) = state(&["old"]);
         // Build the same valid mismatch through the public initial-transcription path.
-        let source = state.project.transcriptions()[0].source.clone();
         let path = state.project.audio_sources()[0]
             .path()
             .unwrap()
             .to_path_buf();
         let mut batch = crate::test_support::batch("mismatch", &["old"]);
-        batch.source = source;
         batch.config.language = "en".into();
         crate::test_support::synchronize_initial_transcriptions(&mut batch);
-        batch.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0].text =
-            "different evidence".into();
+        batch
+            .chunks_mut()
+            .next()
+            .unwrap()
+            .transcription
+            .as_mut()
+            .unwrap()
+            .segments[0]
+            .tokens[0]
+            .text = "different evidence".into();
         state.project = Project::from_initial_transcription_with_source(&batch, Some(&path));
         state
             .project
@@ -1462,7 +1473,8 @@ mod tests {
         state.navigation = NavigationState::new(&state.project);
         assert_eq!(state.project.chunk_has_tokens(1, 1), Some(false));
         execute(&mut state, "1.1,1.2select");
-        assert!(execute(&mut state, "replace corrected").is_empty());
+        let error = execute(&mut state, "replace corrected");
+        assert!(error.is_empty(), "{error}");
         assert_eq!(
             state.project.paragraph(1).unwrap().text(),
             "corrected suffix"

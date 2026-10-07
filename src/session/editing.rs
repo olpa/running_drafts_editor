@@ -255,7 +255,7 @@ pub(crate) fn run_transcription(
                 .expect("a current chunk has a transcription")
                 .id
                 .clone(),
-            revision: document.transcriptions().len() as u64 + 1,
+            revision: (document.edit_history_len() + document.redo_history_len()) as u64 + 2,
             settings: settings.clone(),
             correction,
         },

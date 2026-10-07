@@ -3,8 +3,8 @@
 This document preserves the cross-cutting initial-transcription procedure.
 [ADR-0013](adr/0013-finalize-chunks-incrementally-from-decode-spans.md)
 records the boundary model, and
-[ADR-0014](adr/0014-store-document-content-inside-decode-spans.md) records
-the ownership direction. [ADR-0015](adr/0015-use-timestamp-closed-continuation-and-exact-transcription-prompts.md)
+[ADR-0016](adr/0016-own-mixed-content-by-document.md) records the ownership
+direction. [ADR-0015](adr/0015-use-timestamp-closed-continuation-and-exact-transcription-prompts.md)
 records the continuation-candidate and transcription-prompt policy. Code and
 tests remain the source for current parameter values and implemented behavior.
 [Issue #58](https://github.com/olpa/running_drafts_editor/issues/58)
@@ -13,8 +13,10 @@ records the implementation work for disjoint finalized chunk ranges.
 ## Ownership model
 
 Initial transcription processes one active decode span at a time. A decode
-span contains the bounded audio submitted in one step, the resulting decoder
-evidence, and the content finalized from that evidence. It is decoded once.
+span records the bounded audio submitted in one step and the resulting decoder
+evidence. It is decoded once. Chunks and ParagraphBreaks finalized from that
+evidence are appended to the Document's mixed content; the decode span does not
+own them.
 
 The next decode span begins at a continuation boundary near the end of the
 current span. It therefore decodes the current span's remaining suffix again.
@@ -40,8 +42,9 @@ finalized chunk ranges.
    segment end there, then the latest earlier end. Put the boundary before the
    pause. If there is no usable end, advance the complete submitted span without
    accepting unlocated text.
-6. Retain the processed decode span, its evidence, and its produced content in
-   the project. It is no longer the active span.
+6. Append its finalized Chunks and ParagraphBreaks to the Document. The
+   processed decode span may be retained as non-authoritative inspection
+   evidence; it is no longer the active span.
 7. Start the next decode span at the continuation boundary. The suffix is
    decoded again and may produce visible text only in this later pass.
 8. Accumulate the exact accepted text-token IDs in recording order. Before the
@@ -71,12 +74,13 @@ of grouping all accepted segments after the whole recording has been decoded:
 The last finalized chunk in a non-final accepted prefix ends at the
 continuation boundary with boundary reason `Continuation`. This boundary does
 not by itself end a paragraph. Other finalized chunks and paragraph breaks may
-precede it in the same decode span.
+be produced from the same decode span.
 
 Finalized chunks keep their identities and ranges through later editing as
-required by [ADR-0008](adr/0008-keep-finalized-chunks-stable.md). Their order is
-the original recording order. The current document is obtained from the mixed
-content stored across decode spans rather than from a duplicate chunk-ID list.
+required by [ADR-0008](adr/0008-keep-finalized-chunks-stable.md). Their original
+recording order is captured by predecessor references. The current composition
+is the Document's mixed content, and paragraphs are recalculated from its
+ParagraphBreak items.
 
 ## Experiment record
 

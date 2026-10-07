@@ -215,7 +215,7 @@ fn token_pieces(
 ) -> Result<Vec<(String, SampleRange, AlignmentState, String)>, ReplayResolutionError> {
     let mut pieces = Vec::new();
     for a in tokens {
-        let paragraph = document.paragraph(a.paragraph).ok_or_else(|| {
+        document.paragraph(a.paragraph).ok_or_else(|| {
             ReplayResolutionError::InvalidAddress(format!("unknown paragraph {}", a.paragraph))
         })?;
         let token = document
@@ -224,11 +224,7 @@ fn token_pieces(
         if let Some(m) = document
             .token_audio_mappings()
             .iter()
-            .find(|m| {
-                m.paragraph_id() == paragraph.id()
-                    && m.paragraph_revision() == paragraph.revision()
-                    && m.token_identity() == token.id()
-            })
+            .find(|m| m.token_identity() == token.id())
             .filter(|m| !matches!(m.alignment(), AlignmentState::Unavailable))
         {
             pieces.push((
@@ -299,22 +295,20 @@ fn combine(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use std::path::Path;
 
     fn empty_chunks() -> Project {
-        serde_json::from_value(json!({
-            "schema":"rde-project/v3-experimental", "id":"document:empty", "settings":{"model":null,"language":"auto"},
-            "paragraphs":[
-                {"id":"p1","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c1","transcription_id":"test","text":"","after_tokens":0},{"chunk_id":"c2","transcription_id":"test","text":"","after_tokens":0}]},
-                {"id":"p2","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c3","transcription_id":"test","text":"","after_tokens":0}]}
-            ],
-            "audio_sources":[{"id":"audio","canonical_sample_count":300}],
-            "chunk_audio_mappings":[
-                {"chunk_id":"c1","source_id":"audio","range":{"start_sample":0,"end_sample":100}},
-                {"chunk_id":"c2","source_id":"audio","range":{"start_sample":100,"end_sample":200}},
-                {"chunk_id":"c3","source_id":"audio","range":{"start_sample":200,"end_sample":300}}
-            ]
-        })).unwrap()
+        let mut run = crate::test_support::batch("empty", &["", "", ""]);
+        for chunk in run.chunks_mut() {
+            chunk.transcription.as_mut().unwrap().segments[0].tokens[0].is_special = true;
+        }
+        run.decode_spans[0].content.insert(
+            2,
+            crate::transcription::DecodeSpanItem::ParagraphBreak(
+                crate::transcription::ParagraphBreak,
+            ),
+        );
+        Project::from_initial_transcription_with_recording_id(&run, "audio", None::<&Path>)
     }
 
     #[test]

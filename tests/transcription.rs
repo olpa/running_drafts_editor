@@ -349,9 +349,9 @@ fn continuation_boundaries_drive_overlapping_decode_spans_and_exact_prompts() {
     assert!(chunks
         .windows(2)
         .all(|pair| { pair[0].audio_range.end_sample <= pair[1].audio_range.start_sample }));
-    assert!(chunks.iter().all(|chunk| {
-        chunk.transcriptions.len() == 1 && chunk.current_transcription().is_some()
-    }));
+    assert!(chunks
+        .iter()
+        .all(|chunk| { chunk.current_transcription().is_some() }));
 }
 
 #[test]
@@ -535,7 +535,7 @@ fn rolling_prompt_is_truncated_oldest_first_and_resets_after_failure() {
         Some(running_drafts_editor::transcription::EmptyPromptReason::ResetAfterDecodeFailure)
     );
     assert_eq!(run.status, TranscriptionStatus::Partial);
-    assert!(run.chunks().all(|chunk| chunk.transcriptions.iter().all(|transcription| {
+    assert!(run.chunks().all(|chunk| chunk.transcription.iter().all(|transcription| {
         transcription.forced_token_ids.is_empty()
             && transcription.prompt_token_ids
                 == run.decode_spans

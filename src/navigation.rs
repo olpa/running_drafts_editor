@@ -2,7 +2,7 @@
 
 use std::{cmp::Ordering, fmt};
 
-use crate::document::{Document, TokenIdentity};
+use crate::document::{DocumentView, TokenIdentity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChunkAddress {
@@ -290,7 +290,7 @@ impl PartialOrd for Ordinal {
 }
 
 impl NavigationState {
-    pub fn new(document: &Document) -> Self {
+    pub fn new(document: &DocumentView) -> Self {
         let first = document
             .paragraphs()
             .iter()
@@ -327,7 +327,7 @@ impl NavigationState {
 
     pub fn move_to(
         &mut self,
-        document: &Document,
+        document: &DocumentView,
         address: &Address,
     ) -> Result<(), NavigationError> {
         let point = match address {
@@ -348,7 +348,7 @@ impl NavigationState {
 
     pub fn select(
         &mut self,
-        document: &Document,
+        document: &DocumentView,
         address: &Address,
     ) -> Result<(), NavigationError> {
         match address {
@@ -373,7 +373,7 @@ impl NavigationState {
 
     pub fn current_range(
         &self,
-        document: &Document,
+        document: &DocumentView,
     ) -> Result<(PositionAddress, PositionAddress), NavigationError> {
         let s = self
             .selection
@@ -388,14 +388,14 @@ impl NavigationState {
         ))
     }
 
-    pub fn selection_is_empty(&self, document: &Document) -> Result<bool, NavigationError> {
+    pub fn selection_is_empty(&self, document: &DocumentView) -> Result<bool, NavigationError> {
         let (start, end) = self.current_range(document)?;
         Ok(resolve_position(document, start)? == resolve_position(document, end)?)
     }
 
     pub fn selected_token_endpoints(
         &self,
-        document: &Document,
+        document: &DocumentView,
     ) -> Result<(TokenAddress, TokenAddress), NavigationError> {
         let (start, end) = self.current_range(document)?;
         let tokens = tokens_in_range(document, start, end)?;
@@ -407,7 +407,7 @@ impl NavigationState {
 
     pub fn selected_token_range(
         &self,
-        document: &Document,
+        document: &DocumentView,
     ) -> Result<(TokenAddress, TokenAddress), NavigationError> {
         let (start, end) = self.selected_token_endpoints(document)?;
         if start.paragraph != end.paragraph {
@@ -421,7 +421,7 @@ impl NavigationState {
 
     pub fn current_token_address(
         &self,
-        document: &Document,
+        document: &DocumentView,
     ) -> Result<TokenAddress, NavigationError> {
         let (start, end) = self.current_range(document)?;
         if resolve_position(document, start)? == resolve_position(document, end)? {
@@ -438,7 +438,7 @@ impl NavigationState {
 
     pub fn current_chunk_address(
         &self,
-        document: &Document,
+        document: &DocumentView,
     ) -> Result<ChunkAddress, NavigationError> {
         let (start, end) = self.current_range(document)?;
         if resolve_position(document, start)? == resolve_position(document, end)? {
@@ -471,7 +471,7 @@ impl NavigationState {
     }
 }
 
-fn document_revisions(document: &Document) -> Vec<(String, u64)> {
+fn document_revisions(document: &DocumentView) -> Vec<(String, u64)> {
     document
         .paragraphs()
         .iter()
@@ -479,7 +479,7 @@ fn document_revisions(document: &Document) -> Vec<(String, u64)> {
         .collect()
 }
 
-pub fn item_paragraph(document: &Document, paragraph: usize) -> Result<usize, NavigationError> {
+pub fn item_paragraph(document: &DocumentView, paragraph: usize) -> Result<usize, NavigationError> {
     document
         .paragraph(paragraph)
         .map(|_| paragraph)
@@ -487,7 +487,7 @@ pub fn item_paragraph(document: &Document, paragraph: usize) -> Result<usize, Na
 }
 
 pub fn item_chunk(
-    document: &Document,
+    document: &DocumentView,
     address: ChunkAddress,
 ) -> Result<ChunkAddress, NavigationError> {
     document
@@ -500,7 +500,7 @@ pub fn item_chunk(
 }
 
 pub fn item_token(
-    document: &Document,
+    document: &DocumentView,
     address: TokenAddress,
 ) -> Result<TokenAddress, NavigationError> {
     document
@@ -514,7 +514,7 @@ pub fn item_token(
 }
 
 pub fn tokens_in_range(
-    document: &Document,
+    document: &DocumentView,
     start: PositionAddress,
     end: PositionAddress,
 ) -> Result<Vec<TokenAddress>, NavigationError> {
@@ -561,7 +561,7 @@ pub fn tokens_in_range(
 }
 
 pub fn chunks_in_range(
-    document: &Document,
+    document: &DocumentView,
     start: PositionAddress,
     end: PositionAddress,
 ) -> Result<Vec<ChunkAddress>, NavigationError> {
@@ -594,7 +594,7 @@ pub fn chunks_in_range(
     Ok(result)
 }
 
-fn chunks_before(document: &Document, paragraph_index: usize) -> usize {
+fn chunks_before(document: &DocumentView, paragraph_index: usize) -> usize {
     document.paragraphs()[..paragraph_index]
         .iter()
         .map(|p| p.chunk_boundaries().len())
@@ -602,7 +602,7 @@ fn chunks_before(document: &Document, paragraph_index: usize) -> usize {
 }
 
 fn resolve_position(
-    document: &Document,
+    document: &DocumentView,
     address: PositionAddress,
 ) -> Result<Ordinal, NavigationError> {
     match address {
@@ -673,7 +673,7 @@ fn resolve_position(
 }
 
 fn stable_position(
-    document: &Document,
+    document: &DocumentView,
     address: PositionAddress,
 ) -> Result<StablePosition, NavigationError> {
     resolve_position(document, address)?;
@@ -719,7 +719,7 @@ fn stable_position(
 }
 
 fn resolve_stable(
-    document: &Document,
+    document: &DocumentView,
     stable: &StablePosition,
 ) -> Result<PositionAddress, NavigationError> {
     if let Some(shape) = &stable.document_end {
@@ -799,21 +799,25 @@ fn resolve_stable(
 mod tests {
     use super::*;
     use crate::project::Project;
-    use serde_json::json;
 
     fn structured_document() -> Project {
-        let token = |id: &str| json!({"id":{"transcription_id":"test","segment_id":id,"token_index":0},"text":id,"vocabulary_id":1});
-        serde_json::from_value(json!({
-            "schema":"rde-project/v3-experimental", "id":"document:positions", "settings":{"model":null,"language":"auto"},
-            "paragraphs":[
-                {"id":"p1","revision":1,"tokens":[token("a"),token("b"),token("c")],"chunk_boundaries":[
-                    {"chunk_id":"c1","transcription_id":"test","text":"","after_tokens":2},
-                    {"chunk_id":"c2","transcription_id":"test","text":"","after_tokens":2},
-                    {"chunk_id":"c3","transcription_id":"test","text":"","after_tokens":3}
-                ]},
-                {"id":"p2","revision":1,"tokens":[],"chunk_boundaries":[{"chunk_id":"c4","transcription_id":"test","text":"","after_tokens":0}]}
-            ]
-        })).unwrap()
+        let mut run = crate::test_support::batch("positions", &["ab", "", "c", ""]);
+        let mut chunks = run.chunks_mut().collect::<Vec<_>>();
+        let first = chunks[0].transcription.as_mut().unwrap();
+        let mut second_token = first.segments[0].tokens[0].clone();
+        first.segments[0].tokens[0].text = "a".into();
+        second_token.text = "b".into();
+        first.segments[0].tokens.push(second_token);
+        for chunk in [1_usize, 3] {
+            chunks[chunk].transcription.as_mut().unwrap().segments[0].tokens[0].is_special = true;
+        }
+        run.decode_spans[0].content.insert(
+            3,
+            crate::transcription::DecodeSpanItem::ParagraphBreak(
+                crate::transcription::ParagraphBreak,
+            ),
+        );
+        Project::from_initial_transcription(&run)
     }
 
     #[test]

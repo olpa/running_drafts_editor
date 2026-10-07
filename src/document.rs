@@ -9,12 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::chunking::SampleRange;
 
-use crate::project::{EditHistoryEntry, EditableProjectState};
-use crate::transcription::{Chunk, DecodeSpanItem, InitialTranscriptionResult, Transcription};
-
-fn is_zero(value: &u64) -> bool {
-    *value == 0
-}
+use crate::project::{DocumentItem, EditHistoryEntry, EditableProjectState, ProjectDocument};
+use crate::transcription::{
+    Chunk, ChunkAudioReference, DecodeSpanItem, InitialTranscriptionResult, Transcription,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParagraphSplitOutcome {
@@ -39,11 +37,10 @@ pub enum StructureEditError {
     FinalMarker,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Document {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DocumentView {
     pub(crate) id: String,
     pub(crate) paragraphs: Vec<Paragraph>,
-    #[serde(default, skip_serializing_if = "is_zero")]
     pub(crate) next_structure_id: u64,
 }
 
@@ -51,6 +48,12 @@ pub struct Document {
 pub struct AttentionMark {
     pub(crate) chunk_id: String,
     pub(crate) token_identity: TokenIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ChunkAnnotation {
+    AttentionMark { token_identity: TokenIdentity },
 }
 
 impl AttentionMark {
@@ -74,7 +77,7 @@ impl ResolvedIssue {
     }
 }
 
-impl Document {
+impl DocumentView {
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -258,10 +261,116 @@ impl Document {
     }
 }
 
+fn rebuild_chunk_runtime_fields(
+    document: &mut ProjectDocument,
+    profiles: &[crate::project::TranscriptionProfile],
+) -> Vec<ChunkAudioMapping> {
+    let mut chunk_audio_mappings = Vec::new();
+    let mut ordinal = 0_u32;
+    for item in &mut document.content {
+        let DocumentItem::Chunk { chunk } = item else {
+            continue;
+        };
+        ordinal = ordinal.saturating_add(1);
+        chunk.ordinal = ordinal;
+        if let Some(transcription) = &mut chunk.transcription {
+            if let Some(profile) = profiles
+                .iter()
+                .find(|profile| profile.id == transcription.profile_id)
+            {
+                transcription.config.clone_from(&profile.config);
+            }
+            chunk.audio_range = transcription.audio_range;
+            chunk.boundary = transcription.boundary.clone();
+            chunk.text.clone_from(&transcription.text);
+            chunk.segment_ids = transcription
+                .segments
+                .iter()
+                .map(|segment| segment.id.clone())
+                .collect();
+            chunk.token_count = transcription
+                .segments
+                .iter()
+                .flat_map(|segment| &segment.tokens)
+                .filter(|token| !token.is_special)
+                .count();
+        }
+        if let Some(audio) = &chunk.audio {
+            chunk.audio_range = audio.range;
+            chunk_audio_mappings.push(ChunkAudioMapping {
+                chunk_id: chunk.id.clone(),
+                source_id: audio.source_id.clone(),
+                range: audio.range,
+                alignment: audio.alignment,
+            });
+        }
+    }
+    chunk_audio_mappings
+}
+
 // Construction and mutations which need transcription, audio, issue, mark, or
 // history state belong to `Project`. The implementation remains in this file
 // temporarily so the visible projection and its migration helpers stay close.
 impl crate::project::Project {
+    pub(crate) fn rebuild_document_view(&mut self) {
+        let mut paragraphs = Vec::new();
+        let mut paragraph_chunks = Vec::new();
+        for item in &self.document.content {
+            match item {
+                DocumentItem::Chunk { chunk } => paragraph_chunks.push(chunk.as_ref()),
+                DocumentItem::ParagraphBreak if !paragraph_chunks.is_empty() => {
+                    paragraphs.push(Paragraph::from_chunks(&paragraph_chunks));
+                    paragraph_chunks.clear();
+                }
+                DocumentItem::ParagraphBreak => {}
+            }
+        }
+        if !paragraph_chunks.is_empty() {
+            paragraphs.push(Paragraph::from_chunks(&paragraph_chunks));
+        }
+        self.view = DocumentView {
+            id: self.document.id.clone(),
+            paragraphs,
+            next_structure_id: 0,
+        };
+    }
+
+    pub(crate) fn rebuild_runtime_state(&mut self) {
+        self.chunk_audio_mappings =
+            rebuild_chunk_runtime_fields(&mut self.document, &self.transcription_profiles);
+        for entry in &mut self.edit_history {
+            rebuild_chunk_runtime_fields(&mut entry.before.document, &self.transcription_profiles);
+        }
+        for state in &mut self.redo_history {
+            rebuild_chunk_runtime_fields(&mut state.document, &self.transcription_profiles);
+        }
+        self.attention_marks = self
+            .chunks()
+            .flat_map(|chunk| {
+                chunk
+                    .annotations
+                    .iter()
+                    .map(move |annotation| match annotation {
+                        ChunkAnnotation::AttentionMark { token_identity } => AttentionMark {
+                            chunk_id: chunk.id.clone(),
+                            token_identity: token_identity.clone(),
+                        },
+                    })
+            })
+            .collect();
+        if let Some(profile) = self
+            .transcription_profiles
+            .iter()
+            .find(|profile| profile.id == self.active_transcription_profile_id)
+        {
+            self.settings = crate::project::TranscriptionSettings {
+                model: profile.model.clone(),
+                language: profile.config.language.clone(),
+            };
+        }
+        self.rebuild_document_view();
+    }
+
     pub fn from_initial_transcription(run: &InitialTranscriptionResult) -> Self {
         Self::from_initial_transcription_with_source(run, None::<&Path>)
     }
@@ -301,35 +410,67 @@ impl crate::project::Project {
                 alignment: AlignmentState::Exact,
             })
             .collect();
-        document.token_audio_mappings = document
-            .paragraphs
-            .iter()
-            .flat_map(|paragraph| {
-                paragraph.tokens.iter().filter_map(|visible| {
-                    let TokenIdentity {
-                        segment_id,
-                        token_index,
-                        ..
-                    } = &visible.id;
-                    let range = run
-                        .accepted_segments()
-                        .find(|segment| &segment.id == segment_id)?
-                        .tokens
-                        .get(*token_index)?
-                        .audio_range?;
-                    Some(TokenAudioMapping {
-                        paragraph_id: paragraph.id.clone(),
-                        paragraph_revision: paragraph.revision,
-                        token_identity: visible.id.clone(),
+        let audio_by_chunk = document.chunk_audio_mappings.clone();
+        for chunk in document
+            .document
+            .content
+            .iter_mut()
+            .filter_map(|item| match item {
+                DocumentItem::Chunk { chunk } => Some(chunk.as_mut()),
+                DocumentItem::ParagraphBreak => None,
+            })
+        {
+            let mapping = audio_by_chunk
+                .iter()
+                .find(|mapping| mapping.chunk_id == chunk.id)
+                .expect("every initial Chunk has an audio mapping");
+            chunk.audio = Some(ChunkAudioReference {
+                source_id: mapping.source_id.clone(),
+                range: mapping.range,
+                alignment: mapping.alignment,
+            });
+        }
+        let mut token_audio_mappings = Vec::new();
+        for chunk in document.chunks() {
+            let Some(transcription) = chunk.current_transcription() else {
+                continue;
+            };
+            let token_text = transcription
+                .segments
+                .iter()
+                .flat_map(|segment| &segment.tokens)
+                .filter(|token| !token.is_special)
+                .map(|token| token.text.as_str())
+                .collect::<String>();
+            if token_text != transcription.text {
+                continue;
+            }
+            for segment in &transcription.segments {
+                for (token_index, token) in segment.tokens.iter().enumerate() {
+                    if token.is_special {
+                        continue;
+                    }
+                    let Some(range) = token.audio_range else {
+                        continue;
+                    };
+                    token_audio_mappings.push(TokenAudioMapping {
+                        chunk_id: chunk.id.clone(),
+                        token_identity: TokenIdentity {
+                            transcription_id: transcription.id.clone(),
+                            segment_id: segment.id.clone(),
+                            token_index,
+                        },
                         source_id: source_id.clone(),
                         range,
                         alignment: AlignmentState::Exact,
-                    })
-                })
-            })
-            .collect();
+                    });
+                }
+            }
+        }
+        document.token_audio_mappings = token_audio_mappings;
         document.initial_evidence = Some(run.evidence());
         document.settings.language = run.config.language.clone();
+        document.rebuild_runtime_state();
         document
     }
 
@@ -339,7 +480,7 @@ impl crate::project::Project {
 
         for item in run.decode_spans.iter().flat_map(|span| span.content.iter()) {
             match item {
-                DecodeSpanItem::Chunk(chunk) => paragraph_chunks.push(chunk),
+                DecodeSpanItem::Chunk(chunk) => paragraph_chunks.push(chunk.as_ref()),
                 DecodeSpanItem::ParagraphBreak(_) if !paragraph_chunks.is_empty() => {
                     paragraphs.push(Paragraph::from_chunks(&paragraph_chunks));
                     paragraph_chunks.clear();
@@ -351,9 +492,25 @@ impl crate::project::Project {
             paragraphs.push(Paragraph::from_chunks(&paragraph_chunks));
         }
 
+        let content = run
+            .decode_spans
+            .iter()
+            .flat_map(|span| &span.content)
+            .map(|item| match item {
+                DecodeSpanItem::Chunk(chunk) => DocumentItem::Chunk {
+                    chunk: chunk.clone(),
+                },
+                DecodeSpanItem::ParagraphBreak(_) => DocumentItem::ParagraphBreak,
+            })
+            .collect();
+
         Self {
             schema: crate::project::PROJECT_SCHEMA.into(),
-            document: Document {
+            document: ProjectDocument {
+                id: format!("document:{}", run.id),
+                content,
+            },
+            view: DocumentView {
                 id: format!("document:{}", run.id),
                 paragraphs,
                 next_structure_id: 0,
@@ -362,6 +519,12 @@ impl crate::project::Project {
             chunk_audio_mappings: Vec::new(),
             token_audio_mappings: Vec::new(),
             initial_evidence: None,
+            transcription_profiles: vec![crate::project::TranscriptionProfile {
+                id: "profile:1".into(),
+                model: None,
+                config: run.config.clone(),
+            }],
+            active_transcription_profile_id: "profile:1".into(),
             settings: crate::project::TranscriptionSettings::default(),
             resolved_issues: Vec::new(),
             attention_marks: Vec::new(),
@@ -410,7 +573,7 @@ impl crate::project::Project {
         id: &TokenIdentity,
     ) -> Option<&crate::transcription::WhisperToken> {
         self.chunks()
-            .flat_map(|chunk| &chunk.transcriptions)
+            .filter_map(Chunk::current_transcription)
             .find(|t| t.id == id.transcription_id)?
             .segments
             .iter()
@@ -462,6 +625,12 @@ impl crate::project::Project {
             return Err(format!("token {paragraph}.{token} is already marked"));
         }
         self.remember_editable_state();
+        self.chunk_mut(&chunk_id)
+            .expect("a current token belongs to a stored Chunk")
+            .annotations
+            .push(ChunkAnnotation::AttentionMark {
+                token_identity: token_identity.clone(),
+            });
         self.attention_marks.push(AttentionMark {
             chunk_id,
             token_identity,
@@ -488,6 +657,12 @@ impl crate::project::Project {
             return Err(format!("token {paragraph}.{token} is not marked"));
         };
         self.remember_editable_state();
+        let chunk = self
+            .chunk_mut(&chunk_id)
+            .expect("a current token belongs to a stored Chunk");
+        chunk.annotations.retain(|annotation| {
+            !matches!(annotation, ChunkAnnotation::AttentionMark { token_identity: target } if *target == token_identity)
+        });
         self.attention_marks.remove(index);
         Ok(())
     }
@@ -518,60 +693,40 @@ impl crate::project::Project {
     fn editable_state(&self) -> EditableProjectState {
         EditableProjectState {
             settings: self.settings.clone(),
-            paragraphs: self.paragraphs.clone(),
-            current_transcriptions: self
-                .chunks()
-                .map(|chunk| (chunk.id.clone(), chunk.current_transcription_id.clone()))
-                .collect(),
-            next_structure_id: self.next_structure_id,
-            chunk_audio_mappings: self.chunk_audio_mappings.clone(),
+            active_transcription_profile_id: self.active_transcription_profile_id.clone(),
+            document: self.document.clone(),
             token_audio_mappings: self.token_audio_mappings.clone(),
             resolved_issues: self.resolved_issues.clone(),
-            attention_marks: self.attention_marks.clone(),
         }
     }
 
     fn restore_editable_state(&mut self, state: EditableProjectState) {
         self.settings = state.settings;
-        self.document.paragraphs = state.paragraphs;
-        self.document.next_structure_id = state.next_structure_id;
-        for (chunk_id, transcription_id) in state.current_transcriptions {
-            if let Some(chunk) = self.chunk_mut(&chunk_id) {
-                chunk.current_transcription_id = transcription_id;
-            }
-        }
-        self.chunk_audio_mappings = state.chunk_audio_mappings;
+        self.active_transcription_profile_id = state.active_transcription_profile_id;
+        self.document = state.document;
         self.token_audio_mappings = state.token_audio_mappings;
         self.resolved_issues = state.resolved_issues;
-        self.attention_marks = state.attention_marks;
-        self.sync_paragraph_breaks_from_document();
+        self.rebuild_runtime_state();
     }
 
     fn sync_paragraph_breaks_from_document(&mut self) {
         let break_after = self
-            .document
+            .view
             .paragraphs
             .iter()
-            .take(self.document.paragraphs.len().saturating_sub(1))
+            .take(self.view.paragraphs.len().saturating_sub(1))
             .filter_map(|paragraph| paragraph.chunk_boundaries.last())
             .map(|marker| marker.chunk_id.clone())
             .collect::<HashSet<_>>();
-        let Some(evidence) = &mut self.initial_evidence else {
-            return;
-        };
-        for span in &mut evidence.decode_spans {
-            let old = std::mem::take(&mut span.content);
-            for item in old {
-                let DecodeSpanItem::Chunk(chunk) = item else {
-                    continue;
-                };
-                let paragraph_break = break_after.contains(&chunk.id);
-                span.content.push(DecodeSpanItem::Chunk(chunk));
-                if paragraph_break {
-                    span.content.push(DecodeSpanItem::ParagraphBreak(
-                        crate::transcription::ParagraphBreak,
-                    ));
-                }
+        let old = std::mem::take(&mut self.document.content);
+        for item in old {
+            let DocumentItem::Chunk { chunk } = item else {
+                continue;
+            };
+            let paragraph_break = break_after.contains(&chunk.id);
+            self.document.content.push(DocumentItem::Chunk { chunk });
+            if paragraph_break {
+                self.document.content.push(DocumentItem::ParagraphBreak);
             }
         }
     }
@@ -644,7 +799,7 @@ impl crate::project::Project {
         &mut self,
         paragraph_number: usize,
         marker_number: usize,
-        transcription: crate::transcription::Transcription,
+        mut transcription: crate::transcription::Transcription,
         settings: crate::project::TranscriptionSettings,
     ) -> Result<(), String> {
         if transcription.config.language != settings.language {
@@ -652,8 +807,27 @@ impl crate::project::Project {
         }
         let mut next = self.clone();
         next.remember_editable_state();
+        let profile_id = next
+            .transcription_profiles
+            .iter()
+            .find(|profile| {
+                profile.model == settings.model && profile.config == transcription.config
+            })
+            .map(|profile| profile.id.clone())
+            .unwrap_or_else(|| {
+                let id = format!("profile:{}", next.transcription_profiles.len() + 1);
+                next.transcription_profiles
+                    .push(crate::project::TranscriptionProfile {
+                        id: id.clone(),
+                        model: settings.model.clone(),
+                        config: transcription.config.clone(),
+                    });
+                id
+            });
+        transcription.profile_id.clone_from(&profile_id);
         next.install_transcription_inner(paragraph_number, marker_number, transcription)?;
         next.settings = settings;
+        next.active_transcription_profile_id = profile_id;
         crate::persistence::validate(&next).map_err(|error| error.to_string())?;
         *self = next;
         Ok(())
@@ -707,8 +881,6 @@ impl crate::project::Project {
             return Err("chunk audio boundaries changed".into());
         }
         transcription.boundary = original.boundary.clone();
-        let paragraph_id = paragraph.id.clone();
-        let old_revision = paragraph.revision;
         let source_id = self
             .chunk_audio_mapping(&chunk_id)
             .ok_or("chunk has no audio mapping")?
@@ -743,7 +915,7 @@ impl crate::project::Project {
         self.attention_marks
             .retain(|mark| mark.chunk_id != chunk_id || !removed.contains(&mark.token_identity));
         let delta = tokens.len() as isize - (end - start) as isize;
-        let paragraph = &mut self.document.paragraphs[paragraph_number - 1];
+        let paragraph = &mut self.view.paragraphs[paragraph_number - 1];
         paragraph.tokens.splice(start..end, tokens);
         paragraph.chunk_boundaries[marker_index].text = transcription.text.clone();
         paragraph.chunk_boundaries[marker_index].transcription_id = transcription.id.clone();
@@ -756,11 +928,6 @@ impl crate::project::Project {
         paragraph.revision += 1;
         self.token_audio_mappings
             .retain(|m| !removed.contains(&m.token_identity));
-        for mapping in &mut self.token_audio_mappings {
-            if mapping.paragraph_id == paragraph_id && mapping.paragraph_revision == old_revision {
-                mapping.paragraph_revision += 1;
-            }
-        }
         for segment in &transcription.segments {
             for (token_index, token) in segment.tokens.iter().enumerate() {
                 let id = TokenIdentity {
@@ -775,8 +942,7 @@ impl crate::project::Project {
                             && r.end_sample <= transcription.audio_range.end_sample
                     }) {
                         self.token_audio_mappings.push(TokenAudioMapping {
-                            paragraph_id: paragraph_id.clone(),
-                            paragraph_revision: old_revision + 1,
+                            chunk_id: chunk_id.clone(),
                             token_identity: id,
                             source_id: source_id.clone(),
                             range,
@@ -786,12 +952,29 @@ impl crate::project::Project {
                 }
             }
         }
-        let transcription_id = transcription.id.clone();
         let chunk = self
             .chunk_mut(&chunk_id)
             .ok_or("current chunk is missing from its decode span")?;
-        chunk.transcriptions.push(transcription);
-        chunk.current_transcription_id = transcription_id;
+        chunk.annotations.clear();
+        chunk.transcription = Some(transcription);
+        let transcription = chunk
+            .transcription
+            .as_ref()
+            .expect("the current transcription was just installed");
+        chunk.audio_range = transcription.audio_range;
+        chunk.boundary = transcription.boundary.clone();
+        chunk.text.clone_from(&transcription.text);
+        chunk.segment_ids = transcription
+            .segments
+            .iter()
+            .map(|segment| segment.id.clone())
+            .collect();
+        chunk.token_count = transcription
+            .segments
+            .iter()
+            .flat_map(|segment| &segment.tokens)
+            .filter(|token| !token.is_special)
+            .count();
         Ok(())
     }
 
@@ -846,32 +1029,9 @@ impl crate::project::Project {
         marker_number: usize,
     ) -> Result<ParagraphSplitOutcome, StructureEditError> {
         let mut next = self.clone();
-        let old_id = next
-            .paragraph(paragraph_number)
-            .ok_or(StructureEditError::UnknownParagraph(paragraph_number))?
-            .id
-            .clone();
         next.remember_editable_state();
-        let outcome = next
-            .document
-            .split_paragraph(paragraph_number, marker_number)?;
+        let outcome = next.view.split_paragraph(paragraph_number, marker_number)?;
         next.sync_paragraph_breaks_from_document();
-        let left = &next.document.paragraphs[paragraph_number - 1];
-        let right = &next.document.paragraphs[paragraph_number];
-        let destinations = [(&left.id, &left.tokens), (&right.id, &right.tokens)];
-        for mapping in &mut next.token_audio_mappings {
-            if mapping.paragraph_id != old_id {
-                continue;
-            }
-            if let Some((id, _)) = destinations.iter().find(|(_, tokens)| {
-                tokens
-                    .iter()
-                    .any(|token| token.id == mapping.token_identity)
-            }) {
-                mapping.paragraph_id = (*id).clone();
-                mapping.paragraph_revision = 1;
-            }
-        }
         *self = next;
         Ok(outcome)
     }
@@ -884,31 +1044,17 @@ impl crate::project::Project {
         let index = paragraph_number
             .checked_sub(1)
             .ok_or(StructureEditError::UnknownParagraph(paragraph_number))?;
-        let left_id = next
-            .document
+        next.view
             .paragraphs
             .get(index)
-            .ok_or(StructureEditError::UnknownParagraph(paragraph_number))?
-            .id
-            .clone();
-        let right_id = next
-            .document
+            .ok_or(StructureEditError::UnknownParagraph(paragraph_number))?;
+        next.view
             .paragraphs
             .get(index + 1)
-            .ok_or(StructureEditError::NoFollowingParagraph(paragraph_number))?
-            .id
-            .clone();
+            .ok_or(StructureEditError::NoFollowingParagraph(paragraph_number))?;
         next.remember_editable_state();
-        let outcome = next.document.merge_paragraphs(paragraph_number)?;
+        let outcome = next.view.merge_paragraphs(paragraph_number)?;
         next.sync_paragraph_breaks_from_document();
-        let merged = &next.document.paragraphs[index];
-        let merged_id = merged.id.clone();
-        for mapping in &mut next.token_audio_mappings {
-            if mapping.paragraph_id == left_id || mapping.paragraph_id == right_id {
-                mapping.paragraph_id.clone_from(&merged_id);
-                mapping.paragraph_revision = 1;
-            }
-        }
         *self = next;
         Ok(outcome)
     }
@@ -1126,8 +1272,7 @@ impl std::fmt::Display for AlignmentState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenAudioMapping {
-    paragraph_id: String,
-    paragraph_revision: u64,
+    chunk_id: String,
     token_identity: TokenIdentity,
     source_id: String,
     range: SampleRange,
@@ -1135,11 +1280,8 @@ pub struct TokenAudioMapping {
 }
 
 impl TokenAudioMapping {
-    pub fn paragraph_id(&self) -> &str {
-        &self.paragraph_id
-    }
-    pub fn paragraph_revision(&self) -> u64 {
-        self.paragraph_revision
+    pub fn chunk_id(&self) -> &str {
+        &self.chunk_id
     }
     pub fn token_identity(&self) -> &TokenIdentity {
         &self.token_identity

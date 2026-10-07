@@ -9,11 +9,48 @@ use running_drafts_editor::{
 use std::fs;
 
 #[test]
-fn one_transcription_per_chunk_and_exact_evidence_round_trip() {
+fn representative_v4_fixture_is_readable_and_recoverable() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/readable-v4.rde.json"
+    );
+    let encoded = fs::read_to_string(fixture).unwrap();
+    let project = load_project(std::path::Path::new(fixture)).unwrap();
+
+    assert!(encoded.find("\"document\"").unwrap() < encoded.find("\"_inspection\"").unwrap());
+    assert!(!encoded.contains("\"kind\""));
+    assert!(!encoded.contains("\"transcriber\""));
+    assert!(encoded.contains("\"text\": \"First chunk.\""));
+    assert!(encoded.contains("\"text\": \"Previous spoken context\""));
+    let compact_alternative = concat!(
+        "\"alternatives\": [\n",
+        "                    {\"token_id\":50364,\"text\":\"[_BEG_]\",\"probability\":0.68888783},\n",
+        "                    {\"token_id\":1562,\"text\":\" ever\",\"probability\":0.28583738}\n",
+        "                  ]"
+    );
+    assert!(encoded.contains(compact_alternative));
+    assert!(encoded.contains("example trailing decode observation"));
+    assert_eq!(project.paragraphs().len(), 2);
+    assert_eq!(project.paragraph(1).unwrap().text(), "First chunk.");
+    assert_eq!(project.paragraph(2).unwrap().text(), "Second chunk.");
+    assert_eq!(project.edit_history_len(), 3);
+    assert_eq!(project.attention_marks().len(), 1);
+
+    let directory = tempfile::tempdir().unwrap();
+    let round_trip = directory.path().join("round-trip.rde.json");
+    save_project(&round_trip, &project).unwrap();
+    assert_eq!(load_project(&round_trip).unwrap(), project);
+    assert!(fs::read_to_string(round_trip)
+        .unwrap()
+        .contains(compact_alternative));
+}
+
+#[test]
+fn one_current_transcription_per_chunk_and_optional_inspection_export() {
     let mut result = common::batch("initial", &[" hello ", "\t世界"]);
     let chunk = result.chunks_mut().next().unwrap();
     chunk.boundary.reason = ChunkBoundaryReason::LongPause;
-    chunk.transcriptions[0].boundary.reason = ChunkBoundaryReason::LongPause;
+    chunk.transcription.as_mut().unwrap().boundary.reason = ChunkBoundaryReason::LongPause;
     result.decode_spans[0]
         .content
         .insert(1, DecodeSpanItem::ParagraphBreak(ParagraphBreak));
@@ -33,17 +70,49 @@ fn one_transcription_per_chunk_and_exact_evidence_round_trip() {
     assert!(!encoded.contains("pseudo"));
     assert!(!encoded.contains("transcription_runs"));
     assert!(value.get("transcriptions").is_none());
+    assert_eq!(value["document"]["content"][0]["type"], "chunk");
+    assert!(value.get("paragraphs").is_none());
+    assert!(value.get("chunk_audio_mappings").is_none());
+    assert!(value.get("attention_marks").is_none());
     assert_eq!(
-        value["initial_evidence"]["decode_spans"][0]["content"][0]["kind"],
-        "chunk"
+        value["document"]["content"][0]["audio"]["source_id"],
+        value["audio_sources"][0]["id"]
     );
     assert_eq!(
-        value["initial_evidence"]["decode_spans"][0]["content"][0]["value"]["transcriptions"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
+        value["document"]["content"][0]["audio"]["range"]["start_sample"],
+        0
     );
+    assert_eq!(value["document"]["content"][1]["type"], "paragraph_break");
+    assert_eq!(
+        value["document"]["content"][2]["previous_chunk_id"],
+        value["document"]["content"][0]["id"]
+    );
+    assert_eq!(
+        value["document"]["content"][0]["transcription"]["text"],
+        " hello "
+    );
+    assert_eq!(
+        value["document"]["content"][0]["transcription"]["profile_id"],
+        value["transcription_profiles"][0]["id"]
+    );
+    assert!(value["document"]["content"][0]["transcription"]
+        .get("config")
+        .is_none());
+    assert!(value["document"]["content"][0]["transcription"]
+        .get("source")
+        .is_none());
+    assert!(value["document"]["content"][0]["transcription"]
+        .get("transcriber")
+        .is_none());
+    assert_eq!(
+        value["transcription_profiles"][0]["config"]["language"],
+        "auto"
+    );
+    assert_eq!(
+        value["document"]["content"][2]["transcription"]["text"],
+        "\t世界"
+    );
+    assert!(value["_inspection"]["decode_spans"].is_array());
     export_text(&dir.path().join("text"), &project).unwrap();
     assert_eq!(
         fs::read_to_string(dir.path().join("text")).unwrap(),
@@ -54,8 +123,16 @@ fn one_transcription_per_chunk_and_exact_evidence_round_trip() {
 #[test]
 fn unavailable_token_alignment_preserves_text_evidence_and_structural_history() {
     let mut result = common::batch("initial", &[" exact text \t", "other"]);
-    result.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0].text =
-        "mismatched".into();
+    result
+        .chunks_mut()
+        .next()
+        .unwrap()
+        .transcription
+        .as_mut()
+        .unwrap()
+        .segments[0]
+        .tokens[0]
+        .text = "mismatched".into();
     let mut project = Project::from_initial_transcription(&result);
     assert_eq!(project.chunk_has_tokens(1, 1), Some(false));
     assert_eq!(project.paragraph(1).unwrap().text(), " exact text \tother");
@@ -144,19 +221,19 @@ fn malformed_current_and_historical_references_are_rejected_without_overwrite() 
     let encoded = serde_json::to_value(&project).unwrap();
     for target in ["current", "history"] {
         let mut invalid = encoded.clone();
-        let paragraphs = if target == "current" {
-            &mut invalid["paragraphs"]
+        let content = if target == "current" {
+            &mut invalid["document"]["content"]
         } else {
-            &mut invalid["edit_history"][0]["before"]["paragraphs"]
+            &mut invalid["edit_history"][0]["before"]["document"]["content"]
         };
-        paragraphs[0]["chunk_boundaries"][0]["transcription_id"] = "missing".into();
+        content[0]["transcription"]["chunk_id"] = "missing".into();
         fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
         assert!(load_project(&path).is_err());
     }
     save_project(&path, &project).unwrap();
     let good = fs::read(&path).unwrap();
     let mut invalid = encoded;
-    invalid["paragraphs"][0]["tokens"][0]["vocabulary_id"] = 999.into();
+    invalid["document"]["content"][0]["transcription"]["audio_range"]["end_sample"] = 99.into();
     fs::write(
         dir.path().join("invalid"),
         serde_json::to_vec(&invalid).unwrap(),
@@ -164,6 +241,35 @@ fn malformed_current_and_historical_references_are_rejected_without_overwrite() 
     .unwrap();
     assert!(load_project(&dir.path().join("invalid")).is_err());
     assert_eq!(fs::read(&path).unwrap(), good);
+
+    let mut invalid = serde_json::to_value(&project).unwrap();
+    invalid["document"]["content"][2]["previous_chunk_id"] = "missing".into();
+    fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    assert!(load_project(&path).is_err());
+
+    let mut invalid = serde_json::to_value(&project).unwrap();
+    invalid["misspelled_authoritative_field"] = true.into();
+    fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    assert!(load_project(&path).is_err());
+
+    let mut invalid = serde_json::to_value(&project).unwrap();
+    invalid["document"]["content"][0]["misspelled_field"] = true.into();
+    fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    assert!(load_project(&path).is_err());
+
+    let mut invalid = serde_json::to_value(&project).unwrap();
+    invalid["document"]["content"][1]["misspelled_field"] = true.into();
+    fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    assert!(load_project(&path).is_err());
+
+    let mut allowed = serde_json::to_value(&project).unwrap();
+    allowed["_inspection"] = serde_json::json!({
+        "arbitrary_future_diagnostic": { "explanation": "ignored" }
+    });
+    allowed["document"]["content"][0]["transcription"]["_inspection"] =
+        serde_json::json!({ "future_prompt_view": [1, 2, 3] });
+    fs::write(&path, serde_json::to_vec(&allowed).unwrap()).unwrap();
+    assert!(load_project(&path).is_ok());
 }
 
 #[test]
@@ -256,14 +362,16 @@ fn new_action_after_undo_clears_redo_and_follows_current_transcription() {
 }
 
 #[test]
-fn duplicate_attention_targets_and_audio_mappings_are_rejected() {
+fn duplicate_attention_targets_and_token_audio_mappings_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project");
     let mut project = common::project(&["text"]);
     project.mark_attention(1, 1).unwrap();
     let mut value = serde_json::to_value(&project).unwrap();
-    let mark = value["attention_marks"][0].clone();
-    value["attention_marks"].as_array_mut().unwrap().push(mark);
+    let annotations = value["document"]["content"][0]["annotations"]
+        .as_array_mut()
+        .unwrap();
+    annotations.push(annotations[0].clone());
     fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(load_project(&path).is_err());
     let mut value = serde_json::to_value(&project).unwrap();
@@ -281,14 +389,19 @@ fn overlapping_finalized_chunk_ranges_are_rejected() {
     let mut result = common::batch("overlap", &["one", "two"]);
     let second = result.chunks_mut().nth(1).unwrap();
     second.audio_range.start_sample = 50;
-    second.transcriptions[0].audio_range.start_sample = 50;
+    second
+        .transcription
+        .as_mut()
+        .unwrap()
+        .audio_range
+        .start_sample = 50;
     let project = Project::from_initial_transcription(&result);
     let dir = tempfile::tempdir().unwrap();
     let error = save_project(&dir.path().join("project"), &project).unwrap_err();
 
     assert!(error
         .to_string()
-        .contains("invalid finalized chunk in decode-span content"));
+        .contains("invalid Chunk in Document content"));
 }
 
 #[test]
@@ -297,7 +410,16 @@ fn special_tokens_do_not_get_addresses_but_empty_text_tokens_do() {
     let project = Project::from_initial_transcription(&result);
     assert_eq!(project.chunk_has_tokens(1, 1), Some(true));
     assert_eq!(project.chunk_token(1, 1, 1).unwrap().text(), "");
-    result.chunks_mut().next().unwrap().transcriptions[0].segments[0].tokens[0].is_special = true;
+    result
+        .chunks_mut()
+        .next()
+        .unwrap()
+        .transcription
+        .as_mut()
+        .unwrap()
+        .segments[0]
+        .tokens[0]
+        .is_special = true;
     let project = Project::from_initial_transcription(&result);
     assert_eq!(project.chunk_has_tokens(1, 1), Some(false));
     assert!(project.chunk_token(1, 1, 1).is_none());
@@ -348,19 +470,21 @@ fn failed_initial_decoding_keeps_its_circumstances_even_without_finalized_chunks
     assert!(project.transcriptions().is_empty());
     let dir = tempfile::tempdir().unwrap();
     save_project(&dir.path().join("project"), &project).unwrap();
-    let reopened = load_project(&dir.path().join("project")).unwrap();
+    let path = dir.path().join("project");
+    let exported: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let reopened = load_project(&path).unwrap();
     assert_eq!(reopened, project);
-    let value = serde_json::to_value(&reopened).unwrap();
-    assert_eq!(value["initial_evidence"]["config"]["language"], "de");
+    assert_eq!(exported["_inspection"]["config"]["language"], "de");
     assert_eq!(
-        value["initial_evidence"]["source"]["decoded_sample_count"],
+        exported["_inspection"]["source"]["decoded_sample_count"],
         100
     );
-    assert_eq!(value["initial_evidence"]["status"], "failed");
+    assert_eq!(exported["_inspection"]["status"], "failed");
+    assert!(reopened.decode_spans().is_empty());
 }
 
 #[test]
-fn unlocated_raw_timestamp_evidence_survives_save_and_reopen() {
+fn unlocated_raw_timestamp_evidence_is_exported_but_ignored_on_import() {
     let mut result = common::batch("partial-initial", &["unlocated"]);
     let span = &mut result.decode_spans[0];
     span.content.clear();
@@ -383,14 +507,23 @@ fn unlocated_raw_timestamp_evidence_survives_save_and_reopen() {
     let path = directory.path().join("partial.rde.json");
 
     save_project(&path, &project).unwrap();
+    let exported: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let reopened = load_project(&path).unwrap();
 
     assert_eq!(reopened, project);
-    let evidence = &reopened.decode_spans()[0].hypotheses[0];
+    assert!(reopened.decode_spans().is_empty());
+    let evidence = &exported["_inspection"]["decode_spans"][0]["hypotheses"][0];
     assert_eq!(
-        evidence.raw_timestamps,
-        result.decode_spans[0].hypotheses[0].raw_timestamps
+        evidence["raw_timestamps"]["start"],
+        result.decode_spans[0].hypotheses[0]
+            .raw_timestamps
+            .unwrap()
+            .start
     );
-    assert_eq!(evidence.audio_range, None);
-    assert_eq!(evidence.tokens[0].audio_range, None);
+    assert!(evidence["raw_timestamps"].get("samples_per_unit").is_none());
+    assert!(evidence["tokens"][0]["raw_timestamps"]
+        .get("samples_per_unit")
+        .is_none());
+    assert!(evidence.get("audio_range").is_none());
+    assert!(evidence["tokens"][0].get("audio_range").is_none());
 }
