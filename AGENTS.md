@@ -34,7 +34,8 @@ check the assigned issue before applying them to the web seed.
   procedure or rationale is costly to reconstruct from them.
 - Use clear B2-level English in project text.
 - Leave recordings, model binaries, credentials, generated output, and editor
-  swap files untracked.
+  swap files untracked. Small test fixtures under `web/e2e/fixtures/` are the
+  exception.
 - Keep the CLI and web experiments independent. Create shared code only when
   a concrete requirement calls for it.
 

@@ -1,0 +1,37 @@
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+}
+
+main {
+  padding: 1rem;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.state {
+  font-weight: bold;
+}
+
+.transcript {
+  min-height: 6rem;
+}
+
+.radar-log {
+  width: calc(var(--log-columns) * 1ch);
+  overflow-x: auto;
+  padding: 0.5rem;
+  background: #111;
+  color: #9f9;
+  line-height: 1.2;
+}
+
+.radar-log .cursor {
+  background: #9f9;
+  color: #111;
+}
