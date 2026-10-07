@@ -56,7 +56,10 @@
                     "start_sample": 0,
                     "end_sample": 100
                   },
-                  "alternatives": [{"token_id":50364,"text":"[_BEG_]","probability":0.68888783}]
+                  "alternatives": [
+                    {"token_id":50364,"text":"[_BEG_]","probability":0.68888783},
+                    {"token_id":1562,"text":" ever","probability":0.28583738}
+                  ]
                 }
               ]
             }

@@ -22,9 +22,13 @@ fn representative_v4_fixture_is_readable_and_recoverable() {
     assert!(!encoded.contains("\"transcriber\""));
     assert!(encoded.contains("\"text\": \"First chunk.\""));
     assert!(encoded.contains("\"text\": \"Previous spoken context\""));
-    assert!(encoded.contains(
-        "\"alternatives\": [{\"token_id\":50364,\"text\":\"[_BEG_]\",\"probability\":0.68888783}]"
-    ));
+    let compact_alternative = concat!(
+        "\"alternatives\": [\n",
+        "                    {\"token_id\":50364,\"text\":\"[_BEG_]\",\"probability\":0.68888783},\n",
+        "                    {\"token_id\":1562,\"text\":\" ever\",\"probability\":0.28583738}\n",
+        "                  ]"
+    );
+    assert!(encoded.contains(compact_alternative));
     assert!(encoded.contains("example trailing decode observation"));
     assert_eq!(project.paragraphs().len(), 2);
     assert_eq!(project.paragraph(1).unwrap().text(), "First chunk.");
@@ -36,9 +40,9 @@ fn representative_v4_fixture_is_readable_and_recoverable() {
     let round_trip = directory.path().join("round-trip.rde.json");
     save_project(&round_trip, &project).unwrap();
     assert_eq!(load_project(&round_trip).unwrap(), project);
-    assert!(fs::read_to_string(round_trip).unwrap().contains(
-        "\"alternatives\": [{\"token_id\":50364,\"text\":\"[_BEG_]\",\"probability\":0.68888783}]"
-    ));
+    assert!(fs::read_to_string(round_trip)
+        .unwrap()
+        .contains(compact_alternative));
 }
 
 #[test]

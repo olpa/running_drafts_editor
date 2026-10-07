@@ -140,12 +140,83 @@ fn compact_alternative_arrays(pretty: &str) -> String {
         let Some(end) = matching_array_end(pretty, start) else {
             break;
         };
+        let line_start = pretty[..marker]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        let indentation = &pretty[line_start..marker];
         output.push_str(&pretty[cursor..start]);
-        output.push_str(&without_json_whitespace(&pretty[start..=end]));
+        output.push_str(&compact_alternative_array(
+            &pretty[start..=end],
+            indentation,
+        ));
         cursor = end + 1;
     }
     output.push_str(&pretty[cursor..]);
     output
+}
+
+fn compact_alternative_array(json: &str, indentation: &str) -> String {
+    let compact = without_json_whitespace(json);
+    if compact == "[]" {
+        return compact;
+    }
+
+    let item_indentation = format!("{indentation}  ");
+    let mut formatted = String::with_capacity(compact.len() + item_indentation.len());
+    let mut array_depth = 0_u32;
+    let mut object_depth = 0_u32;
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in compact.chars() {
+        if quoted {
+            formatted.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => {
+                quoted = true;
+                formatted.push(character);
+            }
+            '[' => {
+                array_depth += 1;
+                formatted.push(character);
+                if array_depth == 1 {
+                    formatted.push('\n');
+                    formatted.push_str(&item_indentation);
+                }
+            }
+            ']' => {
+                if array_depth == 1 {
+                    formatted.push('\n');
+                    formatted.push_str(indentation);
+                }
+                array_depth -= 1;
+                formatted.push(character);
+            }
+            '{' => {
+                object_depth += 1;
+                formatted.push(character);
+            }
+            '}' => {
+                object_depth -= 1;
+                formatted.push(character);
+            }
+            ',' if array_depth == 1 && object_depth == 0 => {
+                formatted.push(character);
+                formatted.push('\n');
+                formatted.push_str(&item_indentation);
+            }
+            _ => formatted.push(character),
+        }
+    }
+    formatted
 }
 
 fn matching_array_end(json: &str, start: usize) -> Option<usize> {

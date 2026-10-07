@@ -131,9 +131,9 @@ initial-transcription documentation.
   source facts may still appear in ignored `_inspection` evidence when they
   explain failures or audio that produced no Chunk.
 - Omit the standard Whisper timestamp scale of 160 samples per timestamp unit;
-  write `samples_per_unit` only for a nonstandard scale. Render each token's
-  alternatives array compactly on one line so candidate evidence remains easy
-  to scan.
+  write `samples_per_unit` only for a nonstandard scale. Render each token
+  alternative as one compact object per line so candidate evidence remains
+  easy to scan without producing very long lines.
 - Keep token-to-audio mappings and resolved multi-token issues at Project scope.
   They are cross-cutting indexes or review state rather than intrinsic Chunk
   content. Keep attention marks in their target Chunk.
