@@ -50,6 +50,16 @@ Run the test in another:
 e2e/.venv/bin/pytest e2e
 ```
 
+To watch the journey in a visible Chromium window, slowed down so that a
+person can follow it (about 25 seconds, with audible start and stop cues):
+
+```sh
+e2e/.venv/bin/pytest e2e --demo
+```
+
+`--demo` uses longer transport frames and polling, pauses at key moments, and
+implies `--headed --slowmo 600`. Pass `--slowmo` yourself to change the pace.
+
 The test uses `http://localhost:5173` by default; pass `--base-url` to use
 another server. Chromium's fake microphone plays `e2e/fixtures/speech-en.riff`,
 a 16 kHz mono PCM WAV recording, in a loop.

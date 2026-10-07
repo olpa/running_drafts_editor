@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from playwright.sync_api import Locator, Page, expect
 
 from conftest import load_expected
@@ -8,7 +10,7 @@ def chunk_view(chunks: Locator) -> list[dict]:
     return chunks.evaluate_all("els => els.map(e => ({id: e.dataset.chunkId, text: e.textContent}))")
 
 
-def test_happy_path(seed_page: Page, mock_backend: MockBackend) -> None:
+def test_happy_path(seed_page: Page, mock_backend: MockBackend, linger: Callable[[], None]) -> None:
     expected = load_expected("happy-path.json")
     page = seed_page
     page.goto("/")
@@ -18,6 +20,7 @@ def test_happy_path(seed_page: Page, mock_backend: MockBackend) -> None:
     chunks = page.get_by_test_id("chunk")
 
     expect(app).to_have_attribute("data-state", "idle")
+    linger()
     language.select_option(expected["language"])
     start.click()
 
@@ -30,11 +33,13 @@ def test_happy_path(seed_page: Page, mock_backend: MockBackend) -> None:
     expect(chunks).to_have_count(len(expected["chunksWhileRecording"]))
     expect(app).to_have_attribute("data-state", "recording")
     assert chunk_view(chunks) == expected["chunksWhileRecording"]
+    linger()
 
     page.get_by_test_id("stop").click()
     expect(app).to_have_attribute("data-state", "complete")
     expect(app).to_have_attribute("data-cue", "stop")
     assert chunk_view(chunks) == expected["chunksAtComplete"]
+    linger()
     assert page.evaluate("window.__seedEvents") == expected["eventsUntilComplete"]
 
     starts = chunks.evaluate_all("els => els.map(e => Number(e.dataset.startMs))")
@@ -62,3 +67,4 @@ def test_happy_path(seed_page: Page, mock_backend: MockBackend) -> None:
         page.evaluate("window.__seedEvents")
         == expected["eventsUntilComplete"] + expected["eventsAfterStartNew"]
     )
+    linger()

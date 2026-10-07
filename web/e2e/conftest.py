@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
 
 from mock_backend import MockBackend
 
@@ -19,6 +19,33 @@ SEED_CONFIG = {
     "maxRecordingMs": 5_000,
     "pollIntervalMs": 100,
 }
+
+# Slower limits for watching the journey with --demo.
+DEMO_SEED_CONFIG = {
+    "frameIntervalMs": 2_000,
+    "maxRecordingMs": 60_000,
+    "pollIntervalMs": 500,
+}
+DEMO_SLOWMO_MS = 600
+DEMO_LINGER_MS = 3_000
+DEMO_EXPECT_TIMEOUT_MS = 20_000
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--demo",
+        action="store_true",
+        help="show Chromium and slow the journey down so a person can follow it",
+    )
+
+
+def pytest_configure(config):
+    if config.getoption("demo"):
+        config.option.headed = True
+        if not config.option.slowmo:
+            config.option.slowmo = DEMO_SLOWMO_MS
+        expect.set_options(timeout=DEMO_EXPECT_TIMEOUT_MS)
+
 
 # Records changes of the state and cue test hooks, so that short states such
 # as Finishing cannot be missed between assertions.
@@ -61,8 +88,25 @@ def browser_context_args(browser_context_args):
 
 
 @pytest.fixture
-def seed_page(page: Page) -> Page:
-    page.add_init_script(f"window.__SEED_CONFIG__ = {json.dumps(SEED_CONFIG)};")
+def demo(pytestconfig) -> bool:
+    return pytestconfig.getoption("demo")
+
+
+@pytest.fixture
+def linger(seed_page: Page, demo: bool):
+    """Returns a function that pauses in --demo mode so the viewer can look."""
+
+    def pause() -> None:
+        if demo:
+            seed_page.wait_for_timeout(DEMO_LINGER_MS)
+
+    return pause
+
+
+@pytest.fixture
+def seed_page(page: Page, demo: bool) -> Page:
+    config = DEMO_SEED_CONFIG if demo else SEED_CONFIG
+    page.add_init_script(f"window.__SEED_CONFIG__ = {json.dumps(config)};")
     page.add_init_script(RECORD_EVENTS_SCRIPT)
     return page
 
