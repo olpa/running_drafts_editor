@@ -23,7 +23,7 @@ changes it. This directory is one Rust package: `rde` is the executable and
 - Initial-transcription chunking: `docs/transcription-chunking.md`; read it
   before changing decode spans, boundary selection, overlap ownership,
   accepted-segment grouping, or pause handling.
-- Domain language: `../CONTEXT.md`; use it in code, tests, and issues.
+- Domain language: `../GLOSSARY.md`; use it in code, tests, and issues.
 - Durable architecture: read the relevant accepted record in `docs/adr/`
   before changing document authority or recovery, editing units, chunk boundary
   formation, audio coordinates, correction transactions, or decoder and prompt
@@ -55,7 +55,7 @@ stable identities.
 - Keep each change limited to its issue and the smallest supporting work.
 - Preserve reachable transcription evidence; users never edit it directly.
 - Add focused tests for behavior and failure paths.
-- Record a newly agreed domain term in `../CONTEXT.md` immediately. Record an
+- Record a newly agreed domain term in `../GLOSSARY.md` immediately. Record an
   architectural decision only when it is hard to reverse, surprising without
   context, and chosen among real alternatives.
 - Keep plans and specifications in GitHub Issues. Keep implementation details

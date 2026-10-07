@@ -27,7 +27,7 @@ See the [CLI README](cli/README.md) for build requirements and usage.
 ## Shared project information
 
 - [`docs/product.md`](docs/product.md) records product intent.
-- [`CONTEXT.md`](CONTEXT.md) defines the shared domain language.
+- [`GLOSSARY.md`](GLOSSARY.md) defines the shared domain language.
 - [`cli/docs/adr/`](cli/docs/adr/) records CLI architectural decisions.
 - [Editor issues](https://github.com/olpa/running_drafts_editor/issues) contain
   implementation plans and acceptance criteria.

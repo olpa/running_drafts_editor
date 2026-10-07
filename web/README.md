@@ -12,6 +12,6 @@ mocked services. No application or build tooling is scaffolded here yet.
 coordinates the seed across repositories. Backend and inference implementation
 belong to `olpa/running_drafts_backend`.
 
-Shared [product intent](../docs/product.md) and [domain language](../CONTEXT.md)
+Shared [product intent](../docs/product.md) and [domain language](../GLOSSARY.md)
 live at the repository root. The independent [Rust CLI](../cli/README.md) is
 another technical experiment for the same product.

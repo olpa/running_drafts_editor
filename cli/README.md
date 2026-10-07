@@ -66,7 +66,7 @@ chunk. Earlier unreleased saved formats are not supported.
   rationale.
 - [`docs/transcription-chunking.md`](docs/transcription-chunking.md) explains
   provisional overlap, final chunk formation, and the earlier VAD experiment.
-- [`../CONTEXT.md`](../CONTEXT.md) defines the domain language.
+- [`../GLOSSARY.md`](../GLOSSARY.md) defines the domain language.
 - [`docs/adr/`](docs/adr/) records durable architectural decisions and their
   reasons.
 - [GitHub Issues](https://github.com/olpa/running_drafts_editor/issues) contain

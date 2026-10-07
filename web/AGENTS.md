@@ -3,7 +3,7 @@
 This directory owns the browser seed experiment. Follow shared rules in the
 root `AGENTS.md` and the assigned GitHub issue and its comments.
 
-Read `../docs/product.md` for product intent and `../CONTEXT.md` for shared
+Read `../docs/product.md` for product intent and `../GLOSSARY.md` for shared
 domain language. CLI-specific architecture and terminal interaction rules are
 documented under `../cli/`; the web seed's scope comes from its own issues.
 

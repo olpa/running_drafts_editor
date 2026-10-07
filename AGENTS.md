@@ -9,7 +9,7 @@ and transcription data supporting replay and correction.
   working there. Run Cargo commands from `cli/`.
 - `web/` is the browser seed experiment. Read `web/AGENTS.md` before working
   there. Its implementation is defined by the assigned GitHub issue.
-- `CONTEXT.md` defines shared domain language.
+- `GLOSSARY.md` defines shared domain language.
 - `docs/product.md` records shared product intent.
 - `docs/agents/` contains shared agent procedures.
 
@@ -26,7 +26,7 @@ check the assigned issue before applying them to the web seed.
 - Preserve exact user-visible text and reachable project data in the supported
   format. Users never edit transcription evidence directly.
 - Add focused tests for behavior and failure paths.
-- Record a newly agreed domain term in `CONTEXT.md` immediately. Record an
+- Record a newly agreed domain term in `GLOSSARY.md` immediately. Record an
   architectural decision only when it is hard to reverse, surprising without
   context, and chosen among real alternatives.
 - Keep plans and specifications in GitHub Issues. Keep implementation details
@@ -38,7 +38,7 @@ check the assigned issue before applying them to the web seed.
 - Keep the CLI and web experiments independent. Create shared code only when
   a concrete requirement calls for it.
 
-## Agent procedures
+## Agent skills
 
 - Read `docs/agents/issue-tracker.md` before issue operations.
 - Read `docs/agents/triage-labels.md` before triaging issues.
