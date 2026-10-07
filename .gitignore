@@ -2,3 +2,13 @@
 /cli/target/
 *.swp
 *.swo
+
+# Local recordings and model assets
+*.wav
+*.bin
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.gguf
+*.tflite
