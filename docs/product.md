@@ -36,6 +36,13 @@ reviewing; it is neither proof of an error nor work the user must complete.
 
 ## Product boundary
 
+This repository contains two technical experiments for the same product:
+the [Rust CLI](../cli/README.md) and the [browser seed](../web/README.md).
+The browser seed tests recording and progressive transcription through a
+backend and private inference service. Its scope and acceptance are tracked in
+[product issue #1](https://github.com/olpa/running_drafts_product/issues/1).
+The seed does not yet implement the full editing workflow described here.
+
 The current line-oriented CLI is a technical-feasibility surface for the text,
 transcription, replay, correction, and recovery model. It is not the intended
 final interaction design.
