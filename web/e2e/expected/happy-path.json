@@ -1,0 +1,25 @@
+{
+  "language": "en",
+  "frameMediaType": "application/x-mock-frame",
+  "chunksWhileRecording": [
+    {"id": "mock-chunk-1", "text": "Mock chunk 1: spans transport frames 1 and 2."},
+    {"id": "mock-chunk-2", "text": "Mock chunk 2: shares transport frame 2 with chunk 1."}
+  ],
+  "chunksAtComplete": [
+    {"id": "mock-chunk-1", "text": "Mock chunk 1: spans transport frames 1 and 2."},
+    {"id": "mock-chunk-2", "text": "Mock chunk 2: shares transport frame 2 with chunk 1."},
+    {"id": "mock-chunk-3", "text": "Mock chunk 3: the tail finalized after Stop."}
+  ],
+  "eventsUntilComplete": [
+    ["state", "idle"],
+    ["state", "recording"],
+    ["cue", "start"],
+    ["state", "finishing"],
+    ["state", "complete"],
+    ["cue", "stop"]
+  ],
+  "eventsAfterStartNew": [
+    ["state", "recording"],
+    ["cue", "start"]
+  ]
+}

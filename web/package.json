@@ -1,0 +1,15 @@
+{
+  "name": "running-drafts-seed",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run check && vite build",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "typescript": "^5.8.0",
+    "vite": "^7.0.0"
+  }
+}

@@ -34,6 +34,13 @@ metadata needed to locate or verify it. A recording is the usual audio source;
 later user-supplied audio may provide another one.
 _Avoid_: Recording as a synonym when discussing source identity.
 
+**Transport frame**:
+An independently processable piece of browser-captured audio, identified by
+its recording ID and an increasing sequence number, that the browser delivers
+to the backend. It carries no transcription meaning; it is neither a chunk nor
+a decode span, and a chunk may draw audio from several transport frames.
+_Avoid_: Frame (alone), chunk, segment, slice, blob.
+
 **Decode span**:
 Audio processed in one step of initial transcription, together with its
 decoder evidence. Decode spans may overlap and may produce zero or more
