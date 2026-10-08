@@ -26,6 +26,11 @@ backend behavior remains mocked:
 - Backend: `e2e/mock_backend.py` intercepts the page's `/api` requests. #78
   deletes it and runs the same test against the real backend.
 
+The backend mock runs only inside Playwright tests. Opening the Vite page in a
+normal browser does not install it; Start currently fails with HTTP 404 for
+`POST /api/recordings`. [Issue #78](https://github.com/olpa/running_drafts_editor/issues/78)
+adds real backend routing and instructions for running both services together.
+
 The assumed backend contract is in `src/api.ts`. The test's expected values
 are in `e2e/expected/happy-path.json`. The happy path now also checks real
 transport bytes, one recorder, microphone release, and acknowledgement cues.

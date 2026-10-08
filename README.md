@@ -7,8 +7,8 @@ This repository contains two experiments:
 
 - [`cli/`](cli/README.md): the existing Rust CLI for transcription, editing,
   replay, and recovery. It is an independent Cargo package.
-- [`web/`](web/README.md): the home for the browser seed experiment. The seed
-  will validate browser recording and progressive transcription.
+- [`web/`](web/README.md): browser recording and delivery with a mocked backend.
+  Real backend integration and progressive transcription are the next step.
 
 ## CLI development
 
@@ -28,6 +28,7 @@ See the [CLI README](cli/README.md) for build requirements and usage.
 
 - [`docs/product.md`](docs/product.md) records product intent.
 - [`GLOSSARY.md`](GLOSSARY.md) defines the shared domain language.
+- [`web/GLOSSARY.md`](web/GLOSSARY.md) defines browser recording and delivery terms.
 - [`cli/docs/adr/`](cli/docs/adr/) records CLI architectural decisions.
 - [Editor issues](https://github.com/olpa/running_drafts_editor/issues) contain
   implementation plans and acceptance criteria.

@@ -5,8 +5,9 @@ This repository has one domain context.
 ## Before domain work
 
 Read root `GLOSSARY.md` before choosing terminology, exploring the domain,
-writing specifications, or reviewing domain behavior. Treat it as a glossary,
-not an implementation specification.
+writing specifications, or reviewing domain behavior. For browser recording and
+delivery, also read `web/GLOSSARY.md`. Treat both as glossaries, not implementation
+specifications.
 
 Read relevant accepted decisions before architectural work. CLI decisions live
 in `cli/docs/adr/`; web work follows its assigned issue and any web-specific
@@ -21,7 +22,8 @@ discussing the term itself incurs no penalty.
 
 ## Layout
 
-- `GLOSSARY.md`: canonical domain terms for this single context.
+- `GLOSSARY.md`: shared canonical domain terms.
+- `web/GLOSSARY.md`: browser recording and delivery terms.
 - `cli/docs/adr/`: numbered CLI architectural decisions.
 - `docs/product.md`: shared product intent.
 - `cli/` and `web/`: independent implementation experiments.
