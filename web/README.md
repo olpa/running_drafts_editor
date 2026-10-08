@@ -11,6 +11,7 @@ belong to `olpa/running_drafts_backend`.
 Shared [product intent](../docs/product.md) and [domain language](../GLOSSARY.md)
 live at the repository root. The independent [Rust CLI](../cli/README.md) is
 another technical experiment for the same product.
+The [web glossary](GLOSSARY.md) defines browser recording and delivery terms.
 
 ## Walking skeleton
 
