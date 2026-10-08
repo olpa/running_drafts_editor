@@ -109,6 +109,9 @@ its disconnect/reconnect lifecycle.
 The page keeps one microphone stream and recorder open. Stop waits for the final
 partial transport frame before sending finish. The ten-minute recording limit
 and transport interval are configurable through `window.__SEED_CONFIG__`.
+A prominent green **Speak now** indicator and duration progress appear while the
+microphone is recording. They stop indicating capture as soon as capture stops,
+independently of pending uploads and transcription progress.
 
 Audio stays in browser memory until acknowledged. The sender retries the oldest
 pending transport frame after 5, 10, and 17 seconds from each preceding attempt's

@@ -21,6 +21,11 @@ export class RecordingPanel extends HTMLElement {
   private controls!: Record<keyof Controls, HTMLButtonElement | HTMLSelectElement>;
   private stateLabel!: HTMLElement;
   private elapsed!: HTMLElement;
+  private captureIndicator!: HTMLElement;
+  private captureMessage!: HTMLElement;
+  private captureProgress!: HTMLElement;
+  private captureTime!: HTMLElement;
+  private captureDuration!: HTMLProgressElement;
   private secured!: HTMLElement;
   private pending!: HTMLElement;
   private feedback!: HTMLElement;
@@ -64,6 +69,11 @@ export class RecordingPanel extends HTMLElement {
     };
     this.stateLabel = this.element("state-label");
     this.elapsed = this.element("elapsed");
+    this.captureIndicator = this.element("capture-indicator");
+    this.captureMessage = this.element("capture-message");
+    this.captureProgress = this.element("capture-progress");
+    this.captureTime = this.element("capture-time");
+    this.captureDuration = this.element("capture-duration");
     this.secured = this.element("secured");
     this.pending = this.element("pending");
     this.feedback = this.element("feedback");
@@ -92,6 +102,19 @@ export class RecordingPanel extends HTMLElement {
     }
     this.controls.start.textContent = snapshot.state === "complete" ? "Start new recording" : "Start";
     this.elapsed.textContent = formatTime(snapshot.elapsedMs);
+    this.captureIndicator.dataset.capturing = String(snapshot.capturing);
+    const captureMessage = snapshot.capturing ? "Speak now. Microphone is recording."
+      : snapshot.state === "starting" ? "Getting the microphone ready. Please wait."
+      : snapshot.state === "idle" ? "Press Start when you are ready."
+      : snapshot.state === "complete" ? "Recording complete."
+      : snapshot.state === "finishing" ? "Microphone stopped. Finishing your recording."
+      : "Microphone is not recording.";
+    if (this.captureMessage.textContent !== captureMessage) this.captureMessage.textContent = captureMessage;
+    this.controls.stop.classList.toggle("capturing", snapshot.capturing);
+    this.captureProgress.hidden = !snapshot.capturing;
+    this.captureTime.textContent = `${formatTime(snapshot.elapsedMs)} / ${formatTime(this.config.maxRecordingMs)}`;
+    this.captureDuration.max = this.config.maxRecordingMs;
+    this.captureDuration.value = Math.min(snapshot.elapsedMs, this.config.maxRecordingMs);
     this.pending.textContent = `${formatSeconds(snapshot.pendingMs)} of audio pending`;
     this.secured.textContent = `Audio secured: ${formatTime(snapshot.securedMs)}`;
     this.retryButton.hidden = !snapshot.canRetry;

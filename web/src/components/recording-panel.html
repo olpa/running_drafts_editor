@@ -15,6 +15,14 @@
   <span class="state" data-testid="state-label"></span>
   <span data-testid="elapsed" aria-label="Elapsed recording time">0:00</span>
 </header>
+<div class="capture-indicator" data-testid="capture-indicator" data-capturing="false" role="status">
+  <span class="capture-dot" aria-hidden="true"></span>
+  <span data-testid="capture-message">Press Start when you are ready.</span>
+</div>
+<div class="capture-progress" data-testid="capture-progress" hidden>
+  <span data-testid="capture-time" aria-live="off"></span>
+  <progress data-testid="capture-duration" aria-label="Recording duration"></progress>
+</div>
 <p data-testid="secured" role="status">Audio secured: 0:00</p>
 <p data-testid="pending"></p>
 <p data-testid="feedback" role="status" aria-live="polite"></p>

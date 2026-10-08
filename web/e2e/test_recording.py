@@ -15,6 +15,41 @@ def events(page: Page) -> list[list[str]]:
     return page.evaluate("window.__seedEvents")
 
 
+def test_speak_indicator_waits_for_capture_and_clears_before_processing_completes(seed_page: Page, mock_backend: MockBackend) -> None:
+    mock_backend.script["completeAfterFinishPolls"] = 100
+    seed_page.add_init_script("""
+      window.__SEED_CONFIG__.maxRecordingMs = 15000;
+      const openMicrophone = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async (...args) => {
+        await new Promise(resolve => { window.__allowMicrophone = resolve; });
+        return openMicrophone(...args);
+      };
+    """)
+    seed_page.goto("/")
+    indicator = seed_page.get_by_test_id("capture-indicator")
+    message = seed_page.get_by_test_id("capture-message")
+    progress = seed_page.get_by_test_id("capture-progress")
+    expect(message).to_have_text("Press Start when you are ready.")
+    expect(progress).to_be_hidden()
+    seed_page.get_by_test_id("start").click()
+    expect(message).to_have_text("Getting the microphone ready. Please wait.")
+    expect(indicator).to_have_attribute("data-capturing", "false")
+    expect(progress).to_be_hidden()
+    seed_page.evaluate("window.__allowMicrophone()")
+    expect(message).to_have_text("Speak now. Microphone is recording.")
+    expect(indicator).to_have_attribute("data-capturing", "true")
+    expect(progress).to_be_visible()
+    seed_page.wait_for_function("document.querySelector('[data-testid=capture-duration]').value > 0")
+    assert seed_page.get_by_test_id("capture-duration").evaluate("el => el.max") == 15000
+    expect(seed_page.get_by_test_id("secured")).to_have_text("Audio secured: 0:00")
+    seed_page.get_by_test_id("stop").click()
+    expect(message).to_have_text("Microphone stopped. Finishing your recording.")
+    expect(indicator).to_have_attribute("data-capturing", "false")
+    expect(progress).to_be_hidden()
+    mock_backend.script["completeAfterFinishPolls"] = 2
+    expect(message).to_have_text("Recording complete.")
+
+
 def test_backlog_stop_preserves_three_frames_for_manual_upload(seed_page: Page, mock_backend: MockBackend) -> None:
     mock_backend.reject_frames = True
     seed_page.add_init_script("window.__SEED_CONFIG__.frameIntervalMs = 400;")
@@ -22,8 +57,11 @@ def test_backlog_stop_preserves_three_frames_for_manual_upload(seed_page: Page, 
     seed_page.get_by_test_id("start").click()
     app = seed_page.locator("recording-panel")
     expect(seed_page.get_by_test_id("feedback")).to_have_text("Audio upload delayed. Recording continues.")
+    expect(seed_page.get_by_test_id("capture-message")).to_have_text("Speak now. Microphone is recording.")
     expect(app).to_have_attribute("data-state", "error")
     expect(seed_page.get_by_test_id("feedback")).to_have_text("Recording stopped because audio could not be uploaded.")
+    expect(seed_page.get_by_test_id("capture-indicator")).to_have_attribute("data-capturing", "false")
+    expect(seed_page.get_by_test_id("capture-message")).to_have_text("Microphone is not recording.")
     expect(seed_page.get_by_test_id("retry")).to_be_enabled()
     assert events(seed_page).count(["cue", "delayed"]) == 1
     assert events(seed_page).count(["cue", "interrupted"]) == 1
@@ -101,6 +139,7 @@ def test_microphone_denial_allows_a_new_attempt(seed_page: Page, mock_backend: M
     seed_page.goto("/")
     seed_page.get_by_test_id("start").click()
     expect(seed_page.get_by_test_id("feedback")).to_contain_text("permission denied")
+    expect(seed_page.get_by_test_id("capture-indicator")).to_have_attribute("data-capturing", "false")
     expect(seed_page.get_by_test_id("start")).to_be_enabled()
     expect(seed_page.get_by_test_id("language")).to_be_enabled()
     assert mock_backend.recordings == []
