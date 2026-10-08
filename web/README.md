@@ -67,7 +67,7 @@ another server. Chromium's fake microphone plays `e2e/fixtures/speech-en.riff`,
 a 16 kHz mono PCM WAV recording, in a loop.
 
 `npm run check` type-checks the application and unit tests. `npm test` runs
-capture and delivery unit tests with Node.js 24. `npm run build` builds the page.
+capture, delivery, and recording-controller unit tests with Node.js 24. `npm run build` builds the page.
 
 The audio continuity test requires `ffmpeg` on PATH. It records a known rising
 frequency tone through Chromium's fake microphone, decodes the combined upload
@@ -82,6 +82,26 @@ e2e/.venv/bin/pytest e2e --browser firefox
 
 Firefox uses its built-in fake microphone tone. The known-waveform file test is
 Chromium-only and is skipped in Firefox.
+
+## Recording modules
+
+`<recording-panel>` in `src/components/recording-panel.ts` owns the recording
+controls and visual/audio feedback. It can run independently of `<seed-app>` and
+publishes `recording-event` events for snapshots, cues, chunks, diagnostic log
+entries, and a new-recording reset. The panel owns its controller and releases
+microphone resources when disconnected.
+
+`RecordingController` in `src/recording.ts` owns start, stop, retry, duration and
+backlog limits, completion, and semantic cue decisions. Its interface is
+`start(language)`, `stop()`, `retry()`, `dispose()`, `snapshot`, and `subscribe()`.
+It accepts a backend, a capture factory, and a clock. Controller unit tests use
+fake capture/backend adapters and controlled timers, without a browser or DOM.
+
+`RecorderFrameSource` and `FrameDelivery` retain their separate capture and
+submission responsibilities. `openRecordingCapture` owns browser microphone
+acquisition and release. `<seed-app>` only composes the panel, transcript, and
+circular diagnostic log. Browser tests also exercise the panel on its own and
+its disconnect/reconnect lifecycle.
 
 ## Recording and recovery
 

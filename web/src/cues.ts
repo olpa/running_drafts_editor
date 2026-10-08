@@ -40,6 +40,12 @@ export class CuePlayer {
     this.host.dataset.cueCount = String(this.count);
   }
 
+  dispose(): void {
+    const context = this.context;
+    this.context = null;
+    if (context) void context.close().catch(() => {});
+  }
+
   private tone(at: number, duration: number, from: number, to: number): void {
     const context = this.context!;
     const oscillator = context.createOscillator();

@@ -14,7 +14,7 @@ def test_happy_path(seed_page: Page, mock_backend: MockBackend, linger: Callable
     expected = load_expected("happy-path.json")
     page = seed_page
     page.goto("/")
-    app = page.locator("seed-app")
+    app = page.locator("recording-panel")
     language = page.get_by_test_id("language")
     start = page.get_by_test_id("start")
     chunks = page.get_by_test_id("chunk")

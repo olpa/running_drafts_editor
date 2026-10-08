@@ -20,7 +20,7 @@ def test_backlog_stop_preserves_three_frames_for_manual_upload(seed_page: Page, 
     seed_page.add_init_script("window.__SEED_CONFIG__.frameIntervalMs = 400;")
     seed_page.goto("/")
     seed_page.get_by_test_id("start").click()
-    app = seed_page.locator("seed-app")
+    app = seed_page.locator("recording-panel")
     expect(seed_page.get_by_test_id("feedback")).to_have_text("Audio upload delayed. Recording continues.")
     expect(app).to_have_attribute("data-state", "error")
     expect(seed_page.get_by_test_id("feedback")).to_have_text("Recording stopped because audio could not be uploaded.")
@@ -49,7 +49,7 @@ def test_overlapping_late_acknowledgements_do_not_restart_capture(seed_page: Pag
     mock_backend.hold_acknowledgements = True
     seed_page.goto("/")
     seed_page.get_by_test_id("start").click()
-    app = seed_page.locator("seed-app")
+    app = seed_page.locator("recording-panel")
     expect(app).to_have_attribute("data-state", "error")
     assert mock_backend.attempts.count(1) >= 2
     mock_backend.release_acknowledgements()
@@ -68,7 +68,7 @@ def test_automatic_duration_stop_flushes_partial_audio(seed_page: Page, mock_bac
     seed_page.add_init_script("window.__SEED_CONFIG__.maxRecordingMs = 550;")
     seed_page.goto("/")
     seed_page.get_by_test_id("start").click()
-    expect(seed_page.locator("seed-app")).to_have_attribute("data-state", "complete")
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "complete")
     [recording] = mock_backend.recordings
     assert recording.finished
     assert len(recording.frames) == 3
@@ -81,13 +81,13 @@ def test_pending_audio_warns_before_leaving(seed_page: Page, mock_backend: MockB
     mock_backend.reject_frames = True
     seed_page.goto("/")
     seed_page.get_by_test_id("start").click()
-    expect(seed_page.locator("seed-app")).to_have_attribute("data-state", "error")
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "error")
     seed_page.once("dialog", lambda dialog: dialog.dismiss())
     with seed_page.expect_event("dialog") as info:
         seed_page.evaluate("location.href = '/?leave-test'")
     dialog = info.value
     assert dialog.type == "beforeunload"
-    expect(seed_page.locator("seed-app")).to_have_attribute("data-state", "error")
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "error")
 
 
 def test_microphone_denial_allows_a_new_attempt(seed_page: Page, mock_backend: MockBackend) -> None:
@@ -131,7 +131,7 @@ def test_continuous_audio_across_transport_boundaries(browser_type: BrowserType,
         backend.install(page)
         page.goto("/")
         page.get_by_test_id("start").click()
-        expect(page.locator("seed-app")).to_have_attribute("data-state", "complete")
+        expect(page.locator("recording-panel")).to_have_attribute("data-state", "complete")
         [recording] = backend.recordings
         assert len(recording.frames) >= 8
         combined = b"".join(frame.data for frame in recording.frames)
@@ -168,12 +168,12 @@ def test_microphone_interruption_preserves_final_audio(seed_page: Page, mock_bac
     mock_backend.hold_acknowledgements = True
     # Stop the real input track and let MediaRecorder report its native end.
     seed_page.evaluate("window.__microphoneStreams[0].getAudioTracks()[0].stop()")
-    expect(seed_page.locator("seed-app")).to_have_attribute("data-state", "error")
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "error")
     expect(seed_page.get_by_test_id("feedback")).to_have_text("Recording stopped because the microphone became unavailable.")
     assert events(seed_page).count(["cue", "interrupted"]) == 1
     mock_backend.hold_acknowledgements = False
     seed_page.get_by_test_id("retry").click()
-    expect(seed_page.locator("seed-app")).to_have_attribute("data-state", "complete")
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "complete")
     assert seed_page.evaluate("window.__recorders[0].state") == "inactive"
     assert mock_backend.recordings[0].finished
     assert len(mock_backend.recordings[0].frames) >= 3
@@ -186,13 +186,65 @@ def test_upload_timeout_retains_audio_for_recovery(seed_page: Page, mock_backend
     seed_page.add_init_script("window.__SEED_CONFIG__.requestTimeoutMs = 500;")
     seed_page.goto("/")
     seed_page.get_by_test_id("start").click()
-    expect(seed_page.locator("seed-app")).to_have_attribute("data-state", "error")
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "error")
     expect(seed_page.get_by_test_id("log")).to_contain_text("f1 timeout")
     assert events(seed_page).count(["cue", "health"]) == 0
     mock_backend.hold_acknowledgements = False
     seed_page.get_by_test_id("retry").click()
-    expect(seed_page.locator("seed-app")).to_have_attribute("data-state", "complete")
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "complete")
     assert [frame.seq for frame in mock_backend.recordings[0].frames] == [1, 2, 3]
     assert events(seed_page).count(["cue", "health"]) == 3
     assert mock_backend.violations == []
     mock_backend.release_acknowledgements()
+
+
+def test_recording_panel_runs_without_seed_app(seed_page: Page, mock_backend: MockBackend) -> None:
+    seed_page.goto("/")
+    seed_page.evaluate("""() => {
+      const panel = document.createElement('recording-panel');
+      window.__panelChunks = [];
+      panel.addEventListener('recording-event', event => {
+        if (event.detail.type === 'chunks') window.__panelChunks = event.detail.chunks;
+      });
+      document.querySelector('seed-app').replaceWith(panel);
+    }""")
+    seed_page.get_by_test_id("start").click()
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "recording")
+    seed_page.wait_for_function("window.__panelChunks.length === 2")
+    seed_page.get_by_test_id("stop").click()
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "complete")
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-cue", "stop")
+    assert len(mock_backend.recordings) == 1
+    assert mock_backend.recordings[0].finished
+    assert seed_page.evaluate("window.__panelChunks.length") == 3
+    assert mock_backend.violations == []
+
+
+def test_recording_panel_disconnect_releases_microphone_and_reconnects(seed_page: Page, mock_backend: MockBackend) -> None:
+    seed_page.add_init_script("""
+      window.__audioContexts = [];
+      const OriginalAudioContext = window.AudioContext;
+      window.AudioContext = class extends OriginalAudioContext {
+        constructor(...args) { super(...args); window.__audioContexts.push(this); }
+      };
+    """)
+    seed_page.goto("/")
+    seed_page.get_by_test_id("start").click()
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "recording")
+    seed_page.evaluate("""() => {
+      window.__detachedPanel = document.querySelector('recording-panel');
+      window.__detachedPanel.remove();
+    }""")
+    seed_page.wait_for_function("window.__microphoneStreams[0].getAudioTracks().every(t => t.readyState === 'ended')")
+    seed_page.wait_for_function("window.__audioContexts[0].state === 'closed'")
+    seed_page.evaluate("document.querySelector('seed-app').prepend(window.__detachedPanel)")
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "idle")
+    seed_page.get_by_test_id("start").click()
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "recording")
+    assert seed_page.evaluate("window.__microphoneStreams.length") == 2
+    assert seed_page.evaluate("window.__recorders.length") == 2
+    assert seed_page.evaluate("window.__audioContexts.length") == 2
+    seed_page.get_by_test_id("stop").click()
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "complete")
+    assert mock_backend.recordings[-1].finished
+    assert mock_backend.violations == []

@@ -111,3 +111,45 @@ export class RecorderFrameSource implements FrameSource {
     this.timer = null;
   }
 }
+
+export interface CaptureOptions {
+  intervalMs: number;
+  canContinue: () => boolean;
+  onError: (error: Error) => void;
+}
+
+export interface RecordingCapture extends FrameSource {
+  /** Release recorder and microphone, including after failed startup. */
+  dispose(): void;
+}
+
+/** Browser adapter: microphone ownership stays with the capture implementation. */
+export async function openRecordingCapture(options: CaptureOptions): Promise<RecordingCapture> {
+  recordingMediaType();
+  const stream = await openMicrophone();
+  const tracks = stream.getTracks();
+  const ended = (): void => options.onError(new Error("Microphone recording ended."));
+  const release = (): void => {
+    for (const track of tracks) {
+      track.removeEventListener("ended", ended);
+      track.stop();
+    }
+  };
+  try {
+    const source = new RecorderFrameSource(stream, options.intervalMs, options.canContinue, options.onError);
+    for (const track of stream.getAudioTracks()) track.addEventListener("ended", ended);
+    return {
+      start: (onFrame) => source.start(onFrame),
+      stop: async () => {
+        try { await source.stop(); } finally { release(); }
+      },
+      dispose: () => {
+        void source.stop();
+        release();
+      },
+    };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
