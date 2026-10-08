@@ -48,7 +48,7 @@ export class ApiClient {
     });
   }
 
-  putFrame(recordingId: string, frame: TransportFrame): Promise<FrameAck> {
+  putFrame(recordingId: string, frame: TransportFrame, signal: AbortSignal): Promise<FrameAck> {
     return this.json("PUT", `/recordings/${encodeURIComponent(recordingId)}/frames/${frame.seq}`, {
       headers: {
         "Content-Type": frame.mediaType,
@@ -56,6 +56,7 @@ export class ApiClient {
         "X-Frame-End-Ms": String(frame.endMs),
       },
       body: frame.data,
+      signal,
     });
   }
 
@@ -73,7 +74,9 @@ export class ApiClient {
   }
 
   private async request(method: string, path: string, init: RequestInit): Promise<Response> {
-    const response = await fetch(this.baseUrl + path, { ...init, method });
+    const response = await fetch(this.baseUrl + path, {
+      ...init, method, signal: init.signal ?? AbortSignal.timeout(60_000),
+    });
     if (!response.ok) throw new ApiError(method, path, response.status);
     return response;
   }

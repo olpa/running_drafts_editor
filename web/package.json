@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "npm run check && vite build",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --experimental-transform-types --test-isolation=none --test tests/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",

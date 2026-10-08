@@ -35,3 +35,7 @@ main {
   background: #9f9;
   color: #111;
 }
+
+[data-testid="feedback"]:empty { display: none; }
+[data-testid="feedback"] { padding: 0.75rem; background: #fff0bc; }
+[data-testid="feedback"][data-kind="error"] { background: #ffd9d4; }

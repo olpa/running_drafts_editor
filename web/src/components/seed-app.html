@@ -13,6 +13,11 @@
   <button type="button" data-testid="stop">Stop</button>
   <button type="button" data-testid="cancel">Cancel</button>
   <span class="state" data-testid="state-label"></span>
+  <span data-testid="elapsed" aria-label="Elapsed recording time">0:00</span>
 </header>
+<p data-testid="secured" role="status">Audio secured: 0:00</p>
+<p data-testid="pending"></p>
+<p data-testid="feedback" role="status" aria-live="polite"></p>
+<button type="button" data-testid="retry" hidden>Upload pending audio</button>
 <ol class="transcript" data-testid="transcript"></ol>
 <pre class="radar-log" data-testid="log" aria-label="Diagnostic log"></pre>
