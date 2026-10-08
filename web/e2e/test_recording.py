@@ -65,9 +65,15 @@ def test_overlapping_late_acknowledgements_do_not_restart_capture(seed_page: Pag
 
 
 def test_automatic_duration_stop_flushes_partial_audio(seed_page: Page, mock_backend: MockBackend) -> None:
+    mock_backend.script["completeAfterFinishPolls"] = 100
     seed_page.add_init_script("window.__SEED_CONFIG__.maxRecordingMs = 550;")
     seed_page.goto("/")
     seed_page.get_by_test_id("start").click()
+    expect(seed_page.get_by_test_id("feedback")).to_have_text("Recording stopped at the time limit.")
+    expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "finishing")
+    seed_page.wait_for_function("window.__recorders[0].state === 'inactive'")
+    assert events(seed_page).count(["cue", "stop"]) == 1
+    mock_backend.script["completeAfterFinishPolls"] = 2
     expect(seed_page.locator("recording-panel")).to_have_attribute("data-state", "complete")
     [recording] = mock_backend.recordings
     assert recording.finished

@@ -70,7 +70,10 @@ export class RecordingController {
   get snapshot(): RecordingSnapshot {
     const recording = this.active;
     const pendingFrames = recording?.delivery.pendingCount ?? 0;
-    const currentMs = recording?.capturing
+    // Final audio remains inside the recorder until its asynchronous stop finishes.
+    const unfinalizedCapture = !!recording && !recording.dead && (recording.capturing
+      || (recording.stopReason !== null && !recording.finalized));
+    const currentMs = unfinalizedCapture
       ? Math.max(0, recording.elapsedMs - recording.lastFrameEndMs) : 0;
     const canRestart = !recording || this.state === "complete"
       || (!recording.stopReason && !recording.capturing && !pendingFrames);
@@ -86,7 +89,7 @@ export class RecordingController {
         (pendingFrames && (recording.delivery.delayed || recording.stopReason))
         || (recording.finalized && this.state === "error")
       ),
-      hasUnsecuredAudio: !!recording?.capturing || pendingFrames > 0,
+      hasUnsecuredAudio: unfinalizedCapture || pendingFrames > 0,
       feedback: recording?.problem || (recording?.delivery.delayed
         ? recording.capturing ? "Audio upload delayed. Recording continues." : "Audio upload delayed. Recording has stopped."
         : recording?.stopReason === "duration" ? "Recording stopped at the time limit." : ""),
@@ -226,6 +229,10 @@ export class RecordingController {
       this.emit({ type: "cue", cue: "interrupted" });
     } else {
       this.setState("finishing");
+      if (reason === "duration") {
+        this.emit({ type: "cue", cue: "stop" });
+        this.write(recording, "cue stop");
+      }
     }
     await recording.capture.stop();
     if (!this.isCurrent(recording)) return;
@@ -274,8 +281,10 @@ export class RecordingController {
       if (status.status === "complete" && recording.finishAccepted) {
         this.cleanupTimers(recording);
         this.setState("complete");
-        this.emit({ type: "cue", cue: "stop" });
-        this.write(recording, "cue stop");
+        if (recording.stopReason !== "duration") {
+          this.emit({ type: "cue", cue: "stop" });
+          this.write(recording, "cue stop");
+        }
         return;
       }
     } catch (error) {

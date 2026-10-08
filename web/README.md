@@ -120,9 +120,13 @@ the current boundary. New automatic attempts stop, while existing attempts may
 finish. **Upload pending audio** retries retained audio without restarting
 capture. Starting another recording is blocked until the current one completes.
 Leaving with captured or pending audio warns; reload recovery is not implemented.
+The warning and pending duration include final audio still being flushed by the
+recorder after capture stops.
 
 Start and completion play short rising/falling cues. Each newly acknowledged
 frame plays a quiet rising health cue and advances the visible secured duration.
+At the time limit, the falling stop cue plays immediately instead of waiting for
+transcription completion, and does not repeat when processing completes.
 Delayed upload plays an attention tone followed by Morse U (`..-`) once per delay
 episode. Backlog or microphone interruption immediately plays the attention tone
 followed by Morse X (`-..-`) and shows why recording stopped.

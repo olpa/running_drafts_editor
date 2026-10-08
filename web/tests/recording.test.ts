@@ -106,12 +106,18 @@ test("stop waits for final audio and its acknowledgement before finish; completi
   assert.equal(controller.snapshot.pendingMs, 2_500);
   const stop = controller.stop();
   assert.equal(controller.snapshot.state, "finishing");
+  assert.equal(controller.snapshot.capturing, false);
+  assert.equal(controller.snapshot.pendingFrames, 0);
+  assert.equal(controller.snapshot.pendingMs, 2_500);
+  assert.equal(controller.snapshot.hasUnsecuredAudio, true);
   await settle();
+  assert.equal(controller.snapshot.hasUnsecuredAudio, true);
   assert.deepEqual(backend.finishes, []);
   captures[0]!.finalize(2_500);
   await stop;
   assert.deepEqual(backend.finishes, []);
   assert.equal(controller.snapshot.pendingMs, 2_500);
+  assert.equal(controller.snapshot.hasUnsecuredAudio, true);
   backend.ack(1);
   await settle();
   assert.deepEqual(backend.finishes, ["recording-1"]);
@@ -186,8 +192,10 @@ test("delay warns once; the third boundary stops capture, retains audio, and can
   assert.deepEqual(backend.languages, ["en"]);
 });
 
-test("automatic duration stop preserves the partial frame and freezes elapsed time", async (t) => {
-  const { controller, backend, captures, cues } = harness(t, { maxRecordingMs: 12_500 });
+test("automatic duration stop announces capture cessation before final audio or processing completes", async (t) => {
+  const { controller, backend, captures, cues } = harness(t, { maxRecordingMs: 12_500, pollIntervalMs: 100 });
+  const getRecording = backend.getRecording.bind(backend);
+  backend.getRecording = async () => { throw new Error("processing unavailable"); };
   await controller.start("en");
   t.mock.timers.tick(10_000);
   captures[0]!.boundary();
@@ -197,14 +205,26 @@ test("automatic duration stop preserves the partial frame and freezes elapsed ti
   assert.equal(controller.snapshot.capturing, false);
   assert.equal(controller.snapshot.elapsedMs, 12_500);
   assert.equal(controller.snapshot.feedback, "Recording stopped at the time limit.");
+  assert.equal(controller.snapshot.hasUnsecuredAudio, true);
+  assert.equal(controller.snapshot.pendingMs, 2_500);
+  assert.deepEqual(cues(), ["start", "health", "stop"]);
   captures[0]!.finalize(2_500);
   await settle();
   backend.ack(1);
   await settle();
   t.mock.timers.tick(10_000);
+  await settle();
   assert.equal(controller.snapshot.elapsedMs, 12_500);
+  assert.equal(controller.snapshot.state, "finishing");
+  assert.equal(controller.snapshot.hasUnsecuredAudio, false);
   assert.deepEqual(backend.finishes, ["recording-1"]);
-  assert.deepEqual(cues(), ["start", "health", "health"]);
+  assert.deepEqual(cues(), ["start", "health", "stop", "health"]);
+  backend.getRecording = getRecording;
+  backend.status = { status: "complete", chunks: [] };
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(controller.snapshot.state, "complete");
+  assert.equal(cues().filter((cue) => cue === "stop").length, 1);
 });
 
 test("microphone failure announces interruption and preserves the final frame for manual recovery", async (t) => {
