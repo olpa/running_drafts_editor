@@ -28,6 +28,7 @@ class ReceivedFrame:
     end_ms: int
     media_type: str
     size: int
+    data: bytes
 
 
 @dataclass
@@ -44,6 +45,10 @@ class MockBackend:
         self.script = script
         self.recordings: list[MockRecording] = []
         self.violations: list[str] = []
+        self.reject_frames = False
+        self.hold_acknowledgements = False
+        self.held: list[tuple[Route, int]] = []
+        self.attempts: list[int] = []
 
     @classmethod
     def load(cls, path: Path) -> MockBackend:
@@ -83,8 +88,14 @@ class MockBackend:
         route.fulfill(json={"recordingId": recording.recording_id})
 
     def _frame(self, route: Route, recording: MockRecording, seq: int) -> None:
+        self.attempts.append(seq)
+        if self.reject_frames:
+            route.fulfill(status=503, json={"error": "temporary failure"})
+            return
         if recording.finished:
-            self.violations.append(f"frame {seq} received after finish")
+            # A delayed duplicate can arrive after finish; it must remain idempotent.
+            if seq > len(recording.frames):
+                self.violations.append(f"new frame {seq} received after finish")
         expected_seq = len(recording.frames) + 1
         if seq > expected_seq:
             self.violations.append(f"frame {seq} received before frame {expected_seq}")
@@ -97,9 +108,21 @@ class MockBackend:
                     end_ms=int(headers["x-frame-end-ms"]),
                     media_type=headers["content-type"],
                     size=len(route.request.post_data_buffer or b""),
+                    data=route.request.post_data_buffer or b"",
                 )
             )
-        route.fulfill(json={"seq": seq, "acknowledged": True})
+        if seq < expected_seq and recording.frames[seq - 1].data != (route.request.post_data_buffer or b""):
+            self.violations.append(f"conflicting duplicate frame {seq}")
+        if self.hold_acknowledgements:
+            self.held.append((route, seq))
+        else:
+            route.fulfill(json={"seq": seq, "acknowledged": True})
+
+    def release_acknowledgements(self) -> None:
+        held, self.held = self.held, []
+        self.hold_acknowledgements = False
+        for route, seq in held:
+            route.fulfill(json={"seq": seq, "acknowledged": True})
 
     def _finish(self, route: Route, recording: MockRecording) -> None:
         recording.finished = True

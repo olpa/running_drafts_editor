@@ -35,10 +35,10 @@ later user-supplied audio may provide another one.
 _Avoid_: Recording as a synonym when discussing source identity.
 
 **Transport frame**:
-An independently processable piece of browser-captured audio, identified by
-its recording ID and an increasing sequence number, that the browser delivers
-to the backend. It carries no transcription meaning; it is neither a chunk nor
-a decode span, and a chunk may draw audio from several transport frames.
+An ordered piece of browser-captured audio, identified by its recording ID
+and an increasing sequence number, that the browser delivers to the backend.
+It carries no transcription meaning; its boundaries are independent of decode
+spans and chunks, and decoding may depend on earlier transport frames.
 _Avoid_: Frame (alone), chunk, segment, slice, blob.
 
 **Decode span**:

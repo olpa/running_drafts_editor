@@ -1,26 +1,15 @@
-export type RecordingState = "idle" | "recording" | "finishing" | "complete" | "error";
+export type RecordingState = "idle" | "starting" | "recording" | "finishing" | "complete" | "error";
 
 const TRANSITIONS: Record<RecordingState, readonly RecordingState[]> = {
-  idle: ["recording"],
-  recording: ["finishing"],
-  finishing: ["complete"],
-  complete: ["recording"],
-  error: [],
+  idle: ["starting"],
+  starting: ["recording", "error"],
+  recording: ["finishing", "error"],
+  finishing: ["complete", "error"],
+  complete: ["starting"],
+  error: ["starting", "finishing"],
 };
 
-export class NotImplementedError extends Error {
-  constructor(what: string) {
-    super(`${what} is not implemented`);
-    this.name = "NotImplementedError";
-  }
-}
-
-/**
- * Validates a state change. Recoverable errors, retry, and Try again arrive
- * with #77 and #78; until then, entering the error state is not implemented.
- */
 export function transition(from: RecordingState, to: RecordingState): RecordingState {
-  if (to === "error") throw new NotImplementedError("The error state");
   if (!TRANSITIONS[from].includes(to)) {
     throw new Error(`Invalid recording state transition: ${from} -> ${to}`);
   }
@@ -36,9 +25,9 @@ export interface Controls {
   cancel: boolean;
 }
 
-/** Which controls are enabled. Pause, Continue, and Cancel are stubs (#80). */
+/** Pause, Continue, and Cancel remain stubs (#80). */
 export function enabledControls(state: RecordingState): Controls {
-  const canStart = state === "idle" || state === "complete";
+  const canStart = state === "idle" || state === "complete" || state === "error";
   return {
     language: canStart,
     start: canStart,

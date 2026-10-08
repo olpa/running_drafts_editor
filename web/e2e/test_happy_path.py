@@ -14,7 +14,7 @@ def test_happy_path(seed_page: Page, mock_backend: MockBackend, linger: Callable
     expected = load_expected("happy-path.json")
     page = seed_page
     page.goto("/")
-    app = page.locator("seed-app")
+    app = page.locator("recording-panel")
     language = page.get_by_test_id("language")
     start = page.get_by_test_id("start")
     chunks = page.get_by_test_id("chunk")
@@ -40,7 +40,8 @@ def test_happy_path(seed_page: Page, mock_backend: MockBackend, linger: Callable
     expect(app).to_have_attribute("data-cue", "stop")
     assert chunk_view(chunks) == expected["chunksAtComplete"]
     linger()
-    assert page.evaluate("window.__seedEvents") == expected["eventsUntilComplete"]
+    events = page.evaluate("window.__seedEvents")
+    assert [event for event in events if event != ["cue", "health"]] == expected["eventsUntilComplete"]
 
     starts = chunks.evaluate_all("els => els.map(e => Number(e.dataset.startMs))")
     assert starts == sorted(starts)
@@ -58,13 +59,17 @@ def test_happy_path(seed_page: Page, mock_backend: MockBackend, linger: Callable
     assert {frame.media_type for frame in frames} == {expected["frameMediaType"]}
 
     # Starting again clears the previous in-memory view.
+    assert events.count(["cue", "health"]) == len(frames)
+    assert page.evaluate("window.__recorders.length") == 1
+    assert page.evaluate("window.__microphoneStreams[0].getAudioTracks().every(t => t.readyState === 'ended')")
+    previous_cue_count = int(app.get_attribute("data-cue-count"))
     expect(start).to_have_text("Start new recording")
     start.click()
     expect(app).to_have_attribute("data-state", "recording")
     expect(chunks).to_have_count(0)
-    expect(app).to_have_attribute("data-cue-count", "3")
+    expect(app).to_have_attribute("data-cue-count", str(previous_cue_count + 1))
     assert (
-        page.evaluate("window.__seedEvents")
+        [event for event in page.evaluate("window.__seedEvents") if event != ["cue", "health"]]
         == expected["eventsUntilComplete"] + expected["eventsAfterStartNew"]
     )
     linger()

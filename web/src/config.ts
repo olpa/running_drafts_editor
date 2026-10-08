@@ -1,10 +1,14 @@
 export interface SeedConfig {
   /** Length of one transport frame. */
   frameIntervalMs: number;
-  /** Automatic-stop limit; enforced from #77. */
+  /** Automatic-stop limit. */
   maxRecordingMs: number;
   /** Interval between recording-status polls. */
   pollIntervalMs: number;
+  retryFirstMs: number;
+  retrySecondMs: number;
+  retryThirdMs: number;
+  requestTimeoutMs: number;
   logColumns: number;
   logRows: number;
   /** Blank characters cleared ahead of the diagnostic log's write position. */
@@ -19,9 +23,13 @@ declare global {
 }
 
 export const DEFAULT_CONFIG: Readonly<SeedConfig> = {
-  frameIntervalMs: 25_000,
+  frameIntervalMs: 10_000,
   maxRecordingMs: 10 * 60_000,
   pollIntervalMs: 1_000,
+  retryFirstMs: 5_000,
+  retrySecondMs: 10_000,
+  retryThirdMs: 17_000,
+  requestTimeoutMs: 60_000,
   logColumns: 100,
   logRows: 10,
   logGapChars: 10,

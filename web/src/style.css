@@ -18,6 +18,49 @@ main {
   font-weight: bold;
 }
 
+.capture-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 2px solid #64748b;
+  border-radius: 0.5rem;
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 1.2rem;
+  font-weight: bold;
+}
+
+.capture-indicator[data-capturing="true"] {
+  border-color: #15803d;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.capture-dot {
+  flex: 0 0 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+[data-testid="stop"].capturing {
+  background: #b91c1c;
+  color: white;
+  border: 2px solid #991b1b;
+  font-weight: bold;
+}
+
+.capture-progress {
+  max-width: 24rem;
+  margin-top: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.capture-progress span { display: block; text-align: right; }
+.capture-progress progress { width: 100%; accent-color: #15803d; }
+
 .transcript {
   min-height: 6rem;
 }
@@ -35,3 +78,7 @@ main {
   background: #9f9;
   color: #111;
 }
+
+[data-testid="feedback"]:empty { display: none; }
+[data-testid="feedback"] { padding: 0.75rem; background: #fff0bc; }
+[data-testid="feedback"][data-kind="error"] { background: #ffd9d4; }

@@ -1,6 +1,6 @@
 {
   "language": "en",
-  "frameMediaType": "application/x-mock-frame",
+  "frameMediaType": "audio/webm;codecs=opus",
   "chunksWhileRecording": [
     {"id": "mock-chunk-1", "text": "Mock chunk 1: spans transport frames 1 and 2."},
     {"id": "mock-chunk-2", "text": "Mock chunk 2: shares transport frame 2 with chunk 1."}
@@ -12,6 +12,7 @@
   ],
   "eventsUntilComplete": [
     ["state", "idle"],
+    ["state", "starting"],
     ["state", "recording"],
     ["cue", "start"],
     ["state", "finishing"],
@@ -19,6 +20,7 @@
     ["cue", "stop"]
   ],
   "eventsAfterStartNew": [
+    ["state", "starting"],
     ["state", "recording"],
     ["cue", "start"]
   ]

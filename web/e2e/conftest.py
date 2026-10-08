@@ -18,6 +18,10 @@ SEED_CONFIG = {
     "frameIntervalMs": 200,
     "maxRecordingMs": 5_000,
     "pollIntervalMs": 100,
+    "retryFirstMs": 80,
+    "retrySecondMs": 100,
+    "retryThirdMs": 170,
+    "requestTimeoutMs": 1_500,
 }
 
 # Slower limits for watching the journey with --demo.
@@ -51,25 +55,41 @@ def pytest_configure(config):
 # as Finishing cannot be missed between assertions.
 RECORD_EVENTS_SCRIPT = """
 window.__seedEvents = [];
+window.__recorders = [];
+window.__microphoneStreams = [];
+const OriginalRecorder = window.MediaRecorder;
+window.MediaRecorder = class extends OriginalRecorder {
+  constructor(...args) { super(...args); window.__recorders.push(this); }
+};
+const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+navigator.mediaDevices.getUserMedia = async (...args) => {
+  const stream = await getUserMedia(...args);
+  window.__microphoneStreams.push(stream);
+  return stream;
+};
 new MutationObserver((records) => {
-  for (const record of records) {
-    const element = record.target;
-    if (record.attributeName === "data-state") {
-      window.__seedEvents.push(["state", element.dataset.state]);
-    } else if (record.attributeName === "data-cue-count") {
-      window.__seedEvents.push(["cue", element.dataset.cue]);
-    }
-  }
+  records.forEach((record, index) => {
+    const next = records.slice(index + 1).find(r =>
+      r.target === record.target && r.attributeName === record.attributeName);
+    const value = next ? next.oldValue : record.target.getAttribute(record.attributeName);
+    window.__seedEvents.push([record.attributeName === "data-state" ? "state" : "cue", value]);
+  });
 }).observe(document, {
   subtree: true,
   attributes: true,
-  attributeFilter: ["data-state", "data-cue-count"],
+  attributeOldValue: true,
+  attributeFilter: ["data-state", "data-cue"],
 });
 """
 
 
 @pytest.fixture(scope="session")
-def browser_type_launch_args(browser_type_launch_args):
+def browser_type_launch_args(browser_type_launch_args, browser_name):
+    if browser_name == "firefox":
+        return {**browser_type_launch_args, "firefox_user_prefs": {
+            "media.navigator.streams.fake": True,
+            "media.navigator.permission.disabled": True,
+        }}
     # Chromium silently records silence when the file is missing.
     assert FAKE_MICROPHONE_AUDIO.is_file(), f"missing fake microphone audio: {FAKE_MICROPHONE_AUDIO}"
     return {
@@ -83,8 +103,8 @@ def browser_type_launch_args(browser_type_launch_args):
 
 
 @pytest.fixture(scope="session")
-def browser_context_args(browser_context_args):
-    return {**browser_context_args, "permissions": ["microphone"]}
+def browser_context_args(browser_context_args, browser_name):
+    return browser_context_args if browser_name == "firefox" else {**browser_context_args, "permissions": ["microphone"]}
 
 
 @pytest.fixture
