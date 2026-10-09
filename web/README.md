@@ -23,7 +23,7 @@ backend behavior remains mocked:
   MediaRecorder. It sends ordered WebM/Opus pieces every 10 seconds by default.
   These transport frames are successive bytes of one recording; backend decode
   spans and transcript chunks have separate boundaries.
-- Backend: `e2e/mock_backend.py` intercepts the page's `/api` requests. #78
+- Backend: [`product/e2e/mock_backend.py`](../../running_drafts_product/e2e/mock_backend.py) intercepts the page's `/api` requests. #78
   deletes it and runs the same test against the real backend.
 
 The backend mock runs only inside Playwright tests. Opening the Vite page in a
@@ -32,62 +32,19 @@ normal browser does not install it; Start currently fails with HTTP 404 for
 adds real backend routing and instructions for running both services together.
 
 The assumed backend contract is in `src/api.ts`. The test's expected values
-are in `e2e/expected/happy-path.json`. The happy path now also checks real
+are in [`product/e2e/expected/happy-path.json`](../../running_drafts_product/e2e/expected/happy-path.json). The happy path now also checks real
 transport bytes, one recorder, microphone release, and acknowledgement cues.
 
-## Run the happy path
+## Run browser E2E tests
 
-Requirements: Node.js 24 and Python 3.12.
+The Python/Playwright browser suite, fixtures, mock backend, and runner setup
+now live in [`running_drafts_product/e2e`](../../running_drafts_product/e2e/README.md).
+Follow that guide to run the suite against this application.
 
-```sh
-npm install
-python3 -m venv e2e/.venv
-e2e/.venv/bin/pip install -r e2e/requirements.txt
-e2e/.venv/bin/python -m playwright install chromium firefox
-```
-
-Start the dev server in one terminal:
-
-```sh
-npm run dev
-```
-
-Run the test in another:
-
-```sh
-e2e/.venv/bin/pytest e2e
-```
-
-To watch the journey in a visible Chromium window, slowed down so that a
-person can follow it (about 25 seconds, with audible start and stop cues):
-
-```sh
-e2e/.venv/bin/pytest e2e/test_happy_path.py --demo
-```
-
-`--demo` uses longer transport frames and polling, pauses at key moments, and
-implies `--headed --slowmo 600`. Pass `--slowmo` yourself to change the pace.
-
-The test uses `http://localhost:5173` by default; pass `--base-url` to use
-another server. Chromium's fake microphone plays `e2e/fixtures/speech-en.riff`,
-a 16 kHz mono PCM WAV recording, in a loop.
-
+Start the application here with `npm install` and `npm run dev`.
 `npm run check` type-checks the application and unit tests. `npm test` runs
-capture, delivery, and recording-controller unit tests with Node.js 24. `npm run build` builds the page.
-
-The audio continuity test requires `ffmpeg` on PATH. It records a known rising
-frequency tone through Chromium's fake microphone, decodes the combined upload
-bytes, and checks for jumps in source time across transport boundaries. This is
-test tooling, not browser or backend implementation.
-
-Run Firefox recording and recovery checks with:
-
-```sh
-e2e/.venv/bin/pytest e2e --browser firefox
-```
-
-Firefox uses its built-in fake microphone tone. The known-waveform file test is
-Chromium-only and is skipped in Firefox.
+capture, delivery, and recording-controller unit tests with Node.js 24.
+`npm run build` builds the page.
 
 ## Recording modules
 
