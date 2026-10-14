@@ -5,15 +5,15 @@
 Build Running Drafts Editor: turn recorded speech into usable text, with audio
 and transcription data supporting replay and correction.
 
-- `cli/` is the independent Rust CLI experiment. Read `cli/AGENTS.md` before
-  working there. Run Cargo commands from `cli/`.
+- `rust-poc/` is the independent Rust CLI experiment. Read `rust-poc/AGENTS.md` before
+  working there. Run Cargo commands from `rust-poc/`.
 - `web/` is the browser seed experiment. Read `web/AGENTS.md` before working
   there. Its implementation is defined by the assigned GitHub issue.
 - `GLOSSARY.md` defines shared domain language.
 - `docs/product.md` records shared product intent.
 - `docs/agents/` contains shared agent procedures.
 
-CLI architectural decisions live in `cli/docs/adr/`. Apply them to CLI work;
+CLI architectural decisions live in `rust-poc/docs/adr/`. Apply them to CLI work;
 check the assigned issue before applying them to the web seed.
 
 ## Working rules

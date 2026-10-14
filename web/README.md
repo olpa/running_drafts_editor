@@ -9,7 +9,7 @@ coordinates the seed across repositories. Backend and inference implementation
 belong to `olpa/running_drafts_backend`.
 
 Shared [product intent](../docs/product.md) and [domain language](../GLOSSARY.md)
-live at the repository root. The independent [Rust CLI](../cli/README.md) is
+live at the repository root. The independent [Rust CLI proof of concept](../rust-poc/README.md) is
 another technical experiment for the same product.
 The [web glossary](GLOSSARY.md) defines browser recording and delivery terms.
 

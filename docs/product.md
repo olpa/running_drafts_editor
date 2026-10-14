@@ -37,7 +37,7 @@ reviewing; it is neither proof of an error nor work the user must complete.
 ## Product boundary
 
 This repository contains two technical experiments for the same product:
-the [Rust CLI](../cli/README.md) and the [browser seed](../web/README.md).
+the [Rust CLI proof of concept](../rust-poc/README.md) and the [browser seed](../web/README.md).
 The browser seed tests recording and progressive transcription through a
 backend and private inference service. Its scope and acceptance are tracked in
 [product issue #1](https://github.com/olpa/running_drafts_product/issues/1).
