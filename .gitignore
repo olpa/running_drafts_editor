@@ -1,5 +1,5 @@
 /target/
-/cli/target/
+/rust-poc/target/
 *.swp
 *.swo
 

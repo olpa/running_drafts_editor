@@ -7,7 +7,7 @@ support replay and correction.
 
 ## Build
 
-Run these commands from `cli/` (use `cd cli` from the repository root).
+Run these commands from `rust-poc/` (use `cd rust-poc` from the repository root).
 
 The project requires the Rust toolchain pinned by `rust-toolchain.toml`, a C/C++
 compiler, CMake, and libclang for bindgen. Native compilation builds the pinned

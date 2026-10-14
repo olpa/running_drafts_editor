@@ -1,6 +1,6 @@
 # CLI Agent Context
 
-Paths below are relative to `cli/`. Shared repository rules also apply.
+Paths below are relative to `rust-poc/`. Shared repository rules also apply.
 
 ## Mission
 

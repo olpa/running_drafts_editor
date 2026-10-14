@@ -10,7 +10,7 @@ delivery, also read `web/GLOSSARY.md`. Treat both as glossaries, not implementat
 specifications.
 
 Read relevant accepted decisions before architectural work. CLI decisions live
-in `cli/docs/adr/`; web work follows its assigned issue and any web-specific
+in `rust-poc/docs/adr/`; web work follows its assigned issue and any web-specific
 decisions. Create an ADR directory only when a decision passes the ADR threshold.
 
 Use code and tests for current behavior and GitHub Issues for planned behavior.
@@ -24,6 +24,6 @@ discussing the term itself incurs no penalty.
 
 - `GLOSSARY.md`: shared canonical domain terms.
 - `web/GLOSSARY.md`: browser recording and delivery terms.
-- `cli/docs/adr/`: numbered CLI architectural decisions.
+- `rust-poc/docs/adr/`: numbered CLI architectural decisions.
 - `docs/product.md`: shared product intent.
-- `cli/` and `web/`: independent implementation experiments.
+- `rust-poc/` and `web/`: independent implementation experiments.
