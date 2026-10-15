@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+import os
+import sys
+import math
+from pathlib import Path
+
+
+arguments = sys.argv[1:]
+header = Path(arguments[arguments.index("-header") + 1])
+pattern = arguments[-1]
+if log_path := os.environ.get("FAKE_FFMPEG_TEMP_LOG"):
+    Path(log_path).write_text(str(header.parent))
+source = Path(arguments[arguments.index("-i") + 1])
+if "broken" in source.name:
+    print("input is not decodable", file=sys.stderr)
+    raise SystemExit(2)
+header.write_bytes(b"webm-header")
+duration_ms = 12350
+frame_duration_ms = int(arguments[arguments.index("-audio_chunk_duration") + 1])
+count = math.ceil(duration_ms / frame_duration_ms)
+default_payloads = (b"first-cluster", b"second-cluster", b"last-cluster")
+payloads = (
+    default_payloads
+    if count == len(default_payloads)
+    else tuple(f"cluster-{sequence}".encode() for sequence in range(count))
+)
+for sequence, payload in enumerate(payloads):
+    Path(pattern % sequence).write_bytes(payload)
+print("out_time_us=12350000")
+print("out_time_ms=12350000")
+print("out_time=00:00:12.350000")
+print("progress=end")

@@ -1,0 +1,37 @@
+[project]
+name = "running-drafts-cli"
+version = "0.1.0"
+description = "Product-level command-line client for Running Drafts"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+dependencies = [
+    "httpx>=0.28,<0.29",
+]
+
+[project.scripts]
+rde = "running_drafts_cli.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<9",
+    "ruff>=0.14,<0.15",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/running_drafts_cli"]
