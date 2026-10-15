@@ -9,9 +9,10 @@ writing specifications, or reviewing domain behavior. For browser recording and
 delivery, also read `web/GLOSSARY.md`. Treat both as glossaries, not implementation
 specifications.
 
-Read relevant accepted decisions before architectural work. CLI decisions live
-in `rust-poc/docs/adr/`; web work follows its assigned issue and any web-specific
-decisions. Create an ADR directory only when a decision passes the ADR threshold.
+Read relevant accepted decisions before architectural work. Rust proof-of-concept
+decisions live in `rust-poc/docs/adr/`; product CLI and web work follow their
+assigned issues and any project-specific decisions. Create an ADR directory only
+when a decision passes the ADR threshold.
 
 Use code and tests for current behavior and GitHub Issues for planned behavior.
 Surface a conflict rather than blending incompatible descriptions.
@@ -26,4 +27,5 @@ discussing the term itself incurs no penalty.
 - `web/GLOSSARY.md`: browser recording and delivery terms.
 - `rust-poc/docs/adr/`: numbered CLI architectural decisions.
 - `docs/product.md`: shared product intent.
+- `cli/`: standalone product-level HTTP client.
 - `rust-poc/` and `web/`: independent implementation experiments.
