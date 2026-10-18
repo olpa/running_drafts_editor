@@ -8,10 +8,11 @@ import socket
 import subprocess
 import sys
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from uuid import UUID
 
 PROJECT_ID = "3c754425-b730-4b5d-a65a-4b5d7019c5f7"
@@ -123,7 +124,10 @@ def project_api() -> Iterator[tuple[str, type[ProjectApiHandler]]]:
 
 
 def run_cli(
-    *arguments: str, api_url: str, extra_env: dict[str, str] | None = None
+    *arguments: str,
+    api_url: str,
+    extra_env: dict[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.update(
@@ -136,7 +140,7 @@ def run_cli(
     environment.update(extra_env or {})
     return subprocess.run(
         [sys.executable, "-m", "running_drafts_cli", *arguments],
-        cwd=Path(__file__).parent.parent,
+        cwd=cwd or Path(__file__).parent.parent,
         env=environment,
         text=True,
         capture_output=True,
@@ -318,6 +322,116 @@ def authentication_failure_api() -> Iterator[str]:
         server.server_close()
 
 
+class DownloadApiHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, object]] = []
+    payload = b"original-audio"
+    status = 200
+    response_headers: dict[str, str] = {}
+    problem: dict[str, object] | None = None
+    truncate = False
+
+    def do_GET(self) -> None:  # noqa: N802
+        self.__class__.requests.append({"path": self.path, "headers": self.headers})
+        if self.__class__.status != 200:
+            payload = json.dumps(self.__class__.problem or {}).encode()
+            self.send_response(self.__class__.status)
+            self.send_header("Content-Type", "application/problem+json")
+            self.send_header("Content-Length", str(len(payload)))
+            for name, value in self.__class__.response_headers.items():
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        payload = self.__class__.payload
+        self.send_response(200)
+        for name, value in self.__class__.response_headers.items():
+            self.send_header(name, value)
+        self.end_headers()
+        if self.__class__.truncate:
+            self.wfile.write(f"{len(payload):X}\r\n".encode() + payload + b"\r\n")
+        else:
+            self.wfile.write(payload)
+        self.wfile.flush()
+        if self.__class__.truncate:
+            self.connection.shutdown(socket.SHUT_RDWR)
+            self.connection.close()
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+@contextmanager
+def download_api(
+    *,
+    payload: bytes = b"original-audio",
+    status: int = 200,
+    headers: dict[str, str] | None = None,
+    problem: dict[str, object] | None = None,
+    truncate: bool = False,
+) -> Iterator[tuple[str, type[DownloadApiHandler]]]:
+    DownloadApiHandler.requests = []
+    DownloadApiHandler.payload = payload
+    DownloadApiHandler.status = status
+    DownloadApiHandler.response_headers = headers or {}
+    DownloadApiHandler.problem = problem
+    DownloadApiHandler.truncate = truncate
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DownloadApiHandler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}", DownloadApiHandler
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+class ConcurrentDownloadHandler(BaseHTTPRequestHandler):
+    slow_started = Event()
+    allow_slow_finish = Event()
+
+    def do_GET(self) -> None:  # noqa: N802
+        slow = "/slow/" in self.path
+        payload = b"slow download wins last" if slow else b"fast download"
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/webm;codecs=opus")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Disposition", 'attachment; filename="shared.webm"')
+        self.end_headers()
+        if slow:
+            midpoint = len(payload) // 2
+            self.wfile.write(payload[:midpoint])
+            self.wfile.flush()
+            self.__class__.slow_started.set()
+            if not self.__class__.allow_slow_finish.wait(timeout=10):
+                return
+            self.wfile.write(payload[midpoint:])
+        else:
+            self.wfile.write(payload)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+@contextmanager
+def concurrent_download_api() -> Iterator[tuple[str, type[ConcurrentDownloadHandler]]]:
+    ConcurrentDownloadHandler.slow_started = Event()
+    ConcurrentDownloadHandler.allow_slow_finish = Event()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ConcurrentDownloadHandler)
+    thread = Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}", ConcurrentDownloadHandler
+    finally:
+        ConcurrentDownloadHandler.allow_slow_finish.set()
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def test_user_creates_a_project() -> None:
     with project_api() as (api_url, handler):
         result = run_cli("project", "create", "  Field notes  ", api_url=api_url)
@@ -393,7 +507,10 @@ def test_user_uploads_a_file_to_a_new_project(tmp_path: Path) -> None:
         f"Uploaded check-english.wav to project {PROJECT_ID}, section 1 "
         f"({AUDIO_ASSET_ID}): 3 frames, 12350 ms\n"
     )
-    assert result.stderr == ""
+    assert result.stderr == (
+        "rde: ffmpeg: starting conversion of check-english.wav\n"
+        "rde: ffmpeg: finished conversion: 3 frames, 12350 ms\n"
+    )
     requests = handler.requests
     assert [request["method"] for request in requests] == [
         "POST",
@@ -570,7 +687,10 @@ def test_conversion_failure_precedes_server_mutation_and_cleans_temporary_files(
 
     assert result.returncode == 1
     assert result.stdout == ""
-    assert result.stderr == "rde: error: ffmpeg conversion failed: input is not decodable\n"
+    assert result.stderr == (
+        "rde: ffmpeg: starting conversion of broken.wav\n"
+        "rde: error: ffmpeg conversion failed: input is not decodable\n"
+    )
     assert handler.requests == []
     assert not Path(temporary_log.read_text()).exists()
 
@@ -623,3 +743,308 @@ def test_user_configures_fixed_frame_duration(tmp_path: Path) -> None:
         ("10000", "12000"),
         ("12000", "12350"),
     ]
+
+
+def test_user_downloads_under_the_unicode_server_filename(tmp_path: Path) -> None:
+    payload = b"webm-header-and-clusters"
+    disposition = (
+        'attachment; filename="download-section-1.webm"; '
+        "filename*=UTF-8''%C5%BDlut%C3%BD-%E6%9D%B1%E4%BA%AC-section-1.webm"
+    )
+    with download_api(
+        payload=payload,
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "Content-Length": str(len(payload)),
+            "Content-Disposition": disposition,
+        },
+    ) as (api_url, handler):
+        result = run_cli("download", AUDIO_ASSET_ID, api_url=api_url, cwd=tmp_path)
+
+    destination = tmp_path / "Žlutý-東京-section-1.webm"
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert destination.read_bytes() == payload
+    assert handler.requests[0]["path"] == (f"/api/v1/audio-assets/{AUDIO_ASSET_ID}/download")
+    assert (
+        handler.requests[0]["headers"]["Authorization"]
+        == "Basic " + base64.b64encode(b"developer:secret-value").decode()
+    )
+
+
+def test_download_uses_ascii_filename_fallback_and_supports_empty_audio(
+    tmp_path: Path,
+) -> None:
+    with download_api(
+        payload=b"",
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "Content-Length": "0",
+            "Content-Disposition": 'attachment; filename="empty-section-1.webm"',
+        },
+    ) as (api_url, _handler):
+        result = run_cli("download", AUDIO_ASSET_ID, api_url=api_url, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert (tmp_path / "empty-section-1.webm").read_bytes() == b""
+
+
+def test_download_warns_and_uses_ascii_fallback_for_invalid_unicode_filename(
+    tmp_path: Path,
+) -> None:
+    payload = b"audio"
+    disposition = (
+        "attachment; filename=\"fallback-section-1.webm\"; filename*=UTF-8''invalid%ZZ.webm"
+    )
+    with download_api(
+        payload=payload,
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "Content-Length": str(len(payload)),
+            "Content-Disposition": disposition,
+        },
+    ) as (api_url, _handler):
+        result = run_cli("download", AUDIO_ASSET_ID, api_url=api_url, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "invalid Unicode filename" in result.stderr
+    assert (tmp_path / "fallback-section-1.webm").read_bytes() == payload
+
+
+def test_explicit_output_silently_replaces_existing_file(tmp_path: Path) -> None:
+    destination = tmp_path / "chosen.mp3"
+    destination.write_bytes(b"old data")
+    payload = b"new original audio"
+    with download_api(
+        payload=payload,
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "Content-Length": str(len(payload)),
+            "Content-Disposition": 'attachment; filename="ignored.webm"',
+        },
+    ) as (api_url, _handler):
+        result = run_cli("download", AUDIO_ASSET_ID, "--output", str(destination), api_url=api_url)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert destination.read_bytes() == payload
+
+
+def test_download_warns_but_saves_for_permissive_response_metadata(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "diagnostic.bin"
+    payload = b"server bytes"
+    with download_api(
+        payload=payload,
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Disposition": 'attachment; filename="ignored.webm"',
+        },
+    ) as (api_url, _handler):
+        result = run_cli("download", AUDIO_ASSET_ID, "--output", str(destination), api_url=api_url)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert "rde: warning:" in result.stderr
+    assert "Content-Type" in result.stderr
+    assert "Content-Length" in result.stderr
+    assert destination.read_bytes() == payload
+
+
+def test_download_warns_but_saves_for_malformed_content_length(tmp_path: Path) -> None:
+    destination = tmp_path / "malformed-length.webm"
+    payload = b"all server bytes"
+    with download_api(
+        payload=payload,
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "Content-Length": "not-a-number",
+            "Content-Disposition": 'attachment; filename="ignored.webm"',
+        },
+    ) as (api_url, _handler):
+        result = run_cli("download", AUDIO_ASSET_ID, "--output", str(destination), api_url=api_url)
+
+    assert result.returncode == 0, result.stderr
+    assert "invalid Content-Length 'not-a-number'" in result.stderr
+    assert destination.read_bytes() == payload
+
+
+def test_unsafe_server_filename_warns_and_uses_asset_id(tmp_path: Path) -> None:
+    payload = b"audio"
+    with download_api(
+        payload=payload,
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "Content-Length": str(len(payload)),
+            "Content-Disposition": 'attachment; filename="../../outside.webm"',
+        },
+    ) as (api_url, _handler):
+        result = run_cli("download", AUDIO_ASSET_ID, api_url=api_url, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert "rde: warning:" in result.stderr
+    assert "unsafe" in result.stderr
+    assert (tmp_path / f"{AUDIO_ASSET_ID}.webm").read_bytes() == payload
+    assert not (tmp_path.parent / "outside.webm").exists()
+
+
+def test_interrupted_download_retains_partial_and_preserves_destination(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "recording.webm"
+    destination.write_bytes(b"previous complete download")
+    Path(f"{destination}.partial").write_bytes(b"older partial download")
+    payload = b"partial audio bytes"
+    with download_api(
+        payload=payload,
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "Transfer-Encoding": "chunked",
+            "Content-Disposition": 'attachment; filename="recording.webm"',
+        },
+        truncate=True,
+    ) as (api_url, _handler):
+        result = run_cli("download", AUDIO_ASSET_ID, "--output", str(destination), api_url=api_url)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "download interrupted" in result.stderr
+    assert "partial data saved" in result.stderr
+    assert "secret-value" not in result.stderr
+    assert destination.read_bytes() == b"previous complete download"
+    assert Path(f"{destination}.partial").read_bytes() == payload
+
+
+def test_clean_content_length_mismatch_warns_and_publishes_all_bytes(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "length-mismatch.webm"
+    payload = b"all bytes before a clean end"
+    with download_api(
+        payload=payload,
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "Content-Length": str(len(payload) + 50),
+            "Content-Disposition": 'attachment; filename="ignored.webm"',
+        },
+    ) as (api_url, _handler):
+        result = run_cli("download", AUDIO_ASSET_ID, "--output", str(destination), api_url=api_url)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == (
+        f"rde: warning: server declared Content-Length {len(payload) + 50}, but "
+        f"{len(payload)} bytes were received; saved to {destination}\n"
+    )
+    assert destination.read_bytes() == payload
+
+
+def test_download_preserves_raw_encoded_response_bytes(tmp_path: Path) -> None:
+    destination = tmp_path / "encoded.webm"
+    payload = b"not-decoded-gzip-bytes"
+    with download_api(
+        payload=payload,
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "Content-Length": str(len(payload)),
+            "Content-Encoding": "gzip",
+            "Content-Disposition": 'attachment; filename="encoded.webm"',
+        },
+    ) as (api_url, _handler):
+        result = run_cli("download", AUDIO_ASSET_ID, "--output", str(destination), api_url=api_url)
+
+    assert result.returncode == 0, result.stderr
+    assert destination.read_bytes() == payload
+
+
+def test_download_problem_is_reported_without_an_artifact(tmp_path: Path) -> None:
+    problem = {
+        "type": "about:blank",
+        "title": "Command conflicts with existing state",
+        "status": 409,
+        "detail": "The audio asset must be sealed before it can be downloaded.",
+        "code": "asset_not_sealed",
+    }
+    destination = tmp_path / "open.webm"
+    with download_api(status=409, problem=problem) as (api_url, _handler):
+        result = run_cli("download", AUDIO_ASSET_ID, "--output", str(destination), api_url=api_url)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        "rde: error: asset_not_sealed: "
+        "The audio asset must be sealed before it can be downloaded.\n"
+    )
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_rejects_stdout_before_contacting_server(tmp_path: Path) -> None:
+    with download_api() as (api_url, handler):
+        result = run_cli("download", AUDIO_ASSET_ID, "--output", "-", api_url=api_url, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "rde: error: --output - is not supported\n"
+    assert handler.requests == []
+
+
+def test_download_treats_asset_id_as_an_opaque_path_segment(tmp_path: Path) -> None:
+    destination = tmp_path / "opaque.webm"
+    with download_api(
+        headers={
+            "Content-Type": "audio/webm;codecs=opus",
+            "Content-Length": "14",
+            "Content-Disposition": 'attachment; filename="opaque.webm"',
+        },
+    ) as (api_url, handler):
+        result = run_cli("download", "not/a UUID", "--output", str(destination), api_url=api_url)
+
+    assert result.returncode == 0, result.stderr
+    assert handler.requests[0]["path"] == ("/api/v1/audio-assets/not%2Fa%20UUID/download")
+
+
+def test_download_does_not_follow_redirects(tmp_path: Path) -> None:
+    destination = tmp_path / "redirect.webm"
+    with download_api(
+        status=302,
+        headers={"Location": f"/api/v1/audio-assets/{AUDIO_ASSET_ID}/download"},
+    ) as (api_url, handler):
+        result = run_cli("download", AUDIO_ASSET_ID, "--output", str(destination), api_url=api_url)
+
+    assert result.returncode == 1
+    assert len(handler.requests) == 1
+    assert not destination.exists()
+
+
+def test_concurrent_download_that_finishes_last_replaces_the_destination(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "shared.webm"
+    with (
+        concurrent_download_api() as (api_url, handler),
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        slow_result = executor.submit(
+            run_cli,
+            "download",
+            "slow",
+            "--output",
+            str(destination),
+            api_url=api_url,
+        )
+        assert handler.slow_started.wait(timeout=10)
+        fast_result = run_cli("download", "fast", "--output", str(destination), api_url=api_url)
+        assert fast_result.returncode == 0, fast_result.stderr
+        assert destination.read_bytes() == b"fast download"
+        handler.allow_slow_finish.set()
+        completed_slow_result = slow_result.result(timeout=10)
+
+    assert completed_slow_result.returncode == 0, completed_slow_result.stderr
+    assert destination.read_bytes() == b"slow download wins last"
+    assert list(tmp_path.glob("*.partial")) == []

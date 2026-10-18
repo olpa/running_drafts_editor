@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import sys
 import unicodedata
 from collections.abc import Sequence
 from pathlib import Path
@@ -11,6 +12,7 @@ from uuid import uuid4
 import httpx
 
 from running_drafts_cli.audio import AudioFrame, AudioPreparationError, prepare_audio
+from running_drafts_cli.download import DownloadCancelled, DownloadError, download_audio
 
 MEDIA_TYPE = "audio/webm;codecs=opus"
 
@@ -56,6 +58,9 @@ def _parser() -> argparse.ArgumentParser:
     upload.add_argument("--title")
     upload.add_argument("--ffmpeg", default="ffmpeg")
     upload.add_argument("--frame-duration", type=float, default=5.0, metavar="SECONDS")
+    download = commands.add_parser("download")
+    download.add_argument("audio_asset_id")
+    download.add_argument("--output", type=Path)
     return parser
 
 
@@ -188,9 +193,19 @@ def _upload(arguments: argparse.Namespace) -> None:
     if frame_duration_ms <= 0:
         raise ValueError("frame duration is too small")
 
+    print(
+        f"rde: ffmpeg: starting conversion of {arguments.file.name}",
+        file=sys.stderr,
+        flush=True,
+    )
     with prepare_audio(
         arguments.file, ffmpeg=arguments.ffmpeg, frame_duration_ms=frame_duration_ms
     ) as audio:
+        print(
+            f"rde: ffmpeg: finished conversion: {len(audio.frames)} frames, {audio.duration_ms} ms",
+            file=sys.stderr,
+            flush=True,
+        )
         if arguments.project:
             project_id = arguments.project
         else:
@@ -253,6 +268,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             _rename_project(arguments)
         elif arguments.command == "upload":
             _upload(arguments)
+        elif arguments.command == "download":
+            try:
+                download_audio(
+                    api_url=arguments.api_url,
+                    username=arguments.username,
+                    password=arguments.password,
+                    audio_asset_id=arguments.audio_asset_id,
+                    output=arguments.output,
+                )
+            except KeyboardInterrupt:
+                raise DownloadCancelled(
+                    "download interrupted before any bytes were retained"
+                ) from None
         return 0
-    except (AudioPreparationError, UploadError, ValueError, httpx.HTTPError) as error:
+    except DownloadCancelled as error:
+        print(f"rde: error: {error}", file=sys.stderr)
+        return 130
+    except (
+        AudioPreparationError,
+        DownloadError,
+        UploadError,
+        ValueError,
+        httpx.HTTPError,
+    ) as error:
         parser.exit(1, f"rde: error: {_error_message(error)}\n")
