@@ -1,8 +1,8 @@
 # Running Drafts CLI
 
 `rde` is the product-level command-line client for Running Drafts. It manages
-Projects through the HTTP API and uploads an existing audio file as a new
-Section. It does not record from a microphone.
+Projects through the HTTP API, uploads an existing audio file as a new Section,
+and downloads sealed original audio. It does not record from a microphone.
 
 ## Requirements
 
@@ -85,6 +85,45 @@ An uncertain frame response is retried up to three times with identical bytes
 and metadata. A permanent failure after asset creation triggers a best-effort
 interrupted seal. There is no cross-process resume or repair; rerunning a
 completed standalone upload creates another Project.
+
+## Download original audio
+
+Use the Audio Asset ID shown by `rde project show` to download a sealed asset:
+
+```sh
+rde download AUDIO_ASSET_ID
+```
+
+The server-provided Unicode filename is used in the current directory. Choose
+an exact file path instead when needed:
+
+```sh
+rde download AUDIO_ASSET_ID --output recording.webm
+```
+
+A clean download is silent and replaces an existing destination. Response
+metadata problems produce warnings but do not discard received audio. If the
+connection, local write, or command is interrupted, `rde` exits nonzero and
+retains received bytes as `FILE.partial` or reports the recognizable temporary
+filename that it could retain.
+
+To check a local backend end to end, download the same sealed asset once with
+the public endpoint and once with `rde`, then compare the files. `curl` prompts
+for the same password stored in `RDE_PASSWORD`, keeping it out of the command
+line:
+
+```sh
+audio_asset_id=AUDIO_ASSET_ID
+check_directory=$(mktemp -d)
+curl --fail --user "$RDE_USERNAME" \
+  "$RDE_API_URL/api/v1/audio-assets/$audio_asset_id/download" \
+  --output "$check_directory/endpoint.webm"
+uv run rde download "$audio_asset_id" \
+  --output "$check_directory/cli.webm"
+cmp "$check_directory/endpoint.webm" "$check_directory/cli.webm"
+```
+
+`cmp` exits zero only when both downloads contain exactly the same bytes.
 
 ## Develop
 
