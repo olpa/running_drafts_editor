@@ -43,8 +43,14 @@ Follow that guide to run the suite against this application.
 
 Start the application here with `npm install` and `npm run dev`.
 `npm run check` type-checks the application and unit tests. `npm test` runs
-capture, delivery, and recording-controller unit tests with Node.js 24.
+health-client, capture, delivery, and recording-controller unit tests with Node.js 24.
 `npm run build` builds the page.
+
+The development page is split into two surfaces. Backend liveness and
+database-backed readiness checks are on the left; the existing browser seed is
+kept on the right. Health checks use `http://localhost:18081` by default. A
+deployed environment can set `window.__HEALTH_BASE_URL__` before the application
+loads to use its public backend URL.
 
 ## Recording modules
 
