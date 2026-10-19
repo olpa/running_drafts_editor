@@ -49,8 +49,21 @@ health-client, capture, delivery, and recording-controller unit tests with Node.
 The development page is split into two surfaces. Backend liveness and
 database-backed readiness checks are on the left; the existing browser seed is
 kept on the right. Health checks use `http://localhost:18081` by default. A
-deployed environment can set `window.__HEALTH_BASE_URL__` before the application
-loads to use its public backend URL.
+deployed environment serves `/config.js` before the application loads to set
+its public backend URL through `window.__HEALTH_BASE_URL__`.
+
+## Deployment
+
+The production image is a static Vite build served by a non-root nginx process.
+It accepts only the browser-visible `BACKEND_BASE_URL` at runtime and exposes a
+frontend liveness check at `/health/live`. Build a tagged image with
+`IMAGE_TAG=0.1.0 make image`.
+
+Host scripts, target environment examples, Compose project names, ports,
+rollout, status, logs, and rollback are documented in
+[`deployment/README.md`](deployment/README.md). The installed host scripts live
+under `/rnotes/RUNNING_DRAFTS_FRONTEND`; neither source nor mutable application
+data is copied there.
 
 ## Recording modules
 
