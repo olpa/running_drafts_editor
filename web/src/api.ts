@@ -3,6 +3,7 @@
 // browser test harness until #78 connects the real backend.
 
 import type { TransportFrame } from "./capture.js";
+import { backendUrl } from "./backend.ts";
 
 export type Language = "en" | "de" | "ru";
 
@@ -39,7 +40,7 @@ export class ApiError extends Error {
 }
 
 export class ApiClient {
-  constructor(private readonly baseUrl = "/api") {}
+  constructor(private readonly baseUrl = backendUrl("/api")) {}
 
   createRecording(language: Language): Promise<CreatedRecording> {
     return this.json("POST", "/recordings", {

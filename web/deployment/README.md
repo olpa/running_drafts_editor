@@ -21,19 +21,19 @@ For a normal rollout, build the tag named in that file and deploy it:
 ```
 
 Development uses Compose project `running-drafts-frontend-dev`, loopback HTTP
-port `18083`, planned hostname `drafts-dev.handsfree.vc`, and backend
+port `18083`, hostname `drafts-dev.handsfree.vc`, and backend
 `https://drafts-api-dev.handsfree.vc`. Production uses project
 `running-drafts-frontend-prod`, loopback HTTP port `18084`, planned hostname
 `drafts.handsfree.vc`, and backend `https://drafts-api.handsfree.vc`. The
 browser-visible backend URL is generated at container startup; it is not a
 secret. The frontend has no durable mutable data, migrations, or backups.
 
-Public boringproxy routes are not part of these scripts. Before adding a route,
-verify DNS, back up the boringproxy database, and use server TLS termination to
-the target's loopback HTTP port. Preserve all existing routes. Certificate
-issuance and renewal belong to boringproxy; recreating its route reloads the
-certificate. Do not call either target publicly deployed until its route and
-public checks have been verified.
+Public boringproxy routes are not part of these scripts. The development route
+uses server TLS termination and targets `127.0.0.1:18083`; the production route
+is not configured. Before changing or adding a route, verify DNS, back up the
+boringproxy database, and target only the selected environment's loopback HTTP
+port. Preserve all existing routes. Certificate issuance and renewal belong to
+boringproxy; recreating its route reloads the certificate.
 
 Use `status-dev.sh` or `status-prod.sh` for local liveness. Pass normal Compose
 log options to `logs-dev.sh` or `logs-prod.sh`. The application health controls

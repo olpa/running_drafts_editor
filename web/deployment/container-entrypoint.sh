@@ -17,5 +17,5 @@ case "$backend_base_url" in
     ;;
 esac
 
-printf 'window.__HEALTH_BASE_URL__ = "%s";\n' "$backend_base_url" > /tmp/config.js
+printf 'window.__BACKEND_BASE_URL__ = "%s";\n' "$backend_base_url" > /tmp/config.js
 exec nginx -g 'daemon off;'

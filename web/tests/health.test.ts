@@ -1,9 +1,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-globalThis.window = {} as Window & typeof globalThis;
+globalThis.window = { __BACKEND_BASE_URL__: "https://configured.example.test" } as Window & typeof globalThis;
 
 const { HealthClient } = await import("../src/health.ts");
+const { backendBaseUrl, backendUrl } = await import("../src/backend.ts");
+
+test("uses one configured base URL for every backend path", () => {
+  assert.equal(backendBaseUrl(), "https://configured.example.test");
+  assert.equal(backendUrl("/api"), "https://configured.example.test/api");
+  assert.equal(backendUrl("/health/live"), "https://configured.example.test/health/live");
+});
+
+test("calls the browser fetch implementation with Window as its receiver", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = function (this: unknown): Promise<Response> {
+    if (this !== window) {
+      throw new TypeError("'fetch' called on an object that does not implement interface Window.");
+    }
+    return Promise.resolve(new Response('{"status":"ok"}', { status: 200 }));
+  } as typeof fetch;
+  try {
+    const client = new HealthClient("https://api.example.test");
+    const result = await client.check("live");
+    assert.equal(result.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("checks liveness at the configured backend", async () => {
   let requestedUrl = "";

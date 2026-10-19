@@ -50,7 +50,8 @@ The development page is split into two surfaces. Backend liveness and
 database-backed readiness checks are on the left; the existing browser seed is
 kept on the right. Health checks use `http://localhost:18081` by default. A
 deployed environment serves `/config.js` before the application loads to set
-its public backend URL through `window.__HEALTH_BASE_URL__`.
+its public backend URL through `window.__BACKEND_BASE_URL__`. Health and
+application API paths are derived from that one URL.
 
 ## Deployment
 

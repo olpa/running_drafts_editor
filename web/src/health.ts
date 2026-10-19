@@ -1,3 +1,5 @@
+import { backendBaseUrl } from "./backend.ts";
+
 export type HealthEndpoint = "live" | "ready";
 
 export interface HealthResult {
@@ -7,19 +9,10 @@ export interface HealthResult {
   body: string;
 }
 
-declare global {
-  interface Window {
-    /** Replaced by the deployed development backend URL when it is available. */
-    __HEALTH_BASE_URL__?: string;
-  }
-}
-
-export const DEFAULT_HEALTH_BASE_URL = "http://localhost:18081";
-
 export class HealthClient {
   constructor(
-    private readonly baseUrl = window.__HEALTH_BASE_URL__ ?? DEFAULT_HEALTH_BASE_URL,
-    private readonly request: typeof fetch = fetch,
+    private readonly baseUrl = backendBaseUrl(),
+    private readonly request: typeof fetch = fetch.bind(window),
   ) {}
 
   async check(endpoint: HealthEndpoint): Promise<HealthResult> {
