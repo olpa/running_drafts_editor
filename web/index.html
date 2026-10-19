@@ -3,13 +3,39 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Running Drafts seed</title>
+  <title>Running Drafts development</title>
 </head>
 <body>
-  <main>
-    <h1>Running Drafts seed</h1>
-    <seed-app></seed-app>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>Running Drafts</h1>
+        <p>Development tools</p>
+      </div>
+      <span class="environment-badge">Development</span>
+    </header>
+
+    <div class="workspace">
+      <section class="workspace-pane health-surface" aria-labelledby="health-title">
+        <header class="section-heading">
+          <p class="eyebrow">Environment</p>
+          <h2 id="health-title">Backend health</h2>
+          <p>Check whether the service is running and ready to use its database.</p>
+        </header>
+        <health-panel></health-panel>
+      </section>
+
+      <section class="workspace-pane seed-surface" aria-labelledby="seed-title">
+        <header class="section-heading">
+          <p class="eyebrow">Browser seed</p>
+          <h2 id="seed-title">Recording experiment</h2>
+          <p>The existing microphone, delivery, and transcription test surface.</p>
+        </header>
+        <seed-app></seed-app>
+      </section>
+    </div>
   </main>
+  <script src="/config.js"></script>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
