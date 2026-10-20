@@ -1,4 +1,4 @@
-<header class="toolbar">
+const template = `<header class="toolbar">
   <label>
     Language
     <select data-testid="language">
@@ -26,4 +26,7 @@
 <p data-testid="secured" role="status">Audio secured: 0:00</p>
 <p data-testid="pending"></p>
 <p data-testid="feedback" role="status" aria-live="polite"></p>
-<button type="button" data-testid="retry" hidden>Upload pending audio</button>
+<p class="ownership-warning" data-testid="ownership-warning" role="status" aria-live="polite"></p>
+<button type="button" data-testid="retry" hidden>Upload pending audio</button>`;
+
+export default template;
