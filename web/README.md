@@ -53,6 +53,37 @@ deployed environment serves `/config.js` before the application loads to set
 its public backend URL through `window.__BACKEND_BASE_URL__`. Health and
 application API paths are derived from that one URL.
 
+## Browser authentication
+
+The editor discovers enabled sign-in providers from the configured backend and
+bootstraps the current Account from its HttpOnly Application Session cookie.
+Run the backend on the configured URL, configure its exact editor origin and
+OIDC callback, then start this application with `npm run dev`. A fresh browser
+shows only providers enabled by the backend. Sign-in navigates the full page to
+the backend and returns to the current editor path and query. The signed-in
+summary shows the backend-reported session expiry in local date and time.
+
+All API requests use credentialed CORS. `public/config.js` contains only the
+public backend URL; provider secrets and tokens never belong in frontend
+configuration or browser storage. Logout ends the local Running Drafts session
+and immediately hides Account-derived data. If the backend cannot confirm
+logout, the chooser offers a retry.
+
+Before Start, the editor requires at least six hours remaining on the
+backend-reported session. A shorter still-valid session is logged out first;
+provider actions remain unavailable until logout is confirmed. Authentication
+expiry freezes new delivery attempts
+without deleting in-memory unsecured audio. Delivery resumes only when session
+bootstrap returns the recording's original Account; a different Account sees a
+mismatch explanation and cannot receive those bytes. Reload persistence is not
+implemented, so the existing leave-page warning still applies.
+
+For a deployed provider smoke test, use a fresh browser profile, choose each
+enabled provider, verify callback return to the original local path, record and
+secure a short sample, log out, then sign in independently in another fresh
+profile and verify the same private Account. CI and ordinary tests use provider
+doubles rather than live credentials.
+
 ## Deployment
 
 The production image is a static Vite build served by a non-root nginx process.

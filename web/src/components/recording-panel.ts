@@ -1,11 +1,13 @@
-import template from "./recording-panel.html?raw";
-import { ApiClient } from "../api.js";
-import { openRecordingCapture } from "../capture.js";
-import { loadConfig } from "../config.js";
-import { CuePlayer } from "../cues.js";
-import { RecordingController, type RecordingEvent, type RecordingSnapshot } from "../recording.js";
-import { enabledControls, type Controls, type RecordingState } from "../state.js";
+import template from "./recording-panel-template.ts";
+import { ApiClient } from "../api.ts";
+import { openRecordingCapture } from "../capture.ts";
+import { loadConfig } from "../config.ts";
+import { CuePlayer } from "../cues.ts";
+import { RecordingController, type RecordingDependencies, type RecordingEvent,
+  type RecordingSnapshot } from "../recording.ts";
+import { enabledControls, type Controls, type RecordingState } from "../state.ts";
 import type { Language } from "../api.js";
+import type { AccountId } from "../session.js";
 
 const STATE_LABELS: Record<RecordingState, string> = {
   idle: "Ready", starting: "Starting", recording: "Recording", finishing: "Finishing",
@@ -17,6 +19,12 @@ export class RecordingPanel extends HTMLElement {
   private readonly config = loadConfig();
   private readonly cues = new CuePlayer(this);
   private controller: RecordingController | null = null;
+  private readonly apiClient = new ApiClient({
+    onAuthenticationExpired: () => this.dispatchEvent(new CustomEvent("authentication-expired", { bubbles: true })),
+  });
+  private recordingDependencies: RecordingDependencies | null = null;
+  private sessionAccountId: AccountId | null = null;
+  private recordingAccountId: AccountId | null = null;
   private unsubscribe: (() => void) | null = null;
   private controls!: Record<keyof Controls, HTMLButtonElement | HTMLSelectElement>;
   private stateLabel!: HTMLElement;
@@ -29,6 +37,7 @@ export class RecordingPanel extends HTMLElement {
   private secured!: HTMLElement;
   private pending!: HTMLElement;
   private feedback!: HTMLElement;
+  private ownershipWarning!: HTMLElement;
   private retryButton!: HTMLButtonElement;
   private readonly beforeLeave = (event: BeforeUnloadEvent): void => {
     if (this.controller?.snapshot.hasUnsecuredAudio) {
@@ -40,15 +49,29 @@ export class RecordingPanel extends HTMLElement {
   connectedCallback(): void {
     if (this.controller) return;
     if (!this.controls) this.setupView();
-    this.controller = new RecordingController(this.config, {
-      backend: new ApiClient(), openCapture: openRecordingCapture, now: () => performance.now(),
+    this.startController();
+    window.addEventListener("beforeunload", this.beforeLeave);
+  }
+
+  /** Configure browser boundaries before connection; production uses the real defaults. */
+  setDependencies(dependencies: RecordingDependencies): void {
+    if (this.isConnected || this.controller) throw new Error("Recording dependencies must be set before connection.");
+    this.recordingDependencies = dependencies;
+  }
+
+  private startController(): void {
+    this.controller = new RecordingController(this.config, this.recordingDependencies ?? {
+      backend: this.apiClient, openCapture: openRecordingCapture, now: () => performance.now(),
     });
     this.unsubscribe = this.controller.subscribe((event) => {
       if (event.type === "changed") this.render(event.snapshot);
       if (event.type === "cue") this.cues.play(event.cue);
       this.dispatchEvent(new CustomEvent<RecordingEvent>("recording-event", { detail: event, bubbles: true }));
+      if (event.type === "changed" && !event.snapshot.hasUnsecuredAudio
+        && this.recordingAccountId && this.sessionAccountId !== this.recordingAccountId) {
+        this.resetController();
+      }
     });
-    window.addEventListener("beforeunload", this.beforeLeave);
   }
 
   disconnectedCallback(): void {
@@ -58,6 +81,38 @@ export class RecordingPanel extends HTMLElement {
     this.cues.dispose();
     this.controller = null;
     this.unsubscribe = null;
+  }
+
+  setSessionAccount(accountId: AccountId | null): void {
+    this.sessionAccountId = accountId;
+    if (accountId) this.apiClient.markAuthenticationUsable();
+    if (!this.recordingAccountId) return;
+    if (accountId === this.recordingAccountId) {
+      this.ownershipWarning.textContent = "";
+      this.controller?.resumeAfterAuthentication();
+    } else if (this.hasUnsecuredAudio) {
+      this.ownershipWarning.textContent = accountId
+        ? "Pending audio belongs to a different Account. Sign in with the original Account to upload it."
+        : "Pending audio is retained. Sign in with the original Account to upload it.";
+      this.controller?.suspendForAuthentication();
+    } else {
+      this.resetController();
+    }
+  }
+
+  get hasUnsecuredAudio(): boolean { return this.controller?.snapshot.hasUnsecuredAudio ?? false; }
+  get ownsCurrentSession(): boolean {
+    return !!this.recordingAccountId && this.recordingAccountId === this.sessionAccountId;
+  }
+
+  private resetController(): void {
+    this.unsubscribe?.();
+    this.controller?.dispose();
+    this.controller = null;
+    this.unsubscribe = null;
+    this.recordingAccountId = null;
+    this.ownershipWarning.textContent = "";
+    this.startController();
   }
 
   private setupView(): void {
@@ -77,8 +132,12 @@ export class RecordingPanel extends HTMLElement {
     this.secured = this.element("secured");
     this.pending = this.element("pending");
     this.feedback = this.element("feedback");
+    this.ownershipWarning = this.element("ownership-warning");
     this.retryButton = this.element("retry");
     this.controls.start.addEventListener("click", () => {
+      const request = new CustomEvent("recording-start-request", { bubbles: true, cancelable: true });
+      if (!this.dispatchEvent(request) || !this.sessionAccountId) return;
+      this.recordingAccountId = this.sessionAccountId;
       this.cues.prepare();
       void this.controller?.start(this.controls.language.value as Language);
     });

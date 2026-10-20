@@ -5,6 +5,21 @@ the audio and transcription data needed for correction.
 
 ## Language
 
+### Authentication
+
+**Account**:
+The stable internal identity that owns a person's private Running Drafts data.
+An Account is identified by its Account UUID and is distinct from provider
+identity, email address, profile metadata, and any individual login session.
+_Avoid_: Email, provider account, user as an ownership identifier.
+
+**Application Session**:
+A time-limited authenticated relationship between one browser and one Account.
+It is established after provider authentication, can coexist with other
+Application Sessions for the same Account, and ends independently through local
+logout or expiry. It is distinct from the provider's own login session.
+_Avoid_: Provider session, OIDC token, global logout.
+
 ### Working material
 
 **Project**:

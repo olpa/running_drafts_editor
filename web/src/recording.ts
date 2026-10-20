@@ -56,6 +56,7 @@ class ActiveRecording {
   limitTimer: ReturnType<typeof setTimeout> | null = null;
   serverStatus: RecordingStatus["status"] | null = null;
   shownChunks: Chunk[] = [];
+  authenticationSuspended = false;
 }
 
 /** The complete recording workflow, independent of DOM rendering and sound output. */
@@ -198,6 +199,28 @@ export class RecordingController {
     void this.maybeFinish(recording);
   }
 
+  /** Freeze network work while retaining capture state and exact pending bytes. */
+  suspendForAuthentication(): void {
+    const recording = this.active;
+    if (!this.isCurrent(recording) || recording.authenticationSuspended) return;
+    recording.authenticationSuspended = true;
+    recording.delivery.freeze();
+    if (recording.pollTimer !== null) clearTimeout(recording.pollTimer);
+    recording.pollTimer = null;
+    this.changed();
+  }
+
+  /** Resume only after the application has verified the recording's original Account. */
+  resumeAfterAuthentication(): void {
+    const recording = this.active;
+    if (!this.isCurrent(recording) || !recording.authenticationSuspended) return;
+    recording.authenticationSuspended = false;
+    recording.delivery.retry();
+    if (recording.recordingId && !recording.pollTimer && this.state !== "complete") this.schedulePoll(recording);
+    void this.maybeFinish(recording);
+    this.changed();
+  }
+
   dispose(): void {
     this.disposed = true;
     if (this.active) {
@@ -242,7 +265,7 @@ export class RecordingController {
   }
 
   private async maybeFinish(recording: ActiveRecording): Promise<void> {
-    if (!this.isCurrent(recording) || !recording.finalized || recording.delivery.pendingCount
+    if (!this.isCurrent(recording) || recording.authenticationSuspended || !recording.finalized || recording.delivery.pendingCount
       || recording.finishing || recording.finishAccepted) return;
     recording.finishing = true;
     if (this.state === "error") {
@@ -266,6 +289,7 @@ export class RecordingController {
   }
 
   private schedulePoll(recording: ActiveRecording): void {
+    if (recording.authenticationSuspended) return;
     recording.pollTimer = setTimeout(() => void this.poll(recording), this.config.pollIntervalMs);
   }
 

@@ -261,6 +261,27 @@ test("slow processing and failed polls do not block audio acceptance or trigger 
   assert.deepEqual(cues(), ["start", "health"]);
 });
 
+test("authentication suspension retains queued bytes and resumes delivery explicitly", async (t) => {
+  const { controller, backend, captures } = harness(t);
+  await controller.start("en");
+  t.mock.timers.tick(10_000);
+  captures[0]!.boundary();
+  assert.equal(controller.snapshot.pendingFrames, 1);
+  assert.equal(backend.requests.length, 1);
+
+  controller.suspendForAuthentication();
+  t.mock.timers.tick(30_000);
+  assert.equal(controller.snapshot.pendingFrames, 1);
+  assert.equal(backend.requests.length, 1);
+
+  controller.resumeAfterAuthentication();
+  assert.equal(backend.requests.length, 2);
+  assert.equal(backend.requests[1]!.frame, backend.requests[0]!.frame);
+  backend.ack(1);
+  await settle();
+  assert.equal(controller.snapshot.pendingFrames, 0);
+});
+
 test("finish failure can be retried without resubmitting acknowledged bytes or restarting capture", async (t) => {
   const { controller, backend, captures } = harness(t);
   let failures = 1;
