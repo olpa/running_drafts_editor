@@ -36,6 +36,21 @@ Supporting audio, transcription evidence, review state, and history belong to
 the project rather than the document.
 _Avoid_: Draft, project, visible document.
 
+**Section**:
+An ordered part of a Project's Document that groups one Audio Asset with the
+content derived from that audio. A Section belongs to the Document from the
+moment it is created, even before transcription exists. Its order is stable.
+
+**Audio Asset**:
+The backend representation of the encoded audio stream produced by one
+continuous recorder run. It receives that stream's ordered transport frames.
+Ending browser capture does not itself seal the Audio Asset; a later recorder
+run creates a new Section and Audio Asset.
+
+These definitions follow product ADRs 0003, “Model a project as one document
+composed of sections,” and 0005, “Treat each MediaRecorder run as one immutable
+audio stream,” in `running_drafts_product`.
+
 **Recording**:
 The complete original audio opened for transcription and editing.
 

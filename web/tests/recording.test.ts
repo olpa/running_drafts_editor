@@ -3,7 +3,7 @@ import { test, type TestContext } from "node:test";
 import { RecordingController, type RecordingBackend, type RecordingEvent } from "../src/recording.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { CaptureOptions, RecordingCapture, TransportFrame } from "../src/capture.ts";
-import type { CreatedRecording, FrameAck, Language, RecordingStatus } from "../src/api.ts";
+import { ApiError, type AudioAssetSummary, type FrameAck, type ProjectSummary } from "../src/api.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -12,12 +12,20 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 async function settle(): Promise<void> {
-  for (let i = 0; i < 12; i++) await Promise.resolve();
+  for (let i = 0; i < 16; i++) await Promise.resolve();
 }
+function ack(sequence: number): FrameAck {
+  return { sequence, acknowledged: true, sha256: "a".repeat(64), nextExpectedSequence: sequence + 1 };
+}
+function sealed(id: string, reason: "completed" | "interrupted"): AudioAssetSummary {
+  return { id, mediaType: "audio/webm;codecs=opus", isSealed: true, sealReason: reason,
+    sealedAt: "2026-10-21T14:32:00Z", frameCount: 0, observedDurationMs: 0, storedBytes: 0 };
+}
+
 class FakeCapture implements RecordingCapture {
   private onFrame: ((frame: TransportFrame) => void) | null = null;
   private readonly stopped = deferred<void>();
-  private seq = 0;
+  private seq = -1;
   private endMs = 0;
   starts = 0;
   stops = 0;
@@ -26,359 +34,357 @@ class FakeCapture implements RecordingCapture {
   start(onFrame: (frame: TransportFrame) => void): void { this.starts++; this.onFrame = onFrame; }
   stop(): Promise<void> { this.stops++; return this.stopped.promise; }
   dispose(): void { this.disposed = true; }
-  boundary(durationMs = 10_000): boolean {
-    if (!this.options.canContinue()) return false;
-    this.emit(durationMs);
-    return true;
+  boundary(durationMs = 10_000, bytes = 10): boolean {
+    this.emit(durationMs, bytes);
+    return this.options.canContinue();
   }
-  finalize(durationMs: number): void {
-    this.emit(durationMs);
+  finalize(durationMs = 1_000, bytes = 10): void {
+    this.emit(durationMs, bytes);
     this.stopped.resolve();
   }
   fail(): void { this.options.onError(new Error("Microphone ended.")); }
-  private emit(durationMs: number): void {
+  private emit(durationMs: number, bytes: number): void {
     const startMs = this.endMs;
     this.endMs += durationMs;
     this.onFrame?.({ seq: ++this.seq, startMs, endMs: this.endMs,
-      mediaType: "audio/webm;codecs=opus", data: new Blob([`audio ${this.seq}`]) });
+      mediaType: "audio/webm;codecs=opus", data: new Blob([new Uint8Array(bytes)]) });
   }
 }
+
 class Backend implements RecordingBackend {
-  languages: Language[] = [];
-  finishes: string[] = [];
-  requests: { recordingId: string; frame: TransportFrame; signal: AbortSignal;
+  projectCalls: { key: string; title: string }[] = [];
+  projectLoads: string[] = [];
+  sectionCalls: { projectId: string; key: string }[] = [];
+  requests: { assetId: string; frame: TransportFrame; signal: AbortSignal;
     result: ReturnType<typeof deferred<FrameAck>> }[] = [];
-  status: RecordingStatus = { status: "recording", chunks: [] };
-  async createRecording(language: Language): Promise<CreatedRecording> {
-    this.languages.push(language);
-    return { recordingId: `recording-${this.languages.length}` };
+  completes: { assetId: string; frameCount: number }[] = [];
+  interrupts: string[] = [];
+  projectFailures = 0;
+  sectionFailures = 0;
+  completeFailures = 0;
+  interruptFailures = 0;
+  createdSections = 0;
+
+  async createProject(key: string, title: string): Promise<ProjectSummary> {
+    this.projectCalls.push({ key, title });
+    if (this.projectFailures-- > 0) throw new Error("project unavailable");
+    return { id: "project-1", title: "Canonical backend title", createdAt: "now", updatedAt: "now" };
   }
-  putFrame(recordingId: string, frame: TransportFrame, signal: AbortSignal): Promise<FrameAck> {
+  async getProject(projectId: string): Promise<ProjectSummary> {
+    this.projectLoads.push(projectId);
+    return { id: projectId, title: "Existing canonical title", createdAt: "before", updatedAt: "now" };
+  }
+  async createSection(projectId: string, key: string) {
+    this.sectionCalls.push({ projectId, key });
+    if (this.sectionFailures-- > 0) throw new Error("section unavailable");
+    const number = ++this.createdSections;
+    return { sectionId: `section-${number}`, audioAssetId: `asset-${number}`, position: number - 1 };
+  }
+  putFrame(assetId: string, frame: TransportFrame, signal: AbortSignal): Promise<FrameAck> {
     const result = deferred<FrameAck>();
-    this.requests.push({ recordingId, frame, signal, result });
+    this.requests.push({ assetId, frame, signal, result });
     return result.promise;
   }
-  async finish(recordingId: string): Promise<void> { this.finishes.push(recordingId); }
-  async getRecording(_recordingId: string): Promise<RecordingStatus> { return this.status; }
-  ack(index: number): void {
+  async complete(assetId: string, frameCount: number): Promise<AudioAssetSummary> {
+    this.completes.push({ assetId, frameCount });
+    if (this.completeFailures-- > 0) throw new Error("complete unavailable");
+    return sealed(assetId, "completed");
+  }
+  async interrupt(assetId: string): Promise<AudioAssetSummary> {
+    this.interrupts.push(assetId);
+    if (this.interruptFailures-- > 0) throw new Error("interrupt unavailable");
+    return sealed(assetId, "interrupted");
+  }
+  resolveRequest(index: number): void {
     const request = this.requests[index]!;
-    request.result.resolve({ seq: request.frame.seq, acknowledged: true });
+    request.result.resolve(ack(request.frame.seq));
   }
 }
-function harness(t: TestContext, options: {
-  maxRecordingMs?: number;
-  pollIntervalMs?: number;
-  open?: (capture: FakeCapture) => Promise<RecordingCapture>;
-} = {}) {
+
+function harness(t: TestContext, options: { projectId?: string; maxFrameBytes?: number; maxRecordingMs?: number;
+  open?: (capture: FakeCapture) => Promise<RecordingCapture> } = {}) {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 0 });
   const backend = new Backend();
   const captures: FakeCapture[] = [];
   const events: RecordingEvent[] = [];
-  const controller = new RecordingController({ ...DEFAULT_CONFIG,
-    maxRecordingMs: options.maxRecordingMs ?? 120_000,
-    pollIntervalMs: options.pollIntervalMs ?? 100_000,
-  }, {
-    backend, now: () => Date.now(),
-    openCapture: (captureOptions) => {
+  const ids = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002",
+    "00000000-0000-4000-8000-000000000003", "00000000-0000-4000-8000-000000000004"];
+  const dependencies = {
+    backend, now: () => Date.now(), wallClock: () => new Date("2026-10-21T14:32:00Z"),
+    locale: "en-GB", uuid: () => ids.shift()!,
+    openCapture: (captureOptions: CaptureOptions) => {
       const capture = new FakeCapture(captureOptions);
       captures.push(capture);
       return options.open ? options.open(capture) : Promise.resolve(capture);
     },
-  });
+  };
+  const context = options.projectId ? { accountId: "account-a", projectId: options.projectId }
+    : { accountId: "account-a" };
+  const controller = new RecordingController({ ...DEFAULT_CONFIG, maxRecordingMs: options.maxRecordingMs ?? 120_000,
+    maxFrameBytes: options.maxFrameBytes ?? DEFAULT_CONFIG.maxFrameBytes }, dependencies, context);
   controller.subscribe((event) => events.push(event));
   t.after(() => controller.dispose());
   const cues = () => events.filter((event) => event.type === "cue").map((event) => event.cue);
   return { controller, backend, captures, events, cues };
 }
 
-test("stop waits for final audio and its acknowledgement before finish; completion allows another recording", async (t) => {
-  const { controller, backend, captures, events, cues } = harness(t);
-  await controller.start("de");
-  assert.equal(controller.snapshot.state, "recording");
-  assert.equal(controller.snapshot.canStart, false);
-  assert.equal(controller.snapshot.hasUnsecuredAudio, true);
-  t.mock.timers.tick(10_000);
-  captures[0]!.boundary();
-  backend.ack(0);
-  await settle();
-  assert.equal(controller.snapshot.securedMs, 10_000);
-  t.mock.timers.tick(2_500);
-  assert.equal(controller.snapshot.pendingMs, 2_500);
-  const stop = controller.stop();
-  assert.equal(controller.snapshot.state, "finishing");
-  assert.equal(controller.snapshot.capturing, false);
-  assert.equal(controller.snapshot.pendingFrames, 0);
-  assert.equal(controller.snapshot.pendingMs, 2_500);
-  assert.equal(controller.snapshot.hasUnsecuredAudio, true);
-  await settle();
-  assert.equal(controller.snapshot.hasUnsecuredAudio, true);
-  assert.deepEqual(backend.finishes, []);
-  captures[0]!.finalize(2_500);
-  await stop;
-  assert.deepEqual(backend.finishes, []);
-  assert.equal(controller.snapshot.pendingMs, 2_500);
-  assert.equal(controller.snapshot.hasUnsecuredAudio, true);
-  backend.ack(1);
-  await settle();
-  assert.deepEqual(backend.finishes, ["recording-1"]);
-  assert.equal(controller.snapshot.hasUnsecuredAudio, false);
-  assert.equal(controller.snapshot.canStart, false);
-  backend.status = { status: "complete", chunks: [{ id: "chunk-1", startMs: 0, endMs: 12_500, text: "Text." }] };
-  t.mock.timers.tick(100_000);
-  await settle();
-  assert.equal(controller.snapshot.state, "complete");
-  assert.equal(controller.snapshot.canStart, true);
-  assert.deepEqual(cues(), ["start", "health", "health", "stop"]);
-  assert.equal(events.filter((event) => event.type === "chunks").length, 1);
-  await controller.start("ru");
-  assert.equal(captures.length, 2);
-  assert.deepEqual(backend.languages, ["de", "ru"]);
-  assert.equal(controller.snapshot.securedMs, 0);
-  assert.equal(events.filter((event) => event.type === "reset").length, 2);
+test("adopts the canonical Project title and reuses creation keys across retries", async (t) => {
+  const { controller, backend, captures } = harness(t);
+  backend.projectFailures = 1;
+  await controller.start();
+  assert.equal(captures[0]!.disposed, true);
+  assert.match(controller.snapshot.startProblem, /project unavailable/);
+  backend.sectionFailures = 1;
+  await controller.start();
+  assert.equal(captures[1]!.disposed, true);
+  await controller.start();
+
+  assert.equal(controller.snapshot.project?.title, "Canonical backend title");
+  assert.deepEqual(backend.projectCalls, [
+    { key: "00000000-0000-4000-8000-000000000001", title: "Draft — 21 Oct 2026, 14:32" },
+    { key: "00000000-0000-4000-8000-000000000001", title: "Draft — 21 Oct 2026, 14:32" },
+  ]);
+  assert.equal(backend.sectionCalls.length, 2);
+  assert.equal(backend.sectionCalls[0]!.key, backend.sectionCalls[1]!.key);
+  assert.equal(captures[2]!.starts, 1);
 });
 
-test("delay warns once; the third boundary stops capture, retains audio, and cancels future attempts", async (t) => {
-  const { controller, backend, captures, cues } = harness(t);
-  await controller.start("en");
-  t.mock.timers.tick(10_000);
-  assert.equal(captures[0]!.boundary(), true);
-  t.mock.timers.tick(5_000);
-  assert.equal(controller.snapshot.feedback, "Audio upload delayed. Recording continues.");
-  assert.equal(controller.snapshot.capturing, true);
-  t.mock.timers.tick(5_000);
-  assert.equal(captures[0]!.boundary(), true);
-  t.mock.timers.tick(10_000);
-  assert.equal(captures[0]!.boundary(), false);
-  assert.equal(controller.snapshot.state, "error");
-  assert.equal(controller.snapshot.capturing, false);
-  assert.equal(controller.snapshot.canStart, false);
-  assert.equal(controller.snapshot.feedback, "Recording stopped because audio could not be uploaded.");
-  captures[0]!.finalize(10_000);
+test("an existing Project ID loads and displays its canonical summary before appending", async (t) => {
+  const { controller, backend } = harness(t, { projectId: "existing-project" });
   await settle();
-  assert.equal(controller.snapshot.pendingFrames, 3);
-  assert.equal(controller.snapshot.pendingMs, 30_000);
-  assert.equal(controller.snapshot.canRetry, true);
-  const attempts = backend.requests.length;
-  t.mock.timers.tick(20_000);
-  assert.equal(backend.requests.length, attempts);
-  assert.deepEqual(cues(), ["start", "delayed", "interrupted"]);
-  await controller.start("ru");
-  assert.equal(captures.length, 1);
+  assert.equal(controller.snapshot.project?.title, "Existing canonical title");
+  await controller.start();
+  assert.deepEqual(backend.projectCalls, []);
+  assert.deepEqual(backend.projectLoads, ["existing-project"]);
+  assert.equal(backend.sectionCalls[0]!.projectId, "existing-project");
+});
 
-  // An earlier request can succeed after stop, without sending later frames or restarting capture.
-  backend.ack(0);
+test("normal stop delivers the final partial frame before completing with assigned frame count", async (t) => {
+  const { controller, backend, captures } = harness(t);
+  await controller.start();
+  captures[0]!.boundary(10_000);
+  const stopping = controller.stop();
+  captures[0]!.finalize(2_500);
+  await stopping;
+  assert.equal(controller.snapshot.canStart, true, "a new recorder need not wait for delivery or sealing");
+  assert.deepEqual(backend.requests.map((request) => request.frame.seq), [0]);
+  backend.resolveRequest(0);
   await settle();
-  assert.equal(controller.snapshot.pendingFrames, 2);
-  assert.equal(backend.requests.length, attempts);
-  assert.equal(controller.snapshot.capturing, false);
-  backend.ack(1);
+  assert.deepEqual(backend.requests.map((request) => request.frame.seq), [0, 1]);
+  assert.deepEqual(backend.completes, []);
+  backend.resolveRequest(1);
   await settle();
-  assert.equal(cues().filter((cue) => cue === "health").length, 1);
+  assert.deepEqual(backend.completes, [{ assetId: "asset-1", frameCount: 2 }]);
+  assert.equal(controller.snapshot.sections[0]!.hasUnsecuredAudio, false);
+});
 
-  controller.retry();
-  assert.equal(controller.snapshot.state, "finishing");
-  assert.equal(captures[0]!.starts, 1);
+test("duration stop finalizes capture and emits its stop cue only once", async (t) => {
+  const { controller, backend, captures, cues } = harness(t, { maxRecordingMs: 500 });
+  await controller.start();
+  t.mock.timers.tick(500);
   assert.equal(captures[0]!.stops, 1);
-  assert.equal(backend.requests[attempts]!.recordingId, "recording-1");
-  assert.equal(backend.requests[attempts]!.frame.seq, 2);
-  backend.ack(attempts);
+  captures[0]!.finalize(500);
   await settle();
-  backend.ack(attempts + 1);
+  backend.resolveRequest(0);
   await settle();
-  assert.equal(controller.snapshot.pendingFrames, 0);
-  assert.equal(controller.snapshot.feedback, "");
-  assert.deepEqual(backend.finishes, ["recording-1"]);
-  assert.equal(cues().filter((cue) => cue === "health").length, 3);
-  assert.deepEqual(backend.languages, ["en"]);
-});
-
-test("automatic duration stop announces capture cessation before final audio or processing completes", async (t) => {
-  const { controller, backend, captures, cues } = harness(t, { maxRecordingMs: 12_500, pollIntervalMs: 100 });
-  const getRecording = backend.getRecording.bind(backend);
-  backend.getRecording = async () => { throw new Error("processing unavailable"); };
-  await controller.start("en");
-  t.mock.timers.tick(10_000);
-  captures[0]!.boundary();
-  backend.ack(0);
-  await settle();
-  t.mock.timers.tick(2_500);
-  assert.equal(controller.snapshot.capturing, false);
-  assert.equal(controller.snapshot.elapsedMs, 12_500);
-  assert.equal(controller.snapshot.feedback, "Recording stopped at the time limit.");
-  assert.equal(controller.snapshot.hasUnsecuredAudio, true);
-  assert.equal(controller.snapshot.pendingMs, 2_500);
-  assert.deepEqual(cues(), ["start", "health", "stop"]);
-  captures[0]!.finalize(2_500);
-  await settle();
-  backend.ack(1);
-  await settle();
-  t.mock.timers.tick(10_000);
-  await settle();
-  assert.equal(controller.snapshot.elapsedMs, 12_500);
-  assert.equal(controller.snapshot.state, "finishing");
-  assert.equal(controller.snapshot.hasUnsecuredAudio, false);
-  assert.deepEqual(backend.finishes, ["recording-1"]);
-  assert.deepEqual(cues(), ["start", "health", "stop", "health"]);
-  backend.getRecording = getRecording;
-  backend.status = { status: "complete", chunks: [] };
-  t.mock.timers.tick(100);
-  await settle();
-  assert.equal(controller.snapshot.state, "complete");
+  assert.deepEqual(backend.completes, [{ assetId: "asset-1", frameCount: 1 }]);
   assert.equal(cues().filter((cue) => cue === "stop").length, 1);
+  assert.equal(controller.snapshot.sections[0]!.problem, "");
 });
 
-test("microphone failure announces interruption and preserves the final frame for manual recovery", async (t) => {
-  const { controller, backend, captures, cues } = harness(t);
-  await controller.start("en");
-  t.mock.timers.tick(1_000);
-  captures[0]!.fail();
-  assert.equal(controller.snapshot.feedback, "Recording stopped because the microphone became unavailable.");
-  captures[0]!.finalize(1_000);
-  await settle();
-  assert.equal(backend.requests.length, 0);
-  assert.equal(controller.snapshot.pendingMs, 1_000);
-  assert.equal(controller.snapshot.canRetry, true);
-  assert.deepEqual(cues(), ["start", "interrupted"]);
-  controller.retry();
-  backend.ack(0);
-  await settle();
-  assert.deepEqual(backend.finishes, ["recording-1"]);
-  assert.equal(captures[0]!.starts, 1);
-});
-
-test("slow processing and failed polls do not block audio acceptance or trigger an upload warning", async (t) => {
-  const { controller, backend, captures, cues } = harness(t, { pollIntervalMs: 100 });
-  backend.getRecording = async () => { throw new Error("processing unavailable"); };
-  await controller.start("en");
-  t.mock.timers.tick(10_000);
-  await settle();
-  captures[0]!.boundary();
-  backend.ack(0);
-  await settle();
-  assert.equal(controller.snapshot.securedMs, 10_000);
-  assert.equal(controller.snapshot.capturing, true);
-  assert.equal(controller.snapshot.feedback, "");
-  assert.deepEqual(cues(), ["start", "health"]);
-});
-
-test("authentication suspension retains queued bytes and resumes delivery explicitly", async (t) => {
+test("completion failure keeps its original command retryable without blocking another Section", async (t) => {
   const { controller, backend, captures } = harness(t);
-  await controller.start("en");
-  t.mock.timers.tick(10_000);
-  captures[0]!.boundary();
-  assert.equal(controller.snapshot.pendingFrames, 1);
-  assert.equal(backend.requests.length, 1);
-
-  controller.suspendForAuthentication();
-  t.mock.timers.tick(30_000);
-  assert.equal(controller.snapshot.pendingFrames, 1);
-  assert.equal(backend.requests.length, 1);
-
-  controller.resumeAfterAuthentication();
-  assert.equal(backend.requests.length, 2);
-  assert.equal(backend.requests[1]!.frame, backend.requests[0]!.frame);
-  backend.ack(1);
-  await settle();
-  assert.equal(controller.snapshot.pendingFrames, 0);
-});
-
-test("finish failure can be retried without resubmitting acknowledged bytes or restarting capture", async (t) => {
-  const { controller, backend, captures } = harness(t);
-  let failures = 1;
-  backend.finish = async (id) => {
-    if (failures > 0) { failures--; throw new Error("finish unavailable"); }
-    backend.finishes.push(id);
-  };
-  await controller.start("en");
+  backend.completeFailures = 1;
+  await controller.start();
   const stopping = controller.stop();
   captures[0]!.finalize(500);
   await stopping;
-  backend.ack(0);
+  backend.resolveRequest(0);
   await settle();
-  assert.equal(controller.snapshot.state, "error");
-  assert.equal(controller.snapshot.canRetry, true);
-  assert.match(controller.snapshot.feedback, /finish unavailable/);
-  controller.retry();
-  await settle();
-  assert.deepEqual(backend.finishes, ["recording-1"]);
-  assert.equal(backend.requests.length, 1);
-  assert.equal(captures[0]!.starts, 1);
-});
-
-test("microphone denial remains recoverable without creating a backend recording", async (t) => {
-  const { controller, backend, cues } = harness(t, { open: async () => { throw new Error("permission denied"); } });
-  await controller.start("en");
-  assert.equal(controller.snapshot.state, "error");
-  assert.equal(controller.snapshot.canStart, true);
-  assert.equal(controller.snapshot.canRetry, false);
-  assert.match(controller.snapshot.feedback, /permission denied/);
-  assert.deepEqual(backend.languages, []);
-  assert.deepEqual(cues(), []);
-});
-
-test("backend creation failure releases the microphone and permits a fresh start", async (t) => {
-  const { controller, backend, captures } = harness(t);
-  const create = backend.createRecording.bind(backend);
-  backend.createRecording = async () => { throw new Error("create unavailable"); };
-  await controller.start("en");
-  assert.equal(captures[0]!.disposed, true);
-  assert.equal(captures[0]!.starts, 0);
-  assert.equal(controller.snapshot.canStart, true);
-  backend.createRecording = create;
-  await controller.start("de");
-  assert.equal(controller.snapshot.state, "recording");
+  const first = controller.snapshot.sections[0]!;
+  assert.equal(first.canRetryClose, true);
+  await controller.start();
   assert.equal(captures[1]!.starts, 1);
+  controller.retryClose(first.sectionId);
+  await settle();
+  assert.deepEqual(backend.completes, [
+    { assetId: "asset-1", frameCount: 1 },
+    { assetId: "asset-1", frameCount: 1 },
+  ]);
 });
 
-test("a second start during microphone acquisition is ignored; disposal releases late acquisition", async (t) => {
-  const acquisition = deferred<RecordingCapture>();
-  const { controller, backend, captures, events } = harness(t, { open: () => acquisition.promise });
-  const starting = controller.start("en");
-  await controller.start("de");
-  assert.equal(captures.length, 1);
-  assert.equal(controller.snapshot.canStart, false);
-  controller.dispose();
-  const count = events.length;
-  acquisition.resolve(captures[0]!);
-  await starting;
-  assert.equal(captures[0]!.disposed, true);
-  assert.equal(captures[0]!.starts, 0);
-  assert.equal(events.length, count);
-  assert.deepEqual(backend.languages, []);
+test("backlog retains three frames while a new Section uploads concurrently and old cues stay silent", async (t) => {
+  const { controller, backend, captures, cues } = harness(t);
+  await controller.start();
+  assert.equal(captures[0]!.boundary(), true);
+  assert.equal(captures[0]!.boundary(), false);
+  captures[0]!.finalize();
+  await settle();
+  assert.equal(controller.snapshot.sections[0]!.pendingFrames, 3);
+  assert.equal(controller.snapshot.sections[0]!.pendingMs, 21_000);
+  assert.equal(controller.snapshot.sections[0]!.canUploadPending, true);
+  const frozenAttempts = backend.requests.length;
+  t.mock.timers.tick(40_000);
+  assert.equal(backend.requests.length, frozenAttempts);
+
+  await controller.start();
+  captures[1]!.boundary();
+  const newAssetRequest = backend.requests.findIndex((request) => request.assetId !== "asset-1");
+  assert.notEqual(newAssetRequest, -1);
+  backend.resolveRequest(0);
+  await settle();
+  assert.equal(cues().filter((cue) => cue === "health").length, 0, "old acknowledgement is silent");
+  backend.resolveRequest(newAssetRequest);
+  await settle();
+  assert.equal(cues().filter((cue) => cue === "health").length, 1);
+
+  const oldSection = controller.snapshot.sections[0]!;
+  controller.uploadPendingAudio(oldSection.sectionId);
+  const recoveryStart = backend.requests.length - 1;
+  assert.equal(backend.requests[recoveryStart]!.assetId, "asset-1");
+  backend.resolveRequest(recoveryStart);
+  await settle();
+  backend.resolveRequest(backend.requests.length - 1);
+  await settle();
+  assert.deepEqual(backend.interrupts, ["asset-1"]);
+  assert.equal(cues().filter((cue) => cue === "health").length, 1);
 });
 
-test("disposal during backend creation suppresses stale start and subsequent events", async (t) => {
-  const creation = deferred<CreatedRecording>();
+test("interruption close failure is retryable and does not block a later recorder", async (t) => {
+  const { controller, backend, captures } = harness(t);
+  backend.interruptFailures = 1;
+  await controller.start();
+  captures[0]!.fail();
+  captures[0]!.finalize(500);
+  await settle();
+  const sectionId = controller.snapshot.sections[0]!.sectionId;
+  controller.uploadPendingAudio(sectionId);
+  backend.resolveRequest(0);
+  await settle();
+  assert.match(controller.snapshot.sections[0]!.closeProblem, /Could not close recording/);
+  await controller.start();
+  assert.equal(captures[1]!.starts, 1);
+  controller.retryClose(sectionId);
+  await settle();
+  assert.deepEqual(backend.interrupts, ["asset-1", "asset-1"]);
+});
+
+test("authentication suspension freezes every Section and same-Account resume restarts each queue", async (t) => {
+  const { controller, backend, captures } = harness(t);
+  await controller.start();
+  captures[0]!.boundary();
+  const firstStop = controller.stop();
+  captures[0]!.finalize();
+  await firstStop;
+  await controller.start();
+  captures[1]!.boundary();
+  controller.suspendForAuthentication();
+  const attempts = backend.requests.length;
+  t.mock.timers.tick(40_000);
+  assert.equal(backend.requests.length, attempts);
+  assert.equal(controller.snapshot.hasUnsecuredAudio, true);
+  controller.resumeAfterAuthentication("account-b");
+  assert.equal(backend.requests.length, attempts, "a different Account cannot resume delivery");
+  controller.resumeAfterAuthentication("account-a");
+  assert.equal(backend.requests.length, attempts + 2);
+  assert.equal(new Set(backend.requests.slice(-2).map((request) => request.assetId)).size, 2);
+});
+
+test("oversize audio remains retained and stops automatic submission", async (t) => {
+  const { controller, backend, captures } = harness(t, { maxFrameBytes: 8 });
+  await controller.start();
+  captures[0]!.boundary(1_000, 9);
+  captures[0]!.finalize(100, 1);
+  await settle();
+  assert.equal(backend.requests.length, 0);
+  assert.equal(controller.snapshot.sections[0]!.pendingFrames, 2);
+  assert.equal(controller.snapshot.sections[0]!.canUploadPending, false);
+  assert.match(controller.snapshot.sections[0]!.problem, /too large to upload/);
+  controller.uploadPendingAudio(controller.snapshot.sections[0]!.sectionId);
+  assert.equal(backend.requests.length, 0, "manual recovery must enforce the same size guard");
+});
+
+test("frame conflict terminally retains the Section and permits an independent new recording", async (t) => {
   const { controller, backend, captures, events } = harness(t);
-  backend.createRecording = () => creation.promise;
-  const starting = controller.start("en");
+  await controller.start();
+  captures[0]!.boundary(1_250, 13);
+  const originalFrame = backend.requests[0]!.frame;
+
+  t.mock.timers.tick(DEFAULT_CONFIG.retryFirstMs);
+  assert.equal(backend.requests.length, 2, "the conflict races an identical retry");
+  assert.equal(backend.requests[1]!.frame, originalFrame);
+  assert.equal(backend.requests[1]!.frame.data, originalFrame.data);
+
+  backend.requests[0]!.result.reject(new ApiError("PUT", "/frames/0", 409, {
+    title: "Frame conflict",
+    detail: "Sequence 0 differs from stored audio.",
+    code: "frame_conflict",
+    referenceId: "conflict_REF-42",
+  }));
   await settle();
-  controller.dispose();
-  const count = events.length;
-  creation.resolve({ recordingId: "late-recording" });
-  await starting;
-  assert.equal(captures[0]!.disposed, true);
-  assert.equal(captures[0]!.starts, 0);
-  t.mock.timers.tick(120_000);
-  assert.equal(events.length, count);
+  assert.equal(captures[0]!.stops, 1, "a conflict stops active capture");
+  assert.equal(backend.requests[1]!.signal.aborted, true, "overlapping delivery is cancelled");
+
+  captures[0]!.finalize(750, 7);
+  await settle();
+  const conflicted = controller.snapshot.sections[0]!;
+  assert.equal(conflicted.pendingFrames, 2, "the conflicting and final frames remain retained");
+  assert.equal(conflicted.pendingMs, 2_000, "retained frame timing remains intact");
+  assert.equal(conflicted.canUploadPending, false, "unsafe manual recovery stays hidden");
+  assert.match(conflicted.problem, /Capture stopped because audio delivery conflicted with stored data/u);
+  assert.match(conflicted.problem, /Title: Frame conflict/u);
+  assert.match(conflicted.problem, /Detail: Sequence 0 differs from stored audio\./u);
+  assert.match(conflicted.problem, /Code: frame_conflict/u);
+  assert.match(conflicted.problem, /Reference ID: conflict_REF-42/u);
+
+  backend.resolveRequest(1);
+  await settle();
+  assert.equal(controller.snapshot.sections[0]!.pendingFrames, 2,
+    "a late acknowledgement cannot release terminally retained bytes");
+  const frozenAttempts = backend.requests.length;
+  t.mock.timers.tick(60_000);
+  controller.uploadPendingAudio(conflicted.sectionId);
+  assert.equal(backend.requests.length, frozenAttempts, "timers and recovery cannot send again");
+  assert.deepEqual(backend.completes, []);
+  assert.deepEqual(backend.interrupts, []);
+  assert.ok(events.some((event) => event.type === "log"
+    && event.message.includes("HTTP 409 code=frame_conflict referenceId=conflict_REF-42")));
+
+  await controller.start();
+  assert.equal(captures[1]!.starts, 1);
+  captures[1]!.boundary(500, 5);
+  assert.equal(backend.requests.at(-1)!.assetId, "asset-2");
+  assert.equal(backend.requests.at(-1)!.frame.seq, 0, "the new Section has an independent sequence");
+  assert.equal(controller.snapshot.sections[0]!.pendingFrames, 2);
 });
 
-test("a subscriber can dispose on start without leaving timers or polling alive", async (t) => {
-  const { controller, backend, captures, cues } = harness(t, { pollIntervalMs: 100 });
-  let polls = 0;
-  backend.getRecording = async () => {
-    polls++;
-    return backend.status;
-  };
-  controller.subscribe((event) => {
-    if (event.type === "changed" && event.snapshot.state === "recording") controller.dispose();
-  });
-  await controller.start("en");
-  assert.equal(captures[0]!.disposed, true);
-  assert.equal(controller.snapshot.capturing, false);
-  assert.equal(controller.snapshot.hasUnsecuredAudio, false);
-  t.mock.timers.tick(120_000);
+test("same-Account restoration keeps backlog recovery user initiated", async (t) => {
+  const { controller, backend, captures } = harness(t);
+  await controller.start();
+  assert.equal(captures[0]!.boundary(), true);
+  assert.equal(captures[0]!.boundary(), false);
+  captures[0]!.finalize();
   await settle();
-  assert.equal(polls, 0);
-  assert.deepEqual(cues(), []);
+  const attempts = backend.requests.length;
+  const sectionId = controller.snapshot.sections[0]!.sectionId;
+
+  controller.suspendForAuthentication();
+  controller.resumeAfterAuthentication("account-a");
+  assert.equal(backend.requests.length, attempts);
+  controller.uploadPendingAudio(sectionId);
+  assert.equal(backend.requests.length, attempts + 1);
+
+  controller.suspendForAuthentication();
+  controller.resumeAfterAuthentication("account-a");
+  assert.equal(backend.requests.length, attempts + 2,
+    "an already requested recovery resumes for the original Account");
+});
+
+test("capability failure creates no backend resources and permits retry", async (t) => {
+  const { controller, backend } = harness(t, { open: async () => { throw new Error("mono unavailable"); } });
+  await controller.start();
+  assert.deepEqual(backend.projectCalls, []);
+  assert.deepEqual(backend.sectionCalls, []);
+  assert.equal(controller.snapshot.canStart, true);
+  assert.match(controller.snapshot.startProblem, /mono unavailable/);
 });

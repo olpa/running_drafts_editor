@@ -3,7 +3,7 @@ import test from "node:test";
 import { Window, type HTMLButtonElement as HappyButtonElement,
   type HTMLElement as HappyHTMLElement } from "happy-dom";
 import type { CaptureOptions, RecordingCapture, TransportFrame } from "../src/capture.ts";
-import type { FrameAck, RecordingStatus } from "../src/api.ts";
+import type { AudioAssetSummary, FrameAck, ProjectSummary } from "../src/api.ts";
 import type { RecordingBackend, RecordingDependencies } from "../src/recording.ts";
 import type { AccountId, CurrentSession } from "../src/session.ts";
 
@@ -38,14 +38,27 @@ class FakeRecordingBackend implements RecordingBackend {
   readonly recordingId = "recording-owned-by-account-a";
   readonly requests: { recordingId: string; frame: TransportFrame; signal: AbortSignal;
     result: ReturnType<typeof deferred<FrameAck>> }[] = [];
-  async createRecording(): Promise<{ recordingId: string }> { return { recordingId: this.recordingId }; }
+  async createProject(): Promise<ProjectSummary> {
+    return { id: "project-a", title: "Canonical", createdAt: "now", updatedAt: "now" };
+  }
+  async getProject(projectId: string): Promise<ProjectSummary> {
+    return { id: projectId, title: "Existing canonical title", createdAt: "now", updatedAt: "now" };
+  }
+  async createSection(): Promise<{ sectionId: string; audioAssetId: string; position: number }> {
+    return { sectionId: "section-a", audioAssetId: this.recordingId, position: 0 };
+  }
   putFrame(recordingId: string, frame: TransportFrame, signal: AbortSignal): Promise<FrameAck> {
     const result = deferred<FrameAck>();
     this.requests.push({ recordingId, frame, signal, result });
     return result.promise;
   }
-  async finish(): Promise<void> {}
-  async getRecording(): Promise<RecordingStatus> { return { status: "recording", chunks: [] }; }
+  async complete(): Promise<AudioAssetSummary> { return asset(this.recordingId, "completed"); }
+  async interrupt(): Promise<AudioAssetSummary> { return asset(this.recordingId, "interrupted"); }
+}
+
+function asset(id: string, sealReason: "completed" | "interrupted"): AudioAssetSummary {
+  return { id, mediaType: "audio/webm;codecs=opus", isSealed: true, sealReason, sealedAt: "now",
+    frameCount: 0, observedDurationMs: 0, storedBytes: 0 };
 }
 
 function session(accountId: AccountId, remainingMs: number): CurrentSession {
@@ -116,7 +129,7 @@ test("real queued audio survives failed short-session logout and resumes only fo
   const capture = captures[0];
   assert.ok(capture);
   const exactBytes = new Blob([new Uint8Array([0, 17, 42, 128, 255])], { type: "audio/webm;codecs=opus" });
-  const queuedFrame: TransportFrame = { seq: 1, startMs: 0, endMs: 10_000,
+  const queuedFrame: TransportFrame = { seq: 0, startMs: 0, endMs: 10_000,
     mediaType: exactBytes.type, data: exactBytes };
   capture.emit(queuedFrame);
   assert.equal(backend.requests.length, 1);

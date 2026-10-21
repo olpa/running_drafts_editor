@@ -5,3 +5,6 @@
 /dist/
 *.egg-info/
 __pycache__/
+*.m4a
+*.mp3
+*.wav

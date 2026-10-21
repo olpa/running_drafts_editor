@@ -1,8 +1,8 @@
 # Browser seed experiment
 
-This directory is the home for the Running Drafts browser seed. It tests
-browser recording and progressive transcription through the backend and private
-inference service.
+This directory is the home for the Running Drafts browser seed. Its current #84
+slice tests authenticated browser recording and durable audio delivery through
+the backend; the broader seed also covers progressive transcription work.
 
 [Product issue #1](https://github.com/olpa/running_drafts_product/issues/1)
 coordinates the seed across repositories. Backend and inference implementation
@@ -13,33 +13,27 @@ live at the repository root. The independent [Rust CLI proof of concept](../rust
 another technical experiment for the same product.
 The [web glossary](GLOSSARY.md) defines browser recording and delivery terms.
 
-## Walking skeleton
+## Authenticated recording seed
 
-[Issue #76](https://github.com/olpa/running_drafts_editor/issues/76) provides a
-Vite/TypeScript page and a Python/Playwright happy-path test. Capture is real;
-backend behavior remains mocked:
+[Issue #84](https://github.com/olpa/running_drafts_editor/issues/84) connects the
+Vite/TypeScript page to the authenticated backend Project contract:
 
-- Capture: `RecorderFrameSource` in `src/capture.ts` uses one continuous
+- Capture: `RecorderFrameSource` in `src/capture.ts` uses one continuous mono
   MediaRecorder. It sends ordered WebM/Opus pieces every 10 seconds by default.
   These transport frames are successive bytes of one recording; backend decode
   spans and transcript chunks have separate boundaries.
-- Backend: [`product/e2e/mock_backend.py`](../../running_drafts_product/e2e/mock_backend.py) intercepts the page's `/api` requests. #78
-  deletes it and runs the same test against the real backend.
-
-The backend mock runs only inside Playwright tests. Opening the Vite page in a
-normal browser does not install it; Start currently fails with HTTP 404 for
-`POST /api/recordings`. [Issue #78](https://github.com/olpa/running_drafts_editor/issues/78)
-adds real backend routing and instructions for running both services together.
-
-The assumed backend contract is in `src/api.ts`. The test's expected values
-are in [`product/e2e/expected/happy-path.json`](../../running_drafts_product/e2e/expected/happy-path.json). The happy path now also checks real
-transport bytes, one recorder, microphone release, and acknowledgement cues.
+- Backend: `src/api.ts` uses credentialed `/api/v1/projects`, Section, frame,
+  completion, and interruption endpoints. Each recorder run creates one Section
+  and Audio Asset; transcription and polling are outside #84's authenticated
+  delivery slice.
 
 ## Run browser E2E tests
 
 The Python/Playwright browser suite, fixtures, mock backend, and runner setup
 now live in [`running_drafts_product/e2e`](../../running_drafts_product/e2e/README.md).
-Follow that guide to run the suite against this application.
+Product issues #4 and #7 own migrating that suite from the removed seed
+`/api/recordings` contract to authenticated Project delivery. Do not add a
+second authoritative Playwright suite here.
 
 Start the application here with `npm install` and `npm run dev`.
 `npm run check` type-checks the application and unit tests. `npm test` runs
@@ -101,56 +95,58 @@ data is copied there.
 
 `<recording-panel>` in `src/components/recording-panel.ts` owns the recording
 controls and visual/audio feedback. It can run independently of `<seed-app>` and
-publishes `recording-event` events for snapshots, cues, chunks, diagnostic log
-entries, and a new-recording reset. The panel owns its controller and releases
-microphone resources when disconnected.
+publishes `recording-event` events for snapshots, cues, and diagnostic log
+entries. The panel owns its page-lifetime controller. A temporary disconnect
+stops active capture and releases microphone resources while preserving its
+Project, Sections, Account ownership, and pending bytes for reconnection;
+`finishModule()` performs permanent disposal when the page module is finished.
 
-`RecordingController` in `src/recording.ts` owns start, stop, retry, duration and
-backlog limits, completion, and semantic cue decisions. Its interface is
-`start(language)`, `stop()`, `retry()`, `dispose()`, `snapshot`, and `subscribe()`.
-It accepts a backend, a capture factory, and a clock. Controller unit tests use
-fake capture/backend adapters and controlled timers, without a browser or DOM.
+`RecordingController` in `src/recording.ts` owns one Project, Section creation,
+all page-lifetime delivery queues, start/stop, duration and backlog limits,
+recovery, sealing, and semantic cue decisions. Its interface is `start()`,
+`stop()`, `uploadPendingAudio(sectionId)`, `retryClose(sectionId)`,
+Account-checked authentication suspension/resumption, `dispose()`, `snapshot`,
+and `subscribe()`. It accepts backend and capture adapters plus clocks and
+identity generation.
 
 `RecorderFrameSource` and `FrameDelivery` retain their separate capture and
-submission responsibilities. `openRecordingCapture` owns browser microphone
-acquisition and release. `<seed-app>` only composes the panel, transcript, and
-circular diagnostic log. Browser tests also exercise the panel on its own and
-its disconnect/reconnect lifecycle.
+submission responsibilities. `openRecordingCapture` owns strict WebM/Opus
+capability checking, mono microphone acquisition, verification, and release.
+`<seed-app>` composes the panel with authentication and the diagnostic log.
 
 ## Recording and recovery
 
-The page keeps one microphone stream and recorder open. Stop waits for the final
-partial transport frame before sending finish. The ten-minute recording limit
-and transport interval are configurable through `window.__SEED_CONFIG__`.
-A prominent green **Speak now** indicator and duration progress appear while the
-microphone is recording. They stop indicating capture as soon as capture stops,
-independently of pending uploads and transcription progress.
+The page keeps one microphone stream and recorder open per Section. Stop waits
+for the final partial transport frame, then the Section completes only after all
+assigned frames are acknowledged. The ten-minute recording limit, transport
+interval, and 2 MiB frame guard are configurable through `window.__SEED_CONFIG__`.
+A prominent green **Speak now** indicator and duration progress appear during
+microphone capture. They stop indicating capture as soon as capture stops,
+independently of pending uploads and backend work.
 
 Audio stays in browser memory until acknowledged. The sender retries the oldest
 pending transport frame after 5, 10, and 17 seconds from each preceding attempt's
 start. Requests time out independently after 60 seconds, so retries can overlap.
 The backend must accept duplicates idempotently.
 
-The three-frame backlog limit includes the current frame: two completed pending
-frames plus one being captured. If delivery stays blocked, recording stops at
-the current boundary. New automatic attempts stop, while existing attempts may
-finish. **Upload pending audio** retries retained audio without restarting
-capture. Starting another recording is blocked until the current one completes.
-Leaving with captured or pending audio warns; reload recovery is not implemented.
-The warning and pending duration include final audio still being flushed by the
-recorder after capture stops.
+The three-frame backlog limit applies independently to each Section and includes
+the current frame: two completed pending frames plus one being captured. If
+delivery stays blocked, capture stops at the current boundary. New automatic
+attempts for that Section stop, while existing attempts may finish. Per-Section
+**Upload pending audio** actions retry retained bytes without restarting capture.
+A new recorder run can create and upload another Section concurrently. Leaving
+with captured or pending audio warns; reload recovery is not implemented.
+Any frame-upload HTTP `409` stops capture and permanently freezes delivery for
+that Section without sealing it. Exact pending audio and returned Problem
+Details remain visible for diagnosis, while another Section may start normally.
 
-Start and completion play short rising/falling cues. Each newly acknowledged
-frame plays a quiet rising health cue and advances the visible secured duration.
-At the time limit, the falling stop cue plays immediately instead of waiting for
-transcription completion, and does not repeat when processing completes.
+Start and capture stop play short rising/falling cues. Each newly acknowledged
+frame for the actively capturing Section plays a quiet rising health cue. At the
+time limit, the falling stop cue plays immediately instead of waiting for
+delivery or sealing.
 Delayed upload plays an attention tone followed by Morse U (`..-`) once per delay
-episode. Backlog or microphone interruption immediately plays the attention tone
-followed by Morse X (`-..-`) and shows why recording stopped.
-
-The backend mock exercises durable-acceptance acknowledgements. It does not
-provide production storage. Real durable acceptance belongs to backend issue #4
-and is verified when editor #78 integrates the real service.
+episode. A Capture interruption immediately plays the attention tone followed
+by Morse X (`-..-`) and shows why capture stopped.
 
 Before real-microphone use, check cue recognition and leakage on the intended
 speakers/headset: speak while health cues play, force an upload failure, listen
@@ -162,5 +158,5 @@ contamination. Fake-microphone tests cannot verify acoustic leakage.
 The dark panel is a fixed 100×10 character log. Entries are written as one
 stream and start with `▸` and the seconds since Start. When the panel is full,
 writing continues at the top-left and clears a gap ahead of the highlighted
-write position. Codes: `f3 sent` and `f3 ack` for transport frame 3, `+c2` for
-the second chunk, `srv <status>` for a backend status change, `ERR` for errors.
+write position. Codes include `s2 f3 sent` and `s2 f3 ack` for frame 3 of
+Section 2, `complete sent`, `interrupt sent`, and `ERR` for failures.
