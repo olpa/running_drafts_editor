@@ -1,11 +1,38 @@
 import type { TransportFrame } from "./capture.js";
 import { backendUrl } from "./backend.ts";
 
-export type Language = "en" | "de" | "ru";
-export interface CreatedRecording { recordingId: string; }
-export interface FrameAck { seq: number; acknowledged: true; }
-export interface Chunk { id: string; startMs: number; endMs: number; text: string; }
-export interface RecordingStatus { status: "recording" | "finishing" | "complete"; chunks: Chunk[]; }
+export const RECORDING_MEDIA_TYPE = "audio/webm;codecs=opus";
+
+export interface ProjectSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreatedSection {
+  sectionId: string;
+  audioAssetId: string;
+  position: number;
+}
+
+export interface FrameAck {
+  sequence: number;
+  acknowledged: true;
+  sha256: string;
+  nextExpectedSequence: number;
+}
+
+export interface AudioAssetSummary {
+  id: string;
+  mediaType: string;
+  isSealed: boolean;
+  sealReason: "completed" | "interrupted" | null;
+  sealedAt: string | null;
+  frameCount: number;
+  observedDurationMs: number;
+  storedBytes: number;
+}
 
 export interface ProblemDetails {
   type?: string; title?: string; status?: number; detail?: string; instance?: string;
@@ -27,7 +54,7 @@ export interface ApiClientOptions {
   onAuthenticationExpired?: () => void;
 }
 
-/** Shared application API boundary. Authentication remains in the HttpOnly cookie. */
+/** HTTP adapter for the authenticated Project recording contract. */
 export class ApiClient {
   private readonly baseUrl: string;
   private readonly requestImplementation: typeof fetch;
@@ -36,28 +63,41 @@ export class ApiClient {
 
   constructor(options: ApiClientOptions | string = {}) {
     const resolved = typeof options === "string" ? { baseUrl: options } : options;
-    this.baseUrl = resolved.baseUrl ?? backendUrl("/api");
+    this.baseUrl = resolved.baseUrl ?? backendUrl("/api/v1");
     this.requestImplementation = resolved.request ?? fetch.bind(window);
     this.onAuthenticationExpired = resolved.onAuthenticationExpired ?? (() => undefined);
   }
 
-  createRecording(language: Language): Promise<CreatedRecording> {
-    return this.json("POST", "/recordings", { headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ language }) });
+  createProject(idempotencyKey: string, title: string): Promise<ProjectSummary> {
+    return this.json("POST", "/projects", { headers: jsonHeaders(),
+      body: JSON.stringify({ idempotencyKey, title }) });
   }
 
-  putFrame(recordingId: string, frame: TransportFrame, signal: AbortSignal): Promise<FrameAck> {
-    return this.json("PUT", `/recordings/${encodeURIComponent(recordingId)}/frames/${frame.seq}`, {
-      headers: { "Content-Type": frame.mediaType, "X-Frame-Start-Ms": String(frame.startMs),
-        "X-Frame-End-Ms": String(frame.endMs) }, body: frame.data, signal });
+  getProject(projectId: string): Promise<ProjectSummary> {
+    return this.json("GET", `/projects/${encodeURIComponent(projectId)}`, {});
   }
 
-  async finish(recordingId: string): Promise<void> {
-    await this.request("POST", `/recordings/${encodeURIComponent(recordingId)}/finish`, {});
+  createSection(projectId: string, idempotencyKey: string): Promise<CreatedSection> {
+    return this.json("POST", `/projects/${encodeURIComponent(projectId)}/sections`, {
+      headers: jsonHeaders(), body: JSON.stringify({ idempotencyKey, mediaType: RECORDING_MEDIA_TYPE }),
+    });
   }
 
-  getRecording(recordingId: string): Promise<RecordingStatus> {
-    return this.json("GET", `/recordings/${encodeURIComponent(recordingId)}`, {});
+  putFrame(audioAssetId: string, frame: TransportFrame, signal: AbortSignal): Promise<FrameAck> {
+    return this.json("PUT", `/audio-assets/${encodeURIComponent(audioAssetId)}/frames/${frame.seq}`, {
+      headers: { "Content-Type": RECORDING_MEDIA_TYPE, "X-Frame-Start-Ms": String(frame.startMs),
+        "X-Frame-End-Ms": String(frame.endMs) }, body: frame.data, signal,
+    });
+  }
+
+  complete(audioAssetId: string, frameCount: number): Promise<AudioAssetSummary> {
+    return this.json("POST", `/audio-assets/${encodeURIComponent(audioAssetId)}/complete`, {
+      headers: jsonHeaders(), body: JSON.stringify({ frameCount }),
+    });
+  }
+
+  interrupt(audioAssetId: string): Promise<AudioAssetSummary> {
+    return this.json("POST", `/audio-assets/${encodeURIComponent(audioAssetId)}/interrupt`, {});
   }
 
   markAuthenticationUsable(): void { this.authenticationExpiryReported = false; }
@@ -79,6 +119,10 @@ export class ApiClient {
     }
     throw new ApiError(method, path, response.status, problem);
   }
+}
+
+function jsonHeaders(): Record<string, string> {
+  return { "Content-Type": "application/json" };
 }
 
 export async function readProblemDetails(response: Response): Promise<Readonly<ProblemDetails> | null> {

@@ -2,7 +2,6 @@ import template from "./seed-app-template.ts";
 import "./recording-panel.ts";
 import { loadConfig } from "../config.ts";
 import { RadarLog } from "../radar-log.ts";
-import type { Chunk } from "../api.js";
 import type { RecordingDependencies, RecordingEvent } from "../recording.js";
 import { authenticationCallbackFromSearch, SessionClient, SessionController,
   sessionAllowsRecording, type SessionState, withoutAuthenticationCallback } from "../session.ts";
@@ -55,6 +54,10 @@ export class SeedApp extends HTMLElement {
     void this.session.bootstrap(callback);
   }
 
+  disconnectedCallback(): void {
+    this.recordingPanel?.finishModule();
+  }
+
   private authorizeRecordingStart(event: Event): void {
     const state = this.session.state;
     if (state.status !== "signedIn") {
@@ -70,12 +73,7 @@ export class SeedApp extends HTMLElement {
   private handleRecordingEvent(event: Event): void {
     const detail = (event as CustomEvent<RecordingEvent>).detail;
     if (detail.type === "changed") this.updateWorkspaceVisibility();
-    if (detail.type === "reset") {
-      this.transcript.replaceChildren();
-      this.resetLog();
-    } else if (detail.type === "chunks" && this.recordingPanel.ownsCurrentSession) {
-      this.showChunks(detail.chunks);
-    } else if (detail.type === "log" && this.recordingPanel.ownsCurrentSession) {
+    if (detail.type === "log" && this.recordingPanel.ownsCurrentSession) {
       this.log.write(detail.message);
       this.renderLog();
     }
@@ -124,25 +122,13 @@ export class SeedApp extends HTMLElement {
 
   private updateWorkspaceVisibility(): void {
     const signedIn = this.session.state.status === "signedIn";
-    this.workspace.hidden = !signedIn && !this.recordingPanel.hasUnsecuredAudio;
+    this.workspace.hidden = !signedIn && !this.recordingPanel.hasRetainedWork;
     this.privateResults.hidden = !signedIn;
   }
 
   private clearPrivateResults(): void {
     this.transcript.replaceChildren();
     this.resetLog();
-  }
-
-  private showChunks(chunks: readonly Chunk[]): void {
-    this.transcript.replaceChildren(...chunks.map((chunk) => {
-      const item = document.createElement("li");
-      item.dataset.testid = "chunk";
-      item.dataset.chunkId = chunk.id;
-      item.dataset.startMs = String(chunk.startMs);
-      item.dataset.endMs = String(chunk.endMs);
-      item.textContent = chunk.text;
-      return item;
-    }));
   }
 
   private element<T extends HTMLElement>(testId: string): T {

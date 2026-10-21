@@ -41,6 +41,15 @@ button:focus-visible, select:focus-visible { outline: 3px solid #a8ccff; outline
 button:disabled { cursor: default; opacity: 0.55; }
 .primary { border-color: var(--accent); background: var(--accent); color: white; }
 .primary:hover:not(:disabled) { border-color: var(--accent-dark); background: var(--accent-dark); }
+.primary-control {
+  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease,
+    transform 180ms ease;
+}
+.primary-control[data-mode="stop"] {
+  border-color: var(--danger);
+  background: var(--danger);
+  transform: scale(1.02);
+}
 
 .app-shell { min-height: 100vh; padding: 24px; }
 .topbar {
@@ -159,7 +168,9 @@ recording-panel { display: block; }
 .policy-links { flex-basis: 100%; color: var(--muted); font-size: 0.85rem; }
 .policy-links a { color: var(--accent-dark); }
 [hidden] { display: none !important; }
-.toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.toolbar h2 { flex: 1 1 12rem; margin: 0; }
+.toolbar [data-testid="elapsed"] { margin-left: auto; font-variant-numeric: tabular-nums; }
 .toolbar label { display: grid; gap: 4px; color: var(--muted); font-size: 0.82rem; }
 .toolbar select { min-height: 2.5rem; padding: 0 2rem 0 0.65rem; border: 1px solid var(--line); border-radius: 6px; background: white; color: var(--text); }
 .state { margin-left: auto; font-weight: bold; }
@@ -177,7 +188,6 @@ recording-panel { display: block; }
 }
 .capture-indicator[data-capturing="true"] { border-color: #7cc99d; background: #f0f9f4; color: #166534; }
 .capture-dot { flex: 0 0 0.75rem; height: 0.75rem; border-radius: 50%; background: currentColor; }
-[data-testid="stop"].capturing { border-color: #9f2222; background: var(--danger); color: white; }
 .capture-progress { max-width: 24rem; margin-top: 0.75rem; font-variant-numeric: tabular-nums; }
 .capture-progress span { display: block; text-align: right; }
 .capture-progress progress { width: 100%; accent-color: var(--success); }
@@ -192,11 +202,15 @@ recording-panel { display: block; }
   line-height: 1.2;
 }
 .radar-log .cursor { background: #86efac; color: #111827; }
-[data-testid="feedback"]:empty { display: none; }
-[data-testid="feedback"] { padding: 0.75rem; border-left: 4px solid var(--warning); background: #fff8e1; color: #5f4100; }
-[data-testid="feedback"][data-kind="error"] { border-color: var(--danger); background: #fff7f7; color: #9f2222; }
+[data-testid="start-problem"]:empty { display: none; }
+[data-testid="start-problem"] { margin-top: 0.75rem; padding: 0.75rem; border-left: 4px solid var(--danger); background: #fff7f7; color: #9f2222; }
 .ownership-warning:empty { display: none; }
 .ownership-warning { padding: 0.75rem; border-left: 4px solid var(--danger); background: #fff7f7; color: #9f2222; }
+.section-deliveries { display: grid; gap: 0.5rem; margin: 1rem 0 0; padding: 0; list-style: none; }
+.section-deliveries li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; padding: 0.7rem; border: 1px solid var(--line); border-radius: 6px; }
+.section-deliveries button { min-height: 2rem; padding: 0.3rem 0.6rem; }
+.section-status { color: var(--warning); font-size: 0.9rem; }
+.section-status.error { color: var(--danger); }
 
 @media (max-width: 900px) {
   .app-shell { padding: 16px; }
@@ -211,4 +225,8 @@ recording-panel { display: block; }
   .toolbar { align-items: stretch; }
   .toolbar > * { flex: 1 1 auto; }
   .state { margin-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .primary-control { transition: none; }
 }

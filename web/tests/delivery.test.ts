@@ -5,8 +5,11 @@ import type { TransportFrame } from "../src/capture.ts";
 import type { FrameAck } from "../src/api.ts";
 
 function frame(seq: number): TransportFrame {
-  return { seq, startMs: (seq - 1) * 10_000, endMs: seq * 10_000,
+  return { seq, startMs: seq * 10_000, endMs: (seq + 1) * 10_000,
     mediaType: "audio/webm;codecs=opus", data: new Blob([`audio ${seq}`]) };
+}
+function ack(sequence: number): FrameAck {
+  return { sequence, acknowledged: true, sha256: "a".repeat(64), nextExpectedSequence: sequence + 1 };
 }
 async function settle(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
@@ -14,133 +17,112 @@ async function settle(): Promise<void> {
 function harness(t: TestContext) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const requests: { frame: TransportFrame; signal: AbortSignal;
-    resolve: (ack: FrameAck) => void; reject: (error: Error) => void }[] = [];
+    resolve: (acknowledgement: FrameAck) => void; reject: (error: Error) => void }[] = [];
   const events: string[] = [];
   const delivery = new FrameDelivery({
     retryDelaysMs: [5_000, 10_000, 17_000], requestTimeoutMs: 60_000,
-    send: (frame, signal) => new Promise((resolve, reject) => requests.push({ frame, signal, resolve, reject })),
+    send: (item, signal) => new Promise((resolve, reject) => requests.push({ frame: item, signal, resolve, reject })),
     log: (message) => events.push(message), changed: () => {},
-    acknowledged: (frame) => events.push(`health ${frame.seq}`),
+    acknowledged: (item) => events.push(`health ${item.seq}`),
     delayed: () => events.push("delayed"),
   });
   t.after(() => delivery.dispose());
   return { delivery, requests, events };
 }
 
-test("retains ordered bytes and only releases a matching success", async (t) => {
+test("rejects a first-frame or later sequence gap before sending", (t) => {
+  const { delivery, requests } = harness(t);
+  assert.throws(() => delivery.enqueue(frame(1)), /not consecutive/);
+  assert.equal(requests.length, 0);
+  delivery.enqueue(frame(0));
+  assert.throws(() => delivery.enqueue(frame(2)), /not consecutive/);
+});
+
+test("serializes first uploads and retains exact bytes until a matching durable acknowledgement", async (t) => {
   const { delivery, requests, events } = harness(t);
+  const first = frame(0);
+  delivery.enqueue(first);
   delivery.enqueue(frame(1));
-  delivery.enqueue(frame(2));
-  assert.equal(delivery.pendingCount, 2);
-  assert.equal(delivery.pendingMs, 20_000);
   assert.equal(requests.length, 1);
-  requests[0]!.resolve({ seq: 9, acknowledged: true });
+  assert.equal(requests[0]!.frame, first);
+  requests[0]!.resolve(ack(9));
   await settle();
   assert.equal(delivery.pendingCount, 2);
-  assert.equal(events.filter((event) => event.startsWith("health")).length, 0);
   t.mock.timers.tick(5_000);
-  requests[1]!.resolve({ seq: 1, acknowledged: true });
+  assert.equal(requests[1]!.frame, first);
+  requests[1]!.resolve(ack(0));
+  await settle();
+  assert.equal(requests[2]!.frame.seq, 1);
+  requests[2]!.resolve(ack(1));
+  await settle();
+  assert.equal(delivery.pendingCount, 0);
+  assert.deepEqual(events.filter((event) => event.startsWith("health")), ["health 0", "health 1"]);
+});
+
+test("overlapping identical retries acknowledge once and cannot disturb the next frame", async (t) => {
+  const { delivery, requests, events } = harness(t);
+  const original = frame(0);
+  delivery.enqueue(original);
+  delivery.enqueue(frame(1));
+  t.mock.timers.tick(5_000);
+  assert.equal(requests[0]!.frame, requests[1]!.frame);
+  requests[1]!.resolve(ack(0));
+  await settle();
+  assert.equal(requests[2]!.frame.seq, 1);
+  requests[0]!.resolve(ack(0));
+  await settle();
+  assert.deepEqual(events.filter((event) => event.startsWith("health")), ["health 0"]);
+  t.mock.timers.tick(5_000);
+  assert.equal(requests[3]!.frame.seq, 1);
+});
+
+test("does not release a frame when server state has not advanced past it", async (t) => {
+  const { delivery, requests } = harness(t);
+  delivery.enqueue(frame(0));
+  requests[0]!.resolve({ sequence: 0, acknowledged: true,
+    sha256: "a".repeat(64), nextExpectedSequence: 0 });
   await settle();
   assert.equal(delivery.pendingCount, 1);
-  assert.equal(requests[2]!.frame.seq, 2);
-  requests[2]!.resolve({ seq: 2, acknowledged: true });
-  await settle();
-  assert.equal(delivery.pendingCount, 0);
-  assert.equal(delivery.delayed, false);
-});
-
-test("retry starts after 5, 10, 17 seconds independently of a 60-second request timeout", (t) => {
-  const { delivery, requests, events } = harness(t);
-  delivery.enqueue(frame(1));
-  t.mock.timers.tick(4_999);
-  assert.equal(requests.length, 1);
-  t.mock.timers.tick(1);
-  assert.equal(requests.length, 2);
-  t.mock.timers.tick(10_000);
-  assert.equal(requests.length, 3);
-  t.mock.timers.tick(17_000);
-  assert.equal(requests.length, 4);
-  assert.ok(requests.every((request) => request.frame === requests[0]!.frame));
-  assert.ok(requests.every((request) => !request.signal.aborted));
-  assert.deepEqual(events.filter((event) => event === "delayed"), ["delayed"]);
-  t.mock.timers.tick(27_999);
-  assert.equal(requests[0]!.signal.aborted, false);
-  t.mock.timers.tick(1);
-  assert.equal(requests[0]!.signal.aborted, true);
-  assert.equal(requests[1]!.signal.aborted, false);
-  assert.equal(requests.length, 4);
-});
-
-test("overlapping success acknowledges once and cannot cancel the next frame's retry", async (t) => {
-  const { delivery, requests, events } = harness(t);
-  delivery.enqueue(frame(1));
-  delivery.enqueue(frame(2));
   t.mock.timers.tick(5_000);
-  requests[1]!.resolve({ seq: 1, acknowledged: true });
-  await settle();
-  assert.equal(requests[2]!.frame.seq, 2);
-  requests[0]!.resolve({ seq: 1, acknowledged: true });
-  await settle();
-  assert.deepEqual(events.filter((event) => event.startsWith("health")), ["health 1"]);
-  t.mock.timers.tick(5_000);
-  assert.equal(requests[3]!.frame.seq, 2);
+  assert.equal(requests[1]!.frame.seq, 0);
 });
 
-test("backlog freeze cancels scheduled retries and accepts late success without sending the tail", async (t) => {
+test("freeze stops new attempts while accepting a late acknowledgement; recovery preserves identity", async (t) => {
   const { delivery, requests } = harness(t);
-  const original = frame(1);
-  delivery.enqueue(original);
-  delivery.enqueue(frame(2));
+  const first = frame(0);
+  const second = frame(1);
+  delivery.enqueue(first);
+  delivery.enqueue(second);
   delivery.freeze();
-  delivery.enqueue(frame(3));
-  assert.equal(delivery.pendingCount, 3);
-  t.mock.timers.tick(32_000);
+  delivery.enqueue(frame(2));
+  t.mock.timers.tick(40_000);
   assert.equal(requests.length, 1);
-  requests[0]!.resolve({ seq: 1, acknowledged: true });
+  requests[0]!.resolve(ack(0));
   await settle();
   assert.equal(delivery.pendingCount, 2);
   assert.equal(requests.length, 1);
   delivery.retry();
-  assert.equal(requests[1]!.frame.seq, 2);
-  requests[1]!.resolve({ seq: 2, acknowledged: true });
+  assert.equal(requests[1]!.frame, second);
+  requests[1]!.resolve(ack(1));
   await settle();
-  assert.equal(requests[2]!.frame.seq, 3);
-  requests[2]!.resolve({ seq: 3, acknowledged: true });
+  requests[2]!.resolve(ack(2));
   await settle();
   assert.equal(delivery.pendingCount, 0);
 });
 
-test("failed requests preserve audio and new frames do not restart the retry budget", async (t) => {
-  const { delivery, requests } = harness(t);
-  const original = frame(1);
-  delivery.enqueue(original);
-  requests[0]!.reject(new Error("offline"));
-  await settle();
-  t.mock.timers.tick(5_000);
-  delivery.enqueue(frame(2));
-  assert.equal(requests.length, 2);
-  assert.equal(requests[1]!.frame, original);
-  delivery.freeze();
-  delivery.retry();
-  assert.equal(requests[2]!.frame, original);
-  assert.equal(delivery.pendingMs, 20_000);
-});
-
-test("a timed-out request cannot acknowledge audio; manual retry preserves its original bytes", async (t) => {
+test("a timed-out request cannot release bytes", async (t) => {
   const { delivery, requests, events } = harness(t);
-  const original = frame(1);
+  const original = frame(0);
   delivery.enqueue(original);
   delivery.freeze();
   t.mock.timers.tick(60_000);
   assert.equal(requests[0]!.signal.aborted, true);
-  requests[0]!.resolve({ seq: 1, acknowledged: true });
+  requests[0]!.resolve(ack(0));
   await settle();
   assert.equal(delivery.pendingCount, 1);
-  assert.equal(events.filter((event) => event.startsWith("health")).length, 0);
   delivery.retry();
   assert.equal(requests[1]!.frame, original);
-  requests[1]!.resolve({ seq: 1, acknowledged: true });
+  requests[1]!.resolve(ack(0));
   await settle();
-  assert.equal(delivery.pendingCount, 0);
-  assert.deepEqual(events.filter((event) => event.startsWith("health")), ["health 1"]);
+  assert.deepEqual(events.filter((event) => event.startsWith("health")), ["health 0"]);
 });

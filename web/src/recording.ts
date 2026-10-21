@@ -1,366 +1,584 @@
-import type { ApiClient, Chunk, Language, RecordingStatus } from "./api.js";
-import type { RecordingCapture, CaptureOptions } from "./capture.js";
+import { ApiError, type ApiClient, type AudioAssetSummary, type CreatedSection,
+  type ProblemDetails, type ProjectSummary } from "./api.ts";
+import type { RecordingCapture, CaptureOptions, TransportFrame } from "./capture.js";
 import type { SeedConfig } from "./config.js";
 import type { Cue } from "./cues.js";
 import { FrameDelivery } from "./delivery.ts";
-import { enabledControls, transition, type RecordingState } from "./state.ts";
 
-export type RecordingBackend = Pick<ApiClient, "createRecording" | "putFrame" | "finish" | "getRecording">;
-type RecordingConfig = Pick<SeedConfig, "frameIntervalMs" | "maxRecordingMs" | "pollIntervalMs"
-  | "retryFirstMs" | "retrySecondMs" | "retryThirdMs" | "requestTimeoutMs">;
+export type RecordingBackend = Pick<ApiClient,
+  "createProject" | "getProject" | "createSection" | "putFrame" | "complete" | "interrupt">;
+type RecordingConfig = Pick<SeedConfig, "frameIntervalMs" | "maxRecordingMs" | "retryFirstMs"
+  | "retrySecondMs" | "retryThirdMs" | "requestTimeoutMs" | "maxFrameBytes">;
+
+export interface ProjectRecordingContext {
+  accountId: string;
+  projectId?: string;
+}
 
 export interface RecordingDependencies {
   backend: RecordingBackend;
   openCapture: (options: CaptureOptions) => Promise<RecordingCapture>;
+  /** Monotonic elapsed-time clock. */
   now: () => number;
+  wallClock?: () => Date;
+  uuid?: () => string;
+  locale?: string;
 }
 
-export interface RecordingSnapshot {
-  readonly state: RecordingState;
+export interface SectionSnapshot {
+  readonly sectionId: string;
+  readonly audioAssetId: string;
+  readonly position: number;
+  readonly capturing: boolean;
+  readonly finalizingCapture: boolean;
   readonly elapsedMs: number;
   readonly securedMs: number;
   readonly pendingMs: number;
   readonly pendingFrames: number;
-  readonly capturing: boolean;
-  readonly canStart: boolean;
-  readonly canRetry: boolean;
   readonly hasUnsecuredAudio: boolean;
-  readonly feedback: string;
+  readonly problem: string;
+  readonly canUploadPending: boolean;
+  readonly closeProblem: string;
+  readonly canRetryClose: boolean;
+}
+
+export interface RecordingSnapshot {
+  readonly project: Readonly<ProjectSummary> | null;
+  readonly starting: boolean;
+  readonly canStart: boolean;
+  readonly capturing: boolean;
+  readonly elapsedMs: number;
+  readonly hasUnsecuredAudio: boolean;
+  readonly hasPendingWork: boolean;
+  readonly startProblem: string;
+  readonly sections: readonly SectionSnapshot[];
 }
 
 export type RecordingEvent =
   | { type: "changed"; snapshot: RecordingSnapshot }
   | { type: "cue"; cue: Cue }
-  | { type: "chunks"; chunks: readonly Chunk[] }
-  | { type: "log"; message: string }
-  | { type: "reset" };
+  | { type: "log"; message: string };
 
-type StopReason = "user" | "duration" | "backlog" | "capture";
-class ActiveRecording {
-  recordingId = "";
-  startedAt: number | null = null;
-  elapsedMs = 0;
-  lastFrameEndMs = 0;
-  securedMs = 0;
+type StopReason = "user" | "duration" | "backlog" | "capture" | "oversize" | "conflict";
+type CaptureLifecycle =
+  | { kind: "preparing" }
+  | { kind: "capturing"; startedAt: number; elapsedMs: number;
+      progressTimer: ReturnType<typeof setInterval>; limitTimer: ReturnType<typeof setTimeout> }
+  | { kind: "finalizing"; reason: StopReason; startedAt: number; elapsedMs: number }
+  | { kind: "ended"; reason: StopReason; elapsedMs: number };
+type RecoveryLifecycle = "automatic" | "waiting" | "requested" | "blocked-oversize" | "blocked-conflict";
+type CloseCommand = { readonly kind: "complete"; readonly frameCount: number }
+  | { readonly kind: "interrupt" };
+type CloseLifecycle =
+  | { kind: "open" }
+  | { kind: "closing"; command: CloseCommand }
+  | { kind: "failed"; command: CloseCommand; problem: string }
+  | { kind: "closed"; command: CloseCommand };
+
+class SectionSession {
   capture: RecordingCapture | null = null;
   delivery!: FrameDelivery;
-  capturing = false;
-  finalized = false;
-  dead = false;
-  stopReason: StopReason | null = null;
+  captureLifecycle: CaptureLifecycle = { kind: "preparing" };
+  recoveryLifecycle: RecoveryLifecycle = "automatic";
+  closeLifecycle: CloseLifecycle = { kind: "open" };
+  lastFrameEndMs = 0;
+  securedMs = 0;
+  assignedFrames = 0;
   problem = "";
-  finishing = false;
-  finishAccepted = false;
-  pollTimer: ReturnType<typeof setTimeout> | null = null;
-  progressTimer: ReturnType<typeof setInterval> | null = null;
-  limitTimer: ReturnType<typeof setTimeout> | null = null;
-  serverStatus: RecordingStatus["status"] | null = null;
-  shownChunks: Chunk[] = [];
   authenticationSuspended = false;
+
+  constructor(readonly created: CreatedSection) {}
 }
 
-/** The complete recording workflow, independent of DOM rendering and sound output. */
-export class RecordingController {
-  private state: RecordingState = "idle";
-  private active: ActiveRecording | null = null;
-  private disposed = false;
-  private readonly listeners = new Set<(event: RecordingEvent) => void>();
+interface CreationAttempt {
+  readonly key: string;
+  readonly title: string;
+}
 
-  constructor(private readonly config: RecordingConfig, private readonly dependencies: RecordingDependencies) {}
+/** Owns one Project and all page-lifetime Section delivery state independently of its view. */
+export class RecordingController {
+  private project: ProjectSummary | null = null;
+  private projectLoad: Promise<ProjectSummary> | null = null;
+  private projectCreation: CreationAttempt | null = null;
+  private sectionCreationKey: string | null = null;
+  private readonly sections: SectionSession[] = [];
+  private active: SectionSession | null = null;
+  private starting = false;
+  private startProblem = "";
+  private disposed = false;
+  private authenticationSuspended = false;
+  private viewAttached = true;
+  private readonly listeners = new Set<(event: RecordingEvent) => void>();
+  private readonly uuid: () => string;
+  private readonly wallClock: () => Date;
+
+  constructor(
+    private readonly config: RecordingConfig,
+    private readonly dependencies: RecordingDependencies,
+    readonly context: Readonly<ProjectRecordingContext>,
+  ) {
+    this.uuid = dependencies.uuid ?? (() => crypto.randomUUID());
+    this.wallClock = dependencies.wallClock ?? (() => new Date());
+    if (context.projectId) {
+      void this.loadExistingProject().catch((error: unknown) => {
+        if (this.disposed) return;
+        this.startProblem = `Could not load Project: ${errorMessage(error)}`;
+        this.changed();
+      });
+    }
+  }
 
   get snapshot(): RecordingSnapshot {
-    const recording = this.active;
-    const pendingFrames = recording?.delivery.pendingCount ?? 0;
-    // Final audio remains inside the recorder until its asynchronous stop finishes.
-    const unfinalizedCapture = !!recording && !recording.dead && (recording.capturing
-      || (recording.stopReason !== null && !recording.finalized));
-    const currentMs = unfinalizedCapture
-      ? Math.max(0, recording.elapsedMs - recording.lastFrameEndMs) : 0;
-    const canRestart = !recording || this.state === "complete"
-      || (!recording.stopReason && !recording.capturing && !pendingFrames);
+    const active = this.active;
     return {
-      state: this.state,
-      elapsedMs: recording?.elapsedMs ?? 0,
-      securedMs: recording?.securedMs ?? 0,
-      pendingMs: (recording?.delivery.pendingMs ?? 0) + currentMs,
-      pendingFrames,
-      capturing: recording?.capturing ?? false,
-      canStart: !this.disposed && enabledControls(this.state).start && canRestart,
-      canRetry: !this.disposed && !!recording && !!(
-        (pendingFrames && (recording.delivery.delayed || recording.stopReason))
-        || (recording.finalized && this.state === "error")
-      ),
-      hasUnsecuredAudio: unfinalizedCapture || pendingFrames > 0,
-      feedback: recording?.problem || (recording?.delivery.delayed
-        ? recording.capturing ? "Audio upload delayed. Recording continues." : "Audio upload delayed. Recording has stopped."
-        : recording?.stopReason === "duration" ? "Recording stopped at the time limit." : ""),
+      project: this.project,
+      starting: this.starting,
+      canStart: !this.disposed && this.viewAttached && !this.authenticationSuspended && !this.starting
+        && (!active || (active.captureLifecycle.kind !== "capturing"
+          && active.captureLifecycle.kind !== "finalizing")),
+      capturing: active?.captureLifecycle.kind === "capturing",
+      elapsedMs: active ? captureElapsedMs(active.captureLifecycle) : 0,
+      hasUnsecuredAudio: this.sections.some((section) => this.hasUnsecuredAudio(section)),
+      hasPendingWork: this.starting || this.sections.some((section) => this.hasUnsecuredAudio(section)
+        || (section.captureLifecycle.kind === "ended" && section.closeLifecycle.kind !== "closed")),
+      startProblem: this.startProblem,
+      sections: this.sections.map((section) => this.sectionSnapshot(section)),
     };
   }
 
-  /** Subscribe to updates and semantic events; receives the current snapshot immediately. */
   subscribe(listener: (event: RecordingEvent) => void): () => void {
     this.listeners.add(listener);
     listener({ type: "changed", snapshot: this.snapshot });
     return () => { this.listeners.delete(listener); };
   }
 
-  async start(language: Language): Promise<void> {
+  /** Reconnect a view to this page-lifetime owner without replacing delivery state. */
+  attachView(): void {
+    if (this.disposed || this.viewAttached) return;
+    this.viewAttached = true;
+    this.changed();
+  }
+
+  /** Release active capture resources while retaining all Project and delivery state. */
+  detachView(): void {
+    if (this.disposed || !this.viewAttached) return;
+    this.viewAttached = false;
+    const active = this.active;
+    if (active?.captureLifecycle.kind === "capturing") void this.stopCapture(active, "capture");
+    this.changed();
+  }
+
+  async start(): Promise<void> {
     if (!this.snapshot.canStart) return;
-    if (this.active) {
-      this.active.dead = true;
-      this.active.delivery.dispose();
-    }
-    const recording = new ActiveRecording();
-    recording.delivery = new FrameDelivery({
-      retryDelaysMs: [this.config.retryFirstMs, this.config.retrySecondMs, this.config.retryThirdMs],
-      requestTimeoutMs: this.config.requestTimeoutMs,
-      send: (frame, signal) => this.dependencies.backend.putFrame(recording.recordingId, frame, signal),
-      log: (message) => this.write(recording, message),
-      changed: () => {
-        if (!this.isCurrent(recording)) return;
-        this.changed();
-        void this.maybeFinish(recording);
-      },
-      acknowledged: (frame) => {
-        if (!this.isCurrent(recording)) return;
-        recording.securedMs = frame.endMs;
-        this.emit({ type: "cue", cue: "health" });
-      },
-      delayed: () => { if (this.isCurrent(recording)) this.emit({ type: "cue", cue: "delayed" }); },
-    });
-    this.active = recording;
-    this.emit({ type: "reset" });
-    this.setState("starting");
-    if (!this.isCurrent(recording)) return;
+    this.starting = true;
+    this.startProblem = "";
+    this.changed();
+    let capture: RecordingCapture | null = null;
+    let createdSession: SectionSession | null = null;
     try {
-      const capture = await this.dependencies.openCapture({
+      capture = await this.dependencies.openCapture({
         intervalMs: this.config.frameIntervalMs,
-        canContinue: () => {
-          if (recording.delivery.pendingCount >= 2) {
-            void this.stopCapture("backlog");
-            return false;
-          }
-          return recording.capturing && this.isCurrent(recording);
-        },
+        canContinue: () => this.canContinueCapture(),
         onError: (error) => {
-          this.write(recording, `ERR ${error.message}`);
-          if (this.isCurrent(recording)) void this.stopCapture("capture");
+          const active = this.active;
+          if (active?.captureLifecycle.kind === "capturing") {
+            this.write(active, `ERR ${error.message}`);
+            void this.stopCapture(active, "capture");
+          }
         },
       });
-      if (!this.isCurrent(recording)) {
+      if (!this.startMayContinue(capture)) return;
+      const projectId = await this.ensureProject();
+      if (!this.startMayContinue(capture)) return;
+      this.sectionCreationKey ??= this.uuid();
+      const created = await this.dependencies.backend.createSection(projectId, this.sectionCreationKey);
+      this.sectionCreationKey = null;
+      if (this.disposed) { capture.dispose(); return; }
+
+      const section = new SectionSession(created);
+      createdSession = section;
+      section.capture = capture;
+      section.delivery = this.createDelivery(section);
+      this.sections.push(section);
+      this.sections.sort((left, right) => left.created.position - right.created.position);
+      this.active = section;
+      this.starting = false;
+      if (this.authenticationSuspended || !this.viewAttached) {
         capture.dispose();
+        section.authenticationSuspended = this.authenticationSuspended;
+        section.captureLifecycle = { kind: "ended", reason: "capture", elapsedMs: 0 };
+        section.recoveryLifecycle = "requested";
+        section.problem = "Capture did not start because its view or Application Session ended.";
+        this.changed();
+        await this.maybeClose(section);
         return;
       }
-      recording.capture = capture;
-      this.write(recording, "mic ok");
-      ({ recordingId: recording.recordingId } = await this.dependencies.backend.createRecording(language));
-      if (!this.isCurrent(recording)) return;
-      this.write(recording, `rec ${recording.recordingId.slice(0, 8)} ${language}`);
-      recording.startedAt = this.dependencies.now();
-      recording.capturing = true;
-      capture.start((frame) => {
-        if (!this.isCurrent(recording)) return;
-        recording.lastFrameEndMs = frame.endMs;
-        recording.delivery.enqueue(frame);
-      });
-      this.setState("recording");
-      if (!this.isCurrent(recording)) return;
-      this.emit({ type: "cue", cue: "start" });
-      if (!this.isCurrent(recording)) return;
-      this.write(recording, "cue start");
-      recording.progressTimer = setInterval(() => {
-        recording.elapsedMs = this.dependencies.now() - recording.startedAt!;
+
+      const startedAt = this.dependencies.now();
+      const progressTimer = setInterval(() => {
+        if (section.captureLifecycle.kind !== "capturing") return;
+        section.captureLifecycle.elapsedMs = this.dependencies.now() - section.captureLifecycle.startedAt;
         this.changed();
       }, 100);
-      recording.limitTimer = setTimeout(() => void this.stopCapture("duration"), this.config.maxRecordingMs);
-      this.schedulePoll(recording);
+      const limitTimer = setTimeout(() => void this.stopCapture(section, "duration"), this.config.maxRecordingMs);
+      section.captureLifecycle = { kind: "capturing", startedAt, elapsedMs: 0, progressTimer, limitTimer };
+      capture.start((frame) => this.acceptFrame(section, frame));
+      this.emit({ type: "cue", cue: "start" });
+      this.write(section, `section ${created.position + 1} ${created.audioAssetId.slice(0, 8)}`);
+      this.changed();
     } catch (error) {
-      if (!this.isCurrent(recording)) return;
-      recording.capturing = false;
-      recording.capture?.dispose();
-      recording.problem = `Could not start recording: ${errorMessage(error)}`;
-      this.write(recording, `ERR ${recording.problem}`);
-      this.setState("error");
+      capture?.dispose();
+      if (this.disposed) return;
+      if (createdSession) {
+        this.clearCaptureTimers(createdSession.captureLifecycle);
+        createdSession.captureLifecycle = { kind: "ended", reason: "capture", elapsedMs: 0 };
+        createdSession.recoveryLifecycle = "requested";
+        createdSession.problem = `Capture could not begin: ${errorMessage(error)}`;
+        void this.maybeClose(createdSession);
+      }
+      this.starting = false;
+      this.startProblem = `Could not start capture: ${errorMessage(error)}`;
+      this.emit({ type: "log", message: `0.0 ERR ${this.startProblem}` });
+      this.changed();
     }
   }
 
   stop(): Promise<void> {
-    return this.stopCapture("user");
+    return this.active ? this.stopCapture(this.active, "user") : Promise.resolve();
   }
 
-  retry(): void {
-    const recording = this.active;
-    if (!recording || !this.snapshot.canRetry) return;
-    if (recording.stopReason && this.state === "error") {
-      recording.problem = "";
-      this.setState("finishing");
-    }
-    recording.delivery.retry();
-    void this.maybeFinish(recording);
+  uploadPendingAudio(sectionId: string): void {
+    const section = this.findSection(sectionId);
+    if (!section || section.captureLifecycle.kind !== "ended" || !section.delivery.pendingCount
+      || section.recoveryLifecycle === "blocked-oversize"
+      || section.recoveryLifecycle === "blocked-conflict") return;
+    if (this.isInterrupted(section)) section.recoveryLifecycle = "requested";
+    section.problem = "";
+    section.delivery.retry();
+    this.changed();
   }
 
-  /** Freeze network work while retaining capture state and exact pending bytes. */
+  retryClose(sectionId: string): void {
+    const section = this.findSection(sectionId);
+    if (!section || section.closeLifecycle.kind !== "failed") return;
+    void this.close(section, section.closeLifecycle.command);
+  }
+
   suspendForAuthentication(): void {
-    const recording = this.active;
-    if (!this.isCurrent(recording) || recording.authenticationSuspended) return;
-    recording.authenticationSuspended = true;
-    recording.delivery.freeze();
-    if (recording.pollTimer !== null) clearTimeout(recording.pollTimer);
-    recording.pollTimer = null;
+    if (this.authenticationSuspended) return;
+    this.authenticationSuspended = true;
+    for (const section of this.sections) {
+      section.authenticationSuspended = true;
+      section.delivery.freeze();
+    }
     this.changed();
   }
 
-  /** Resume only after the application has verified the recording's original Account. */
-  resumeAfterAuthentication(): void {
-    const recording = this.active;
-    if (!this.isCurrent(recording) || !recording.authenticationSuspended) return;
-    recording.authenticationSuspended = false;
-    recording.delivery.retry();
-    if (recording.recordingId && !recording.pollTimer && this.state !== "complete") this.schedulePoll(recording);
-    void this.maybeFinish(recording);
+  resumeAfterAuthentication(accountId: string): void {
+    if (!this.authenticationSuspended || accountId !== this.context.accountId) return;
+    this.authenticationSuspended = false;
+    for (const section of this.sections) {
+      section.authenticationSuspended = false;
+      if (section.delivery.pendingCount
+        && (section.recoveryLifecycle === "automatic" || section.recoveryLifecycle === "requested")) {
+        section.delivery.retry();
+      }
+      void this.maybeClose(section);
+    }
     this.changed();
   }
 
+  /** Permanently finish the page-lifetime module and release every resource. */
   dispose(): void {
     this.disposed = true;
-    if (this.active) {
-      this.active.dead = true;
-      this.active.capturing = false;
-      this.cleanupTimers(this.active);
-      this.active.delivery.dispose();
-      this.active.capture?.dispose();
+    this.starting = false;
+    for (const section of this.sections) {
+      this.clearCaptureTimers(section.captureLifecycle);
+      section.delivery.dispose();
+      section.capture?.dispose();
     }
     this.listeners.clear();
   }
 
-  private async stopCapture(reason: StopReason): Promise<void> {
-    const recording = this.active;
-    if (!this.isCurrent(recording) || !recording.capturing || !recording.capture) return;
-    recording.capturing = false;
-    recording.stopReason = reason;
-    recording.elapsedMs = this.dependencies.now() - recording.startedAt!;
-    if (recording.progressTimer !== null) clearInterval(recording.progressTimer);
-    if (recording.limitTimer !== null) clearTimeout(recording.limitTimer);
-    recording.progressTimer = recording.limitTimer = null;
-    this.write(recording, `capture stop ${reason}`);
-    if (reason === "backlog" || reason === "capture") {
-      recording.problem = reason === "backlog"
-        ? "Recording stopped because audio could not be uploaded."
-        : "Recording stopped because the microphone became unavailable.";
-      recording.delivery.freeze();
-      this.setState("error");
-      this.emit({ type: "cue", cue: "interrupted" });
-    } else {
-      this.setState("finishing");
-      if (reason === "duration") {
-        this.emit({ type: "cue", cue: "stop" });
-        this.write(recording, "cue stop");
-      }
-    }
-    await recording.capture.stop();
-    if (!this.isCurrent(recording)) return;
-    recording.finalized = true;
+  private startMayContinue(capture: RecordingCapture): boolean {
+    if (!this.disposed && !this.authenticationSuspended && this.viewAttached) return true;
+    capture.dispose();
+    this.starting = false;
+    if (!this.disposed) this.changed();
+    return false;
+  }
+
+  private async ensureProject(): Promise<string> {
+    if (this.project) return this.project.id;
+    if (this.context.projectId) return (await this.loadExistingProject()).id;
+    this.projectCreation ??= {
+      key: this.uuid(),
+      title: localizedProjectTitle(this.wallClock(), this.dependencies.locale),
+    };
+    const created = await this.dependencies.backend.createProject(
+      this.projectCreation.key, this.projectCreation.title,
+    );
+    this.project = created;
+    this.projectCreation = null;
     this.changed();
-    await this.maybeFinish(recording);
+    return created.id;
   }
 
-  private async maybeFinish(recording: ActiveRecording): Promise<void> {
-    if (!this.isCurrent(recording) || recording.authenticationSuspended || !recording.finalized || recording.delivery.pendingCount
-      || recording.finishing || recording.finishAccepted) return;
-    recording.finishing = true;
-    if (this.state === "error") {
-      recording.problem = "";
-      this.setState("finishing");
+  private loadExistingProject(): Promise<ProjectSummary> {
+    if (this.project) return Promise.resolve(this.project);
+    const projectId = this.context.projectId;
+    if (!projectId) return Promise.reject(new Error("No existing Project ID was supplied."));
+    if (!this.projectLoad) {
+      const request = this.dependencies.backend.getProject(projectId).then((project) => {
+        if (project.id !== projectId) throw new Error("The loaded Project identity did not match.");
+        this.project = project;
+        this.startProblem = "";
+        this.changed();
+        return project;
+      });
+      const tracked = request.finally(() => {
+        if (this.projectLoad === tracked) this.projectLoad = null;
+      });
+      this.projectLoad = tracked;
     }
-    try {
-      await this.dependencies.backend.finish(recording.recordingId);
-      if (!this.isCurrent(recording)) return;
-      recording.finishAccepted = true;
-      this.write(recording, "fin sent");
-    } catch (error) {
-      if (!this.isCurrent(recording)) return;
-      recording.problem = `Could not finish recording: ${errorMessage(error)}`;
-      this.write(recording, `ERR ${recording.problem}`);
-      this.setState("error");
-    } finally {
-      recording.finishing = false;
-      if (this.isCurrent(recording)) this.changed();
-    }
+    return this.projectLoad;
   }
 
-  private schedulePoll(recording: ActiveRecording): void {
-    if (recording.authenticationSuspended) return;
-    recording.pollTimer = setTimeout(() => void this.poll(recording), this.config.pollIntervalMs);
-  }
-
-  private async poll(recording: ActiveRecording): Promise<void> {
-    try {
-      const status = await this.dependencies.backend.getRecording(recording.recordingId);
-      if (!this.isCurrent(recording)) return;
-      this.showChunks(recording, status.chunks);
-      if (status.status !== recording.serverStatus) {
-        recording.serverStatus = status.status;
-        this.write(recording, `srv ${status.status}`);
-      }
-      if (status.status === "complete" && recording.finishAccepted) {
-        this.cleanupTimers(recording);
-        this.setState("complete");
-        if (recording.stopReason !== "duration") {
-          this.emit({ type: "cue", cue: "stop" });
-          this.write(recording, "cue stop");
+  private createDelivery(section: SectionSession): FrameDelivery {
+    return new FrameDelivery({
+      retryDelaysMs: [this.config.retryFirstMs, this.config.retrySecondMs, this.config.retryThirdMs],
+      requestTimeoutMs: this.config.requestTimeoutMs,
+      send: (frame, signal) => this.dependencies.backend.putFrame(section.created.audioAssetId, frame, signal),
+      log: (message) => this.write(section, message),
+      changed: () => {
+        if (this.disposed) return;
+        this.changed();
+        void this.maybeClose(section);
+      },
+      acknowledged: (frame) => {
+        section.securedMs = Math.max(section.securedMs, frame.endMs);
+        if (section === this.active && section.captureLifecycle.kind === "capturing") {
+          this.emit({ type: "cue", cue: "health" });
         }
-        return;
-      }
-    } catch (error) {
-      if (!this.isCurrent(recording)) return;
-      this.write(recording, `poll ERR ${errorMessage(error)}`);
-    }
-    if (this.isCurrent(recording)) this.schedulePoll(recording);
-  }
-
-  private showChunks(recording: ActiveRecording, chunks: Chunk[]): void {
-    chunks.forEach((chunk, index) => {
-      const shown = recording.shownChunks[index];
-      if (shown && shown.id !== chunk.id) throw new Error(`Chunk order changed at position ${index + 1}.`);
-      if (!shown) this.write(recording, `+c${index + 1}`);
+      },
+      delayed: () => {
+        if (section === this.active && section.captureLifecycle.kind === "capturing") {
+          this.emit({ type: "cue", cue: "delayed" });
+        }
+      },
+      failed: (_frame, error) => this.handleFrameFailure(section, error),
     });
-    if (JSON.stringify(chunks) === JSON.stringify(recording.shownChunks)) return;
-    recording.shownChunks = chunks;
-    this.emit({ type: "chunks", chunks });
   }
 
-  private isCurrent(recording: ActiveRecording | null): recording is ActiveRecording {
-    return !!recording && this.active === recording && !recording.dead && !this.disposed;
+  private handleFrameFailure(section: SectionSession, error: unknown): void {
+    if (!(error instanceof ApiError) || error.status !== 409
+      || section.recoveryLifecycle === "blocked-conflict") return;
+    section.delivery.terminate();
+    section.recoveryLifecycle = "blocked-conflict";
+    section.problem = conflictProblem(error.problem);
+    this.write(section, `frame conflict HTTP 409 code=${error.problem?.code ?? "none"}`
+      + ` referenceId=${error.problem?.referenceId ?? "none"}`);
+    if (section.captureLifecycle.kind === "capturing") {
+      void this.stopCapture(section, "conflict");
+    } else {
+      this.changed();
+    }
   }
 
-  private cleanupTimers(recording: ActiveRecording): void {
-    if (recording.pollTimer !== null) clearTimeout(recording.pollTimer);
-    if (recording.progressTimer !== null) clearInterval(recording.progressTimer);
-    if (recording.limitTimer !== null) clearTimeout(recording.limitTimer);
+  private acceptFrame(section: SectionSession, frame: TransportFrame): void {
+    if (this.disposed || !this.sections.includes(section)) return;
+    section.lastFrameEndMs = frame.endMs;
+    section.assignedFrames++;
+    if (frame.data.size > this.config.maxFrameBytes) {
+      section.delivery.freeze();
+      section.recoveryLifecycle = "blocked-oversize";
+      section.problem = "Capture was interrupted because an audio frame is too large to upload. Audio remains in this page.";
+      section.delivery.enqueue(frame);
+      if (section.captureLifecycle.kind === "capturing") void this.stopCapture(section, "oversize");
+      return;
+    }
+    section.delivery.enqueue(frame);
   }
 
-  private setState(next: RecordingState): void {
-    if (this.state === next) return;
-    this.state = transition(this.state, next);
-    if (this.active) this.write(this.active, next);
+  private canContinueCapture(): boolean {
+    const section = this.active;
+    if (!section || section.captureLifecycle.kind !== "capturing" || this.disposed) return false;
+    if (section.delivery.pendingCount >= 2) {
+      void this.stopCapture(section, "backlog");
+      return false;
+    }
+    return true;
+  }
+
+  private async stopCapture(section: SectionSession, reason: StopReason): Promise<void> {
+    const lifecycle = section.captureLifecycle;
+    if (this.disposed || lifecycle.kind !== "capturing" || !section.capture) return;
+    this.clearCaptureTimers(lifecycle);
+    const elapsedMs = this.dependencies.now() - lifecycle.startedAt;
+    section.captureLifecycle = { kind: "finalizing", reason, startedAt: lifecycle.startedAt, elapsedMs };
+    this.write(section, `capture stop ${reason}`);
+    if (this.isInterruptionReason(reason)) {
+      if (section.recoveryLifecycle !== "blocked-oversize"
+        && section.recoveryLifecycle !== "blocked-conflict") section.recoveryLifecycle = "waiting";
+      section.problem ||= reason === "backlog"
+        ? "Capture was interrupted because audio could not be uploaded."
+        : reason === "oversize"
+          ? "Capture was interrupted because an audio frame is too large to upload. Audio remains in this page."
+          : "Capture was interrupted because the microphone became unavailable.";
+      section.delivery.freeze();
+      if (section === this.active) this.emit({ type: "cue", cue: "interrupted" });
+    } else if (reason === "duration" && section === this.active) {
+      this.emit({ type: "cue", cue: "stop" });
+    }
     this.changed();
+    await section.capture.stop();
+    if (this.disposed) return;
+    section.captureLifecycle = { kind: "ended", reason, elapsedMs };
+    if (this.isInterruptionReason(reason) && section.delivery.pendingCount === 0
+      && section.recoveryLifecycle !== "blocked-oversize"
+      && section.recoveryLifecycle !== "blocked-conflict") {
+      section.recoveryLifecycle = "requested";
+    }
+    if (!this.isInterruptionReason(reason) && reason === "user" && section === this.active) {
+      this.emit({ type: "cue", cue: "stop" });
+    }
+    this.changed();
+    await this.maybeClose(section);
   }
 
-  private changed(): void {
-    this.emit({ type: "changed", snapshot: this.snapshot });
+  private async maybeClose(section: SectionSession): Promise<void> {
+    if (this.disposed || section.authenticationSuspended || section.captureLifecycle.kind !== "ended"
+      || section.delivery.pendingCount || section.closeLifecycle.kind === "closed"
+      || section.closeLifecycle.kind === "closing" || section.recoveryLifecycle === "blocked-oversize"
+      || section.recoveryLifecycle === "blocked-conflict") return;
+    if (this.isInterrupted(section) && section.recoveryLifecycle !== "requested") return;
+    const command = section.closeLifecycle.kind === "failed"
+      ? section.closeLifecycle.command
+      : this.isInterrupted(section)
+        ? { kind: "interrupt" } as const
+        : { kind: "complete", frameCount: section.assignedFrames } as const;
+    await this.close(section, command);
   }
+
+  private async close(section: SectionSession, command: CloseCommand): Promise<void> {
+    if (section.closeLifecycle.kind === "closing" || section.closeLifecycle.kind === "closed"
+      || this.disposed) return;
+    section.closeLifecycle = { kind: "closing", command };
+    this.changed();
+    try {
+      let result: AudioAssetSummary;
+      if (command.kind === "complete") {
+        result = await this.dependencies.backend.complete(section.created.audioAssetId, command.frameCount);
+      } else {
+        result = await this.dependencies.backend.interrupt(section.created.audioAssetId);
+      }
+      if (this.disposed) return;
+      section.closeLifecycle = result.isSealed
+        ? { kind: "closed", command }
+        : { kind: "failed", command, problem: "Could not close recording" };
+      if (result.isSealed) section.problem = "";
+      this.write(section, command.kind === "complete" ? "complete sent" : "interrupt sent");
+    } catch (error) {
+      if (this.disposed) return;
+      section.closeLifecycle = {
+        kind: "failed", command, problem: `Could not close recording: ${errorMessage(error)}`,
+      };
+      this.write(section, `ERR ${section.closeLifecycle.problem}`);
+    } finally {
+      if (!this.disposed) this.changed();
+    }
+  }
+
+  private sectionSnapshot(section: SectionSession): SectionSnapshot {
+    const unfinalizedCapturedMs = section.captureLifecycle.kind === "capturing"
+      || section.captureLifecycle.kind === "finalizing"
+      ? Math.max(0, captureElapsedMs(section.captureLifecycle) - section.lastFrameEndMs) : 0;
+    const pendingFrames = section.delivery.pendingCount;
+    const closeProblem = section.closeLifecycle.kind === "failed" ? section.closeLifecycle.problem : "";
+    return {
+      sectionId: section.created.sectionId,
+      audioAssetId: section.created.audioAssetId,
+      position: section.created.position,
+      capturing: section.captureLifecycle.kind === "capturing",
+      finalizingCapture: section.captureLifecycle.kind === "finalizing",
+      elapsedMs: captureElapsedMs(section.captureLifecycle),
+      securedMs: section.securedMs,
+      pendingMs: section.delivery.pendingMs + unfinalizedCapturedMs,
+      pendingFrames,
+      hasUnsecuredAudio: this.hasUnsecuredAudio(section),
+      problem: section.problem || (section.delivery.delayed
+        ? section.captureLifecycle.kind === "capturing" ? "Audio delivery is delayed. Capture continues."
+          : "Audio delivery is delayed. Capture has stopped."
+        : ""),
+      canUploadPending: section.captureLifecycle.kind === "ended" && pendingFrames > 0
+        && section.recoveryLifecycle !== "blocked-oversize"
+        && section.recoveryLifecycle !== "blocked-conflict",
+      closeProblem,
+      canRetryClose: section.closeLifecycle.kind === "failed",
+    };
+  }
+
+  private hasUnsecuredAudio(section: SectionSession): boolean {
+    return section.captureLifecycle.kind === "capturing" || section.captureLifecycle.kind === "finalizing"
+      || section.delivery.pendingCount > 0;
+  }
+
+  private isInterrupted(section: SectionSession): boolean {
+    return section.captureLifecycle.kind === "ended"
+      && this.isInterruptionReason(section.captureLifecycle.reason);
+  }
+
+  private isInterruptionReason(reason: StopReason): boolean {
+    return reason === "backlog" || reason === "capture" || reason === "oversize" || reason === "conflict";
+  }
+
+  private findSection(sectionId: string): SectionSession | undefined {
+    return this.sections.find((section) => section.created.sectionId === sectionId);
+  }
+
+  private clearCaptureTimers(lifecycle: CaptureLifecycle): void {
+    if (lifecycle.kind !== "capturing") return;
+    clearInterval(lifecycle.progressTimer);
+    clearTimeout(lifecycle.limitTimer);
+  }
+
+  private changed(): void { this.emit({ type: "changed", snapshot: this.snapshot }); }
 
   private emit(event: RecordingEvent): void {
     for (const listener of this.listeners) listener(event);
   }
 
-  private write(recording: ActiveRecording, entry: string): void {
-    if (!this.isCurrent(recording)) return;
-    const seconds = recording.startedAt === null ? "0.0" : ((this.dependencies.now() - recording.startedAt) / 1000).toFixed(1);
-    this.emit({ type: "log", message: `${seconds} ${entry}` });
+  private write(section: SectionSession, entry: string): void {
+    if (this.disposed) return;
+    const lifecycle = section.captureLifecycle;
+    const startedAt = lifecycle.kind === "capturing" || lifecycle.kind === "finalizing"
+      ? lifecycle.startedAt : this.dependencies.now();
+    const seconds = ((this.dependencies.now() - startedAt) / 1000).toFixed(1);
+    this.emit({ type: "log", message: `${seconds} s${section.created.position + 1} ${entry}` });
   }
+}
+
+function captureElapsedMs(lifecycle: CaptureLifecycle): number {
+  return lifecycle.kind === "preparing" ? 0 : lifecycle.elapsedMs;
+}
+
+export function localizedProjectTitle(date: Date, locale?: string): string {
+  return `Draft — ${new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium", timeStyle: "short",
+  }).format(date)}`;
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function conflictProblem(problem: Readonly<ProblemDetails> | null): string {
+  const details = [
+    problem?.title ? `Title: ${problem.title}` : "",
+    problem?.detail ? `Detail: ${problem.detail}` : "",
+    problem?.code ? `Code: ${problem.code}` : "",
+    problem?.referenceId ? `Reference ID: ${problem.referenceId}` : "",
+  ].filter(Boolean);
+  return ["Capture stopped because audio delivery conflicted with stored data. Audio remains in this page.",
+    ...details].join(" ");
 }
