@@ -15,6 +15,8 @@ export interface ProjectRecordingContext {
   projectId?: string;
 }
 
+export type CompletionStatus = "pending" | "failed" | "succeeded";
+
 export interface RecordingDependencies {
   backend: RecordingBackend;
   openCapture: (options: CaptureOptions) => Promise<RecordingCapture>;
@@ -36,6 +38,9 @@ export interface SectionSnapshot {
   readonly pendingMs: number;
   readonly pendingFrames: number;
   readonly hasUnsecuredAudio: boolean;
+  readonly completion: CompletionStatus | null;
+  readonly completionProblem: string;
+  readonly canRetryCompletion: boolean;
   readonly problem: string;
   readonly canUploadPending: boolean;
   readonly closeProblem: string;
@@ -73,7 +78,7 @@ type CloseLifecycle =
   | { kind: "open" }
   | { kind: "closing"; command: CloseCommand }
   | { kind: "failed"; command: CloseCommand; problem: string }
-  | { kind: "closed"; command: CloseCommand };
+  | { kind: "closed"; command: CloseCommand; result: AudioAssetSummary };
 
 class SectionSession {
   capture: RecordingCapture | null = null;
@@ -474,14 +479,17 @@ export class RecordingController {
       }
       if (this.disposed) return;
       section.closeLifecycle = result.isSealed
-        ? { kind: "closed", command }
-        : { kind: "failed", command, problem: "Could not close recording" };
+        ? { kind: "closed", command, result }
+        : { kind: "failed", command, problem: command.kind === "complete"
+          ? "Could not complete recording" : "Could not close recording" };
       if (result.isSealed) section.problem = "";
       this.write(section, command.kind === "complete" ? "complete sent" : "interrupt sent");
     } catch (error) {
       if (this.disposed) return;
       section.closeLifecycle = {
-        kind: "failed", command, problem: `Could not close recording: ${errorMessage(error)}`,
+        kind: "failed", command, problem: command.kind === "complete"
+          ? `Could not complete recording: ${errorMessage(error)}`
+          : `Could not close recording: ${errorMessage(error)}`,
       };
       this.write(section, `ERR ${section.closeLifecycle.problem}`);
     } finally {
@@ -494,7 +502,12 @@ export class RecordingController {
       || section.captureLifecycle.kind === "finalizing"
       ? Math.max(0, captureElapsedMs(section.captureLifecycle) - section.lastFrameEndMs) : 0;
     const pendingFrames = section.delivery.pendingCount;
-    const closeProblem = section.closeLifecycle.kind === "failed" ? section.closeLifecycle.problem : "";
+    const completion = this.completionStatus(section);
+    const completionProblem = completion === "failed" ? this.completionProblem(section) : "";
+    const completionFailure = section.closeLifecycle.kind === "failed"
+      && section.closeLifecycle.command.kind === "complete";
+    const closeProblem = section.closeLifecycle.kind === "failed"
+      && section.closeLifecycle.command.kind === "interrupt" ? section.closeLifecycle.problem : "";
     return {
       sectionId: section.created.sectionId,
       audioAssetId: section.created.audioAssetId,
@@ -506,6 +519,9 @@ export class RecordingController {
       pendingMs: section.delivery.pendingMs + unfinalizedCapturedMs,
       pendingFrames,
       hasUnsecuredAudio: this.hasUnsecuredAudio(section),
+      completion,
+      completionProblem,
+      canRetryCompletion: completionFailure,
       problem: section.problem || (section.delivery.delayed
         ? section.captureLifecycle.kind === "capturing" ? "Audio delivery is delayed. Capture continues."
           : "Audio delivery is delayed. Capture has stopped."
@@ -514,8 +530,32 @@ export class RecordingController {
         && section.recoveryLifecycle !== "blocked-oversize"
         && section.recoveryLifecycle !== "blocked-conflict",
       closeProblem,
-      canRetryClose: section.closeLifecycle.kind === "failed",
+      canRetryClose: !!closeProblem,
     };
+  }
+
+  private completionStatus(section: SectionSession): CompletionStatus | null {
+    const capture = section.captureLifecycle;
+    if (capture.kind === "preparing" || capture.kind === "capturing"
+      || this.isInterruptionReason(capture.reason)) return null;
+    const close = section.closeLifecycle;
+    if (close.kind === "open" || close.kind === "closing") return "pending";
+    if (close.command.kind !== "complete") return null;
+    if (close.kind === "failed") return "failed";
+    return close.result.isSealed && close.result.sealReason === "completed" ? "succeeded" : "failed";
+  }
+
+  private completionProblem(section: SectionSession): string {
+    const close = section.closeLifecycle;
+    if (close.kind === "failed" && close.command.kind === "complete") {
+      return "Could not complete recording.";
+    }
+    if (close.kind === "closed" && close.command.kind === "complete") {
+      return close.result.sealReason === "interrupted"
+        ? "Recording was sealed as interrupted and cannot be completed."
+        : "Recording was sealed without normal completion and cannot be completed.";
+    }
+    return "";
   }
 
   private hasUnsecuredAudio(section: SectionSession): boolean {

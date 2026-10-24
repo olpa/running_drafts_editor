@@ -4,8 +4,9 @@ import { openRecordingCapture } from "../capture.ts";
 import { loadConfig } from "../config.ts";
 import { CuePlayer } from "../cues.ts";
 import { RecordingController, type RecordingDependencies, type RecordingEvent,
-  type RecordingSnapshot, type SectionSnapshot } from "../recording.ts";
+  type RecordingSnapshot } from "../recording.ts";
 import type { AccountId } from "../session.js";
+import { SectionComponent } from "./section-component.ts";
 
 /** One-Project recording module. It retains every Section until this page is left. */
 export class RecordingPanel extends HTMLElement {
@@ -30,7 +31,8 @@ export class RecordingPanel extends HTMLElement {
   private captureDuration!: HTMLProgressElement;
   private startProblem!: HTMLElement;
   private ownershipWarning!: HTMLElement;
-  private sectionList!: HTMLOListElement;
+  private sectionList!: HTMLElement;
+  private readonly sectionComponents = new Map<string, SectionComponent>();
   private latestSnapshot: RecordingSnapshot | null = null;
   private readonly beforeLeave = (event: BeforeUnloadEvent): void => {
     if (this.controller?.snapshot.hasUnsecuredAudio) {
@@ -78,6 +80,7 @@ export class RecordingPanel extends HTMLElement {
     this.unsubscribe = null;
     this.moduleAccountId = null;
     this.latestSnapshot = null;
+    if (this.sectionList) this.clearSections();
   }
 
   setSessionAccount(accountId: AccountId | null): void {
@@ -175,13 +178,6 @@ export class RecordingPanel extends HTMLElement {
       this.cues.prepare();
       void this.controller?.start();
     });
-    this.sectionList.addEventListener("click", (event) => {
-      const button = (event.target as Element).closest<HTMLButtonElement>("button[data-section-id]");
-      if (!button || !this.ownsCurrentSession) return;
-      const sectionId = button.dataset.sectionId!;
-      if (button.dataset.action === "upload") this.controller?.uploadPendingAudio(sectionId);
-      if (button.dataset.action === "close") this.controller?.retryClose(sectionId);
-    });
   }
 
   private render(snapshot: RecordingSnapshot): void {
@@ -216,26 +212,23 @@ export class RecordingPanel extends HTMLElement {
       this.captureMessage.textContent = snapshot.sections.length
         ? "Ready to capture another recording." : "Press Start when you are ready to capture audio.";
     }
-    this.sectionList.replaceChildren(...snapshot.sections.map((section) => this.sectionRow(section)));
-  }
-
-  private sectionRow(section: SectionSnapshot): HTMLLIElement {
-    const row = document.createElement("li");
-    row.dataset.sectionId = section.sectionId;
-    const heading = document.createElement("strong");
-    heading.textContent = `Section ${section.position + 1}`;
-    row.append(heading);
-    if (section.pendingMs > 0) row.append(status(`${formatSeconds(section.pendingMs)} of audio pending`));
-    if (section.problem) row.append(status(section.problem, "error"));
-    if (section.canUploadPending) row.append(action("Upload pending audio", "upload", section.sectionId));
-    if (section.closeProblem) {
-      if (section.canRetryClose) {
-        row.append(action("Could not close recording — Try again", "close", section.sectionId));
+    for (const section of snapshot.sections) {
+      let component = this.sectionComponents.get(section.sectionId);
+      if (!component) {
+        component = new SectionComponent(section, {
+          uploadPendingAudio: (sectionId) => {
+            if (this.ownsCurrentSession) this.controller?.uploadPendingAudio(sectionId);
+          },
+          retryClose: (sectionId) => {
+            if (this.ownsCurrentSession) this.controller?.retryClose(sectionId);
+          },
+        });
+        this.sectionComponents.set(section.sectionId, component);
+        this.sectionList.append(component.element);
       } else {
-        row.append(status("Could not close recording", "error"));
+        component.update(section);
       }
     }
-    return row;
   }
 
   private renderEmpty(): void {
@@ -249,7 +242,7 @@ export class RecordingPanel extends HTMLElement {
     this.captureMessage.textContent = "Sign in to start capture.";
     this.captureProgress.hidden = true;
     this.startProblem.textContent = "";
-    this.sectionList.replaceChildren();
+    this.clearSections();
   }
 
   private element<T extends HTMLElement>(testId: string): T {
@@ -257,27 +250,12 @@ export class RecordingPanel extends HTMLElement {
     if (!element) throw new Error(`Missing recording-panel element: ${testId}`);
     return element;
   }
-}
 
-function status(text: string, kind = "warning"): HTMLSpanElement {
-  const element = document.createElement("span");
-  element.className = `section-status ${kind}`;
-  element.textContent = text;
-  return element;
-}
-
-function action(label: string, kind: "upload" | "close", sectionId: string): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = label;
-  button.dataset.action = kind;
-  button.dataset.sectionId = sectionId;
-  return button;
-}
-
-function formatSeconds(ms: number): string {
-  const seconds = Math.ceil(ms / 1000);
-  return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+  private clearSections(): void {
+    for (const component of this.sectionComponents.values()) component.dispose();
+    this.sectionComponents.clear();
+    this.sectionList.replaceChildren();
+  }
 }
 
 function formatTime(ms: number): string {
