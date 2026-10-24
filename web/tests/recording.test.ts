@@ -42,6 +42,7 @@ class FakeCapture implements RecordingCapture {
     this.emit(durationMs, bytes);
     this.stopped.resolve();
   }
+  finalizeWithoutFrame(): void { this.stopped.resolve(); }
   fail(): void { this.options.onError(new Error("Microphone ended.")); }
   private emit(durationMs: number, bytes: number): void {
     const startMs = this.endMs;
@@ -62,6 +63,7 @@ class Backend implements RecordingBackend {
   projectFailures = 0;
   sectionFailures = 0;
   completeFailures = 0;
+  completeResult: AudioAssetSummary | null = null;
   interruptFailures = 0;
   createdSections = 0;
 
@@ -88,7 +90,7 @@ class Backend implements RecordingBackend {
   async complete(assetId: string, frameCount: number): Promise<AudioAssetSummary> {
     this.completes.push({ assetId, frameCount });
     if (this.completeFailures-- > 0) throw new Error("complete unavailable");
-    return sealed(assetId, "completed");
+    return this.completeResult ?? sealed(assetId, "completed");
   }
   async interrupt(assetId: string): Promise<AudioAssetSummary> {
     this.interrupts.push(assetId);
@@ -164,8 +166,10 @@ test("normal stop delivers the final partial frame before completing with assign
   await controller.start();
   captures[0]!.boundary(10_000);
   const stopping = controller.stop();
+  assert.equal(controller.snapshot.sections[0]!.completion, "pending");
   captures[0]!.finalize(2_500);
   await stopping;
+  assert.equal(controller.snapshot.sections[0]!.completion, "pending");
   assert.equal(controller.snapshot.canStart, true, "a new recorder need not wait for delivery or sealing");
   assert.deepEqual(backend.requests.map((request) => request.frame.seq), [0]);
   backend.resolveRequest(0);
@@ -176,6 +180,7 @@ test("normal stop delivers the final partial frame before completing with assign
   await settle();
   assert.deepEqual(backend.completes, [{ assetId: "asset-1", frameCount: 2 }]);
   assert.equal(controller.snapshot.sections[0]!.hasUnsecuredAudio, false);
+  assert.equal(controller.snapshot.sections[0]!.completion, "succeeded");
 });
 
 test("duration stop finalizes capture and emits its stop cue only once", async (t) => {
@@ -192,6 +197,18 @@ test("duration stop finalizes capture and emits its stop cue only once", async (
   assert.equal(controller.snapshot.sections[0]!.problem, "");
 });
 
+test("a normally completed zero-frame Section succeeds from the backend result", async (t) => {
+  const { controller, backend, captures } = harness(t);
+  await controller.start();
+  const stopping = controller.stop();
+  assert.equal(controller.snapshot.sections[0]!.completion, "pending");
+  captures[0]!.finalizeWithoutFrame();
+  await stopping;
+
+  assert.deepEqual(backend.completes, [{ assetId: "asset-1", frameCount: 0 }]);
+  assert.equal(controller.snapshot.sections[0]!.completion, "succeeded");
+});
+
 test("completion failure keeps its original command retryable without blocking another Section", async (t) => {
   const { controller, backend, captures } = harness(t);
   backend.completeFailures = 1;
@@ -202,15 +219,69 @@ test("completion failure keeps its original command retryable without blocking a
   backend.resolveRequest(0);
   await settle();
   const first = controller.snapshot.sections[0]!;
-  assert.equal(first.canRetryClose, true);
+  assert.equal(first.completion, "failed");
+  assert.equal(first.completionProblem, "Could not complete recording.");
+  assert.equal(first.canRetryCompletion, true);
   await controller.start();
   assert.equal(captures[1]!.starts, 1);
   controller.retryClose(first.sectionId);
+  assert.equal(controller.snapshot.sections[0]!.completion, "pending");
   await settle();
   assert.deepEqual(backend.completes, [
     { assetId: "asset-1", frameCount: 1 },
     { assetId: "asset-1", frameCount: 1 },
   ]);
+  assert.equal(controller.snapshot.sections[0]!.completion, "succeeded");
+});
+
+test("a sealed non-completed response is a terminal completion failure", async (t) => {
+  const { controller, backend, captures } = harness(t);
+  backend.completeResult = sealed("asset-1", "interrupted");
+  await controller.start();
+  const stopping = controller.stop();
+  captures[0]!.finalize(0, 0);
+  await stopping;
+  backend.resolveRequest(0);
+  await settle();
+
+  const section = controller.snapshot.sections[0]!;
+  assert.equal(section.completion, "failed");
+  assert.equal(section.completionProblem,
+    "Recording was sealed as interrupted and cannot be completed.");
+  assert.equal(section.canRetryCompletion, false);
+  assert.equal(controller.snapshot.hasPendingWork, false);
+});
+
+test("an unsealed completion response remains retryable", async (t) => {
+  const { controller, backend, captures } = harness(t);
+  backend.completeResult = { ...sealed("asset-1", "completed"), isSealed: false,
+    sealReason: null, sealedAt: null };
+  await controller.start();
+  const stopping = controller.stop();
+  captures[0]!.finalizeWithoutFrame();
+  await stopping;
+
+  const section = controller.snapshot.sections[0]!;
+  assert.equal(section.completion, "failed");
+  assert.equal(section.completionProblem, "Could not complete recording.");
+  assert.equal(section.canRetryCompletion, true);
+  assert.equal(controller.snapshot.hasPendingWork, true);
+});
+
+test("a sealed completion without a reason is a specific terminal failure", async (t) => {
+  const { controller, backend, captures } = harness(t);
+  backend.completeResult = { ...sealed("asset-1", "completed"), sealReason: null };
+  await controller.start();
+  const stopping = controller.stop();
+  captures[0]!.finalizeWithoutFrame();
+  await stopping;
+
+  const section = controller.snapshot.sections[0]!;
+  assert.equal(section.completion, "failed");
+  assert.equal(section.completionProblem,
+    "Recording was sealed without normal completion and cannot be completed.");
+  assert.equal(section.canRetryCompletion, false);
+  assert.equal(controller.snapshot.hasPendingWork, false);
 });
 
 test("backlog retains three frames while a new Section uploads concurrently and old cues stay silent", async (t) => {
@@ -247,6 +318,7 @@ test("backlog retains three frames while a new Section uploads concurrently and 
   backend.resolveRequest(backend.requests.length - 1);
   await settle();
   assert.deepEqual(backend.interrupts, ["asset-1"]);
+  assert.equal(controller.snapshot.sections[0]!.completion, null);
   assert.equal(cues().filter((cue) => cue === "health").length, 1);
 });
 

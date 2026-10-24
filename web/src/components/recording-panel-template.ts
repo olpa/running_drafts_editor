@@ -14,7 +14,7 @@ const template = `<section aria-labelledby="project-recording-title">
   </div>
   <p data-testid="start-problem" role="status" aria-live="polite"></p>
   <p class="ownership-warning" data-testid="ownership-warning" role="status" aria-live="polite"></p>
-  <ol class="section-deliveries" data-testid="sections" aria-label="Recording sections"></ol>
+  <div class="section-deliveries" data-testid="sections" role="group" aria-label="Recording sections"></div>
 </section>`;
 
 export default template;

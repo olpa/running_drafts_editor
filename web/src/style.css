@@ -207,9 +207,11 @@ recording-panel { display: block; }
 .ownership-warning:empty { display: none; }
 .ownership-warning { padding: 0.75rem; border-left: 4px solid var(--danger); background: #fff7f7; color: #9f2222; }
 .section-deliveries { display: grid; gap: 0.5rem; margin: 1rem 0 0; padding: 0; list-style: none; }
-.section-deliveries li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; padding: 0.7rem; border: 1px solid var(--line); border-radius: 6px; }
+.section-deliveries > section { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; padding: 0.7rem; border: 1px solid var(--line); border-radius: 6px; }
+.section-deliveries h3 { margin: 0; font-size: 1rem; }
 .section-deliveries button { min-height: 2rem; padding: 0.3rem 0.6rem; }
 .section-status { color: var(--warning); font-size: 0.9rem; }
+.section-status.success { color: var(--success); }
 .section-status.error { color: var(--danger); }
 
 @media (max-width: 900px) {

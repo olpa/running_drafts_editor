@@ -45,6 +45,7 @@ class FakeBackend implements RecordingBackend {
   readonly sectionProjects: string[] = [];
   interrupts = 0;
   completes = 0;
+  completion: ReturnType<typeof deferred<AudioAssetSummary>> | null = null;
   private createdSections = 0;
 
   async createProject(): Promise<ProjectSummary> {
@@ -70,7 +71,10 @@ class FakeBackend implements RecordingBackend {
     return result.promise;
   }
 
-  async complete(): Promise<AudioAssetSummary> { this.completes++; return asset("completed"); }
+  async complete(): Promise<AudioAssetSummary> {
+    this.completes++;
+    return this.completion ? this.completion.promise : asset("completed");
+  }
   async interrupt(): Promise<AudioAssetSummary> { this.interrupts++; return asset("interrupted"); }
 }
 
@@ -92,7 +96,7 @@ async function settle(): Promise<void> {
 
 function button(root: HappyHTMLElement, label: string): HappyButtonElement | null {
   return [...root.querySelectorAll<HappyButtonElement>("button")]
-    .find((candidate) => candidate.textContent === label) ?? null;
+    .find((candidate) => candidate.textContent === label && !candidate.hidden) ?? null;
 }
 
 test("view remount preserves its canonical Project and exact pending frame for recovery", async (t) => {
@@ -159,6 +163,49 @@ test("primary control defines animated and reduced-motion versions of the same s
   assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\.primary-control\s*\{\s*transition:\s*none;/u);
 });
 
+test("Section components expose completion and retain their DOM identity", async (t) => {
+  browser.document.body.replaceChildren();
+  const backend = new FakeBackend();
+  backend.completion = deferred<AudioAssetSummary>();
+  const captures: FakeCapture[] = [];
+  const panel = browser.document.createElement("recording-panel") as ConfigurablePanel;
+  panel.setProjectId("existing-project");
+  panel.setDependencies({ backend, now: () => performance.now(), openCapture: async (options) => {
+    const capture = new FakeCapture(options);
+    captures.push(capture);
+    return capture;
+  }});
+  browser.document.body.append(panel);
+  panel.setSessionAccount(ACCOUNT_ID);
+  t.after(() => { panel.finishModule(); panel.remove(); });
+  await settle();
+
+  button(panel, "Start")!.click();
+  await settle();
+  button(panel, "Stop current recording to start new")!.click();
+  await settle();
+
+  const section = panel.querySelector<HappyHTMLElement>('[data-testid="section"]')!;
+  const completionStatus = section.querySelector('[role="status"]');
+  assert.equal(section.localName, "section");
+  assert.equal(section.querySelector("h3")?.textContent, "Section 1");
+  assert.equal(section.dataset.completion, "pending");
+  assert.match(section.textContent!, /Completing recording…/u);
+  assert.equal(section.hasAttribute("data-section-id"), false);
+
+  button(panel, "Start new recording")!.click();
+  await settle();
+  assert.equal(panel.querySelector('[data-testid="section"]'), section,
+    "another Section does not replace an existing component");
+
+  backend.completion.resolve(asset("completed"));
+  await settle();
+  assert.equal(panel.querySelector('[data-testid="section"]'), section);
+  assert.equal(section.querySelector('[role="status"]'), completionStatus);
+  assert.equal(section.dataset.completion, "succeeded");
+  assert.match(section.textContent!, /Recording complete/u);
+});
+
 test("frame conflict shows details without recovery and leaves a new recording startable", async (t) => {
   browser.document.body.replaceChildren();
   const backend = new FakeBackend();
@@ -194,7 +241,7 @@ test("frame conflict shows details without recovery and leaves a new recording s
   assert.equal(button(panel, "Upload pending audio"), null);
   assert.equal(backend.completes, 0);
   assert.equal(backend.interrupts, 0);
-  assert.match(panel.querySelector('[data-section-id="section-one"]')!.textContent!,
+  assert.match(panel.querySelector('[data-testid="section"]')!.textContent!,
     /Capture stopped because audio delivery conflicted with stored data/u);
   assert.match(panel.textContent!, /Title: Stored frame conflict/u);
   assert.match(panel.textContent!, /Detail: The stored bytes differ\./u);
