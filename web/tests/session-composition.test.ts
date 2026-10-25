@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Window, type HTMLButtonElement as HappyButtonElement,
   type HTMLElement as HappyHTMLElement } from "happy-dom";
-import type { CaptureOptions, RecordingCapture, TransportFrame } from "../src/capture.ts";
+import type { CaptureOptions, MicrophoneCapture, TransportFrame } from "../src/capture.ts";
 import type { AudioAssetSummary, FrameAck, ProjectSummary } from "../src/api.ts";
 import type { RecordingBackend, RecordingDependencies } from "../src/recording.ts";
 import type { AccountId, CurrentSession } from "../src/session.ts";
@@ -24,11 +24,11 @@ interface ConfiguredSeedApp extends HappyHTMLElement {
   refreshSession(): Promise<void>;
 }
 
-class FakeCapture implements RecordingCapture {
+class FakeCapture implements MicrophoneCapture {
   private onFrame: ((frame: TransportFrame) => void) | null = null;
   disposed = false;
   constructor(readonly options: CaptureOptions) {}
-  start(onFrame: (frame: TransportFrame) => void): void { this.onFrame = onFrame; }
+  async start(onFrame: (frame: TransportFrame) => void): Promise<void> { this.onFrame = onFrame; }
   async stop(): Promise<void> {}
   dispose(): void { this.disposed = true; }
   emit(frame: TransportFrame): void { this.onFrame?.(frame); }

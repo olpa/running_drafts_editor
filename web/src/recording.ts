@@ -1,6 +1,6 @@
 import { ApiError, type ApiClient, type AudioAssetSummary, type CreatedSection,
   type ProblemDetails, type ProjectSummary } from "./api.ts";
-import type { RecordingCapture, CaptureOptions, TransportFrame } from "./capture.js";
+import type { MicrophoneCapture, CaptureOptions, TransportFrame } from "./capture.js";
 import type { SeedConfig } from "./config.js";
 import type { Cue } from "./cues.js";
 import { FrameDelivery } from "./delivery.ts";
@@ -19,7 +19,7 @@ export type CompletionStatus = "pending" | "failed" | "succeeded";
 
 export interface RecordingDependencies {
   backend: RecordingBackend;
-  openCapture: (options: CaptureOptions) => Promise<RecordingCapture>;
+  openCapture: (options: CaptureOptions) => Promise<MicrophoneCapture>;
   /** Monotonic elapsed-time clock. */
   now: () => number;
   wallClock?: () => Date;
@@ -81,7 +81,7 @@ type CloseLifecycle =
   | { kind: "closed"; command: CloseCommand; result: AudioAssetSummary };
 
 class SectionSession {
-  capture: RecordingCapture | null = null;
+  capture: MicrophoneCapture | null = null;
   delivery!: FrameDelivery;
   captureLifecycle: CaptureLifecycle = { kind: "preparing" };
   recoveryLifecycle: RecoveryLifecycle = "automatic";
@@ -178,7 +178,7 @@ export class RecordingController {
     this.starting = true;
     this.startProblem = "";
     this.changed();
-    let capture: RecordingCapture | null = null;
+    let capture: MicrophoneCapture | null = null;
     let createdSession: SectionSession | null = null;
     try {
       capture = await this.dependencies.openCapture({
@@ -227,7 +227,8 @@ export class RecordingController {
       }, 100);
       const limitTimer = setTimeout(() => void this.stopCapture(section, "duration"), this.config.maxRecordingMs);
       section.captureLifecycle = { kind: "capturing", startedAt, elapsedMs: 0, progressTimer, limitTimer };
-      capture.start((frame) => this.acceptFrame(section, frame));
+      await capture.start((frame) => this.acceptFrame(section, frame));
+      if (this.disposed || section.captureLifecycle.kind !== "capturing") return;
       this.emit({ type: "cue", cue: "start" });
       this.write(section, `section ${created.position + 1} ${created.audioAssetId.slice(0, 8)}`);
       this.changed();
@@ -305,7 +306,7 @@ export class RecordingController {
     this.listeners.clear();
   }
 
-  private startMayContinue(capture: RecordingCapture): boolean {
+  private startMayContinue(capture: MicrophoneCapture): boolean {
     if (!this.disposed && !this.authenticationSuspended && this.viewAttached) return true;
     capture.dispose();
     this.starting = false;
@@ -436,7 +437,20 @@ export class RecordingController {
       this.emit({ type: "cue", cue: "stop" });
     }
     this.changed();
-    await section.capture.stop();
+    try {
+      await section.capture.stop();
+    } catch (error) {
+      if (this.disposed) return;
+      section.captureLifecycle = { kind: "ended", reason: "capture", elapsedMs };
+      section.recoveryLifecycle = section.delivery.pendingCount ? "waiting" : "requested";
+      section.problem = `Capture was interrupted while finalizing: ${errorMessage(error)}`;
+      section.delivery.freeze();
+      if (section === this.active) this.emit({ type: "cue", cue: "interrupted" });
+      this.write(section, `ERR ${section.problem}`);
+      this.changed();
+      await this.maybeClose(section);
+      return;
+    }
     if (this.disposed) return;
     section.captureLifecycle = { kind: "ended", reason, elapsedMs };
     if (this.isInterruptionReason(reason) && section.delivery.pendingCount === 0

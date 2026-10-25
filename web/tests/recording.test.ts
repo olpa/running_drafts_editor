@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { RecordingController, type RecordingBackend, type RecordingEvent } from "../src/recording.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import type { CaptureOptions, RecordingCapture, TransportFrame } from "../src/capture.ts";
+import type { CaptureOptions, MicrophoneCapture, TransportFrame } from "../src/capture.ts";
 import { ApiError, type AudioAssetSummary, type FrameAck, type ProjectSummary } from "../src/api.ts";
 
 function deferred<T>() {
@@ -22,7 +22,7 @@ function sealed(id: string, reason: "completed" | "interrupted"): AudioAssetSumm
     sealedAt: "2026-10-21T14:32:00Z", frameCount: 0, observedDurationMs: 0, storedBytes: 0 };
 }
 
-class FakeCapture implements RecordingCapture {
+class FakeCapture implements MicrophoneCapture {
   private onFrame: ((frame: TransportFrame) => void) | null = null;
   private readonly stopped = deferred<void>();
   private seq = -1;
@@ -31,7 +31,9 @@ class FakeCapture implements RecordingCapture {
   stops = 0;
   disposed = false;
   constructor(readonly options: CaptureOptions) {}
-  start(onFrame: (frame: TransportFrame) => void): void { this.starts++; this.onFrame = onFrame; }
+  async start(onFrame: (frame: TransportFrame) => void): Promise<void> {
+    this.starts++; this.onFrame = onFrame;
+  }
   stop(): Promise<void> { this.stops++; return this.stopped.promise; }
   dispose(): void { this.disposed = true; }
   boundary(durationMs = 10_000, bytes = 10): boolean {
@@ -43,6 +45,7 @@ class FakeCapture implements RecordingCapture {
     this.stopped.resolve();
   }
   finalizeWithoutFrame(): void { this.stopped.resolve(); }
+  failFinalization(error = new Error("finalization deadline")): void { this.stopped.reject(error); }
   fail(): void { this.options.onError(new Error("Microphone ended.")); }
   private emit(durationMs: number, bytes: number): void {
     const startMs = this.endMs;
@@ -104,7 +107,7 @@ class Backend implements RecordingBackend {
 }
 
 function harness(t: TestContext, options: { projectId?: string; maxFrameBytes?: number; maxRecordingMs?: number;
-  open?: (capture: FakeCapture) => Promise<RecordingCapture> } = {}) {
+  open?: (capture: FakeCapture) => Promise<MicrophoneCapture> } = {}) {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 0 });
   const backend = new Backend();
   const captures: FakeCapture[] = [];
@@ -181,6 +184,22 @@ test("normal stop delivers the final partial frame before completing with assign
   assert.deepEqual(backend.completes, [{ assetId: "asset-1", frameCount: 2 }]);
   assert.equal(controller.snapshot.sections[0]!.hasUnsecuredAudio, false);
   assert.equal(controller.snapshot.sections[0]!.completion, "succeeded");
+});
+
+test("failed graceful finalization interrupts the Section instead of completing it", async (t) => {
+  const { controller, backend, captures, cues, events } = harness(t);
+  await controller.start();
+  const stopping = controller.stop();
+  captures[0]!.failFinalization();
+  await stopping;
+  await settle();
+
+  assert.deepEqual(backend.completes, []);
+  assert.deepEqual(backend.interrupts, ["asset-1"]);
+  assert.ok(events.some((event) => event.type === "log"
+    && event.message.includes("interrupted while finalizing")));
+  assert.equal(controller.snapshot.sections[0]!.completion, null);
+  assert.equal(cues().filter((cue) => cue === "interrupted").length, 1);
 });
 
 test("duration stop finalizes capture and emits its stop cue only once", async (t) => {

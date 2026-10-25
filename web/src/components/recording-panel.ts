@@ -1,6 +1,6 @@
 import template from "./recording-panel-template.ts";
 import { ApiClient } from "../api.ts";
-import { openRecordingCapture } from "../capture.ts";
+import { openMicrophoneCapture } from "../capture.ts";
 import { loadConfig } from "../config.ts";
 import { CuePlayer } from "../cues.ts";
 import { RecordingController, type RecordingDependencies, type RecordingEvent,
@@ -120,7 +120,7 @@ export class RecordingPanel extends HTMLElement {
     const context = this.existingProjectId
       ? { accountId, projectId: this.existingProjectId } : { accountId };
     this.controller = new RecordingController(this.config, this.recordingDependencies ?? {
-      backend: this.apiClient, openCapture: openRecordingCapture, now: () => performance.now(),
+      backend: this.apiClient, openCapture: openMicrophoneCapture, now: () => performance.now(),
     }, context);
     this.subscribeToController();
   }

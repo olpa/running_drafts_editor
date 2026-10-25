@@ -18,8 +18,9 @@ The [web glossary](GLOSSARY.md) defines browser recording and delivery terms.
 [Issue #84](https://github.com/olpa/running_drafts_editor/issues/84) connects the
 Vite/TypeScript page to the authenticated backend Project contract:
 
-- Capture: `RecorderFrameSource` in `src/capture.ts` uses one continuous mono
-  MediaRecorder. It sends ordered WebM/Opus pieces every 10 seconds by default.
+- Capture: `MediaRecorderFrameSource` in `src/capture.ts` uses one continuous
+  MediaRecorder with mono requested as a preference. It sends ordered WebM/Opus
+  pieces every 10 seconds by default.
   These transport frames are successive bytes of one recording; backend decode
   spans and transcript chunks have separate boundaries.
 - Backend: `src/api.ts` uses credentialed `/api/v1/projects`, Section, frame,
@@ -109,9 +110,11 @@ Account-checked authentication suspension/resumption, `dispose()`, `snapshot`,
 and `subscribe()`. It accepts backend and capture adapters plus clocks and
 identity generation.
 
-`RecorderFrameSource` and `FrameDelivery` retain their separate capture and
-submission responsibilities. `openRecordingCapture` owns strict WebM/Opus
-capability checking, mono microphone acquisition, verification, and release.
+`MediaRecorderFrameSource` and `FrameDelivery` retain their separate capture and
+submission responsibilities. `openMicrophoneCapture` owns strict WebM/Opus
+capability checking, preferred-mono microphone acquisition, usable-track
+verification, recorder finalization, and resource release. Channel count and
+sample rate are not capture acceptance gates.
 `<seed-app>` composes the panel with authentication and the diagnostic log.
 
 ## Recording and recovery
