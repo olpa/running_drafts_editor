@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ApiClient, ApiError, RECORDING_MEDIA_TYPE } from "../src/api.ts";
+import { ApiClient, ApiError, TRANSPORT_FRAME_MEDIA_TYPE } from "../src/api.ts";
 
 test("uses the authenticated v1 Project and Audio Asset wire contract", async () => {
   const requests: { url: string; init: RequestInit }[] = [];
@@ -17,8 +17,8 @@ test("uses the authenticated v1 Project and Audio Asset wire contract", async ()
     return Response.json(responses.shift());
   }});
   const signal = new AbortController().signal;
-  const frame = { seq: 0, startMs: 0, endMs: 1234, mediaType: RECORDING_MEDIA_TYPE,
-    data: new Blob(["exact bytes"], { type: RECORDING_MEDIA_TYPE }) };
+  const frame = { seq: 0, startMs: 0, endMs: 1234, mediaType: TRANSPORT_FRAME_MEDIA_TYPE,
+    data: new Blob(["exact bytes"], { type: TRANSPORT_FRAME_MEDIA_TYPE }) };
 
   const project = await client.createProject("project-key", "Draft title");
   const existing = await client.getProject("project/id");
@@ -41,8 +41,8 @@ test("uses the authenticated v1 Project and Audio Asset wire contract", async ()
   assert.deepEqual(JSON.parse(String(requests[0]!.init.body)),
     { idempotencyKey: "project-key", title: "Draft title" });
   assert.deepEqual(JSON.parse(String(requests[2]!.init.body)),
-    { idempotencyKey: "section-key", mediaType: RECORDING_MEDIA_TYPE });
-  assert.equal((requests[3]!.init.headers as Record<string, string>)["Content-Type"], RECORDING_MEDIA_TYPE);
+    { idempotencyKey: "section-key", mediaType: TRANSPORT_FRAME_MEDIA_TYPE });
+  assert.equal((requests[3]!.init.headers as Record<string, string>)["Content-Type"], TRANSPORT_FRAME_MEDIA_TYPE);
   assert.equal((requests[3]!.init.headers as Record<string, string>)["X-Frame-Start-Ms"], "0");
   assert.equal(requests[3]!.init.body, frame.data);
   assert.deepEqual(JSON.parse(String(requests[4]!.init.body)), { frameCount: 1 });

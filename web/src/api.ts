@@ -1,7 +1,7 @@
-import type { TransportFrame } from "./capture.js";
+import { TRANSPORT_FRAME_MEDIA_TYPE, type TransportFrame } from "./capture.ts";
 import { backendUrl } from "./backend.ts";
 
-export const RECORDING_MEDIA_TYPE = "audio/webm;codecs=opus";
+export { TRANSPORT_FRAME_MEDIA_TYPE } from "./capture.ts";
 
 export interface ProjectSummary {
   id: string;
@@ -79,13 +79,13 @@ export class ApiClient {
 
   createSection(projectId: string, idempotencyKey: string): Promise<CreatedSection> {
     return this.json("POST", `/projects/${encodeURIComponent(projectId)}/sections`, {
-      headers: jsonHeaders(), body: JSON.stringify({ idempotencyKey, mediaType: RECORDING_MEDIA_TYPE }),
+      headers: jsonHeaders(), body: JSON.stringify({ idempotencyKey, mediaType: TRANSPORT_FRAME_MEDIA_TYPE }),
     });
   }
 
   putFrame(audioAssetId: string, frame: TransportFrame, signal: AbortSignal): Promise<FrameAck> {
     return this.json("PUT", `/audio-assets/${encodeURIComponent(audioAssetId)}/frames/${frame.seq}`, {
-      headers: { "Content-Type": RECORDING_MEDIA_TYPE, "X-Frame-Start-Ms": String(frame.startMs),
+      headers: { "Content-Type": TRANSPORT_FRAME_MEDIA_TYPE, "X-Frame-Start-Ms": String(frame.startMs),
         "X-Frame-End-Ms": String(frame.endMs) }, body: frame.data, signal,
     });
   }
