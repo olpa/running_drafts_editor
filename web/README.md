@@ -1,8 +1,9 @@
 # Browser seed experiment
 
-This directory is the home for the Running Drafts browser seed. Its current #84
-slice tests authenticated browser recording and durable audio delivery through
-the backend; the broader seed also covers progressive transcription work.
+This directory is the home for the Running Drafts browser seed. Its current
+#84/#85 slice supports authenticated browser recording, durable audio delivery,
+Project browsing, and sealed original-audio download through the backend; the
+broader seed also covers progressive transcription work.
 
 [Product issue #1](https://github.com/olpa/running_drafts_product/issues/1)
 coordinates the seed across repositories. Backend and inference implementation
@@ -27,6 +28,11 @@ Vite/TypeScript page to the authenticated backend Project contract:
   completion, and interruption endpoints. Each recorder run creates one Section
   and Audio Asset; transcription and polling are outside #84's authenticated
   delivery slice.
+- Browsing: `<project-browser>` fetches the authenticated Project list in
+  backend order, loads one complete Project detail response, displays ordered
+  Sections and semantic Audio Asset state, and exposes the backend's native
+  download response for sealed assets. The visible Record/Projects navigation
+  preserves the page-lifetime recording module while switching surfaces.
 
 ## Run browser E2E tests
 
@@ -115,7 +121,8 @@ submission responsibilities. `openMicrophoneCapture` owns strict WebM/Opus
 capability checking, preferred-mono microphone acquisition, usable-track
 verification, recorder finalization, and resource release. Channel count and
 sample rate are not capture acceptance gates.
-`<seed-app>` composes the panel with authentication and the diagnostic log.
+`<seed-app>` composes the panel and Project browser with authentication and the
+diagnostic log.
 
 ## Recording and recovery
 
