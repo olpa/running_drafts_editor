@@ -34,6 +34,16 @@ export interface AudioAssetSummary {
   storedBytes: number;
 }
 
+export interface SectionSummary {
+  id: string;
+  position: number;
+  audioAsset: AudioAssetSummary;
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  document: { sections: SectionSummary[] };
+}
+
 export interface ProblemDetails {
   type?: string; title?: string; status?: number; detail?: string; instance?: string;
   code?: string; referenceId?: string;
@@ -75,6 +85,19 @@ export class ApiClient {
 
   getProject(projectId: string): Promise<ProjectSummary> {
     return this.json("GET", `/projects/${encodeURIComponent(projectId)}`, {});
+  }
+
+  async listProjects(): Promise<ProjectSummary[]> {
+    const result = await this.json<{ projects: ProjectSummary[] }>("GET", "/projects", {});
+    return result.projects;
+  }
+
+  getProjectDetail(projectId: string): Promise<ProjectDetail> {
+    return this.json("GET", `/projects/${encodeURIComponent(projectId)}`, {});
+  }
+
+  audioDownloadUrl(audioAssetId: string): string {
+    return `${this.baseUrl}/audio-assets/${encodeURIComponent(audioAssetId)}/download`;
   }
 
   createSection(projectId: string, idempotencyKey: string): Promise<CreatedSection> {

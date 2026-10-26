@@ -167,6 +167,12 @@ recording-panel { display: block; }
 .provider-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .policy-links { flex-basis: 100%; color: var(--muted); font-size: 0.85rem; }
 .policy-links a { color: var(--accent-dark); }
+.private-navigation {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.private-navigation button { min-width: 7rem; }
 [hidden] { display: none !important; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
 .toolbar h2 { flex: 1 1 12rem; margin: 0; }
@@ -213,6 +219,44 @@ recording-panel { display: block; }
 .section-status { color: var(--warning); font-size: 0.9rem; }
 .section-status.success { color: var(--success); }
 .section-status.error { color: var(--danger); }
+.project-browser-status { min-height: 1.5rem; color: var(--muted); }
+.project-browser-status:empty { min-height: 0; }
+.project-list, .project-sections {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+.project-list > li, .project-sections > li {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.project-list > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.project-list button { color: var(--accent-dark); text-align: left; }
+.project-list time, .project-section-diagnostics { color: var(--muted); font-size: 0.85rem; }
+.project-sections { margin-top: 1rem; }
+.project-sections h3 { margin-bottom: 0.5rem; }
+.project-section-state, .project-section-diagnostics { margin-bottom: 0.65rem; }
+.download-control {
+  display: inline-block;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: white;
+  font-weight: 650;
+  text-decoration: none;
+}
+.download-control:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+.download-control:focus-visible { outline: 3px solid #a8ccff; outline-offset: 2px; }
 
 @media (max-width: 900px) {
   .app-shell { padding: 16px; }
@@ -227,6 +271,7 @@ recording-panel { display: block; }
   .toolbar { align-items: stretch; }
   .toolbar > * { flex: 1 1 auto; }
   .state { margin-left: 0; }
+  .project-list > li { align-items: stretch; flex-direction: column; }
 }
 
 @media (prefers-reduced-motion: reduce) {

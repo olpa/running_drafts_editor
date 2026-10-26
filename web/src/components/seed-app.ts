@@ -1,11 +1,13 @@
 import template from "./seed-app-template.ts";
 import "./recording-panel.ts";
+import "./project-browser.ts";
 import { loadConfig } from "../config.ts";
 import { RadarLog } from "../radar-log.ts";
 import type { RecordingDependencies, RecordingEvent } from "../recording.js";
 import { authenticationCallbackFromSearch, SessionClient, SessionController,
   sessionAllowsRecording, type SessionState, withoutAuthenticationCallback } from "../session.ts";
 import type { RecordingPanel } from "./recording-panel.js";
+import type { ProjectBrowser } from "./project-browser.js";
 
 /** Composes the session boundary with recording without disconnecting retained audio. */
 export class SeedApp extends HTMLElement {
@@ -16,10 +18,14 @@ export class SeedApp extends HTMLElement {
   private transcript!: HTMLOListElement;
   private logView!: HTMLPreElement;
   private authentication!: HTMLElement;
+  private navigation!: HTMLElement;
   private workspace!: HTMLElement;
+  private projectsWorkspace!: HTMLElement;
   private privateResults!: HTMLElement;
   private recordingPanel!: RecordingPanel;
+  private projectBrowser!: ProjectBrowser;
   private recordingDependencies: RecordingDependencies | null = null;
+  private activeView: "record" | "projects" = "record";
 
   /** Configure browser boundaries before connection, primarily for composition tests. */
   setRecordingDependencies(dependencies: RecordingDependencies): void {
@@ -38,11 +44,16 @@ export class SeedApp extends HTMLElement {
     this.transcript = this.element("transcript");
     this.logView = this.element("log");
     this.authentication = this.element("authentication");
+    this.navigation = this.element("private-navigation");
     this.workspace = this.element("recording-workspace");
+    this.projectsWorkspace = this.element("projects-workspace");
     this.privateResults = this.element("private-results");
     this.recordingPanel = document.createElement("recording-panel") as RecordingPanel;
     if (this.recordingDependencies) this.recordingPanel.setDependencies(this.recordingDependencies);
     this.element("recording-panel-host").append(this.recordingPanel);
+    this.projectBrowser = this.querySelector("project-browser") as ProjectBrowser;
+    this.element("record-view").addEventListener("click", () => this.showRecording());
+    this.element("projects-view").addEventListener("click", () => void this.showProjects());
     this.resetLog();
     this.addEventListener("authentication-expired", () => this.session.authenticationExpired());
     this.addEventListener("recording-start-request", (event) => this.authorizeRecordingStart(event));
@@ -95,6 +106,8 @@ export class SeedApp extends HTMLElement {
       this.authentication.append(summary, expiry, logout);
     } else {
       this.recordingPanel.setSessionAccount(null);
+      this.activeView = "record";
+      this.projectBrowser.clear();
       this.clearPrivateResults();
       const text = `${state.message}${state.referenceId ? ` Reference: ${state.referenceId}` : ""}`;
       this.authentication.append(message(text));
@@ -122,8 +135,24 @@ export class SeedApp extends HTMLElement {
 
   private updateWorkspaceVisibility(): void {
     const signedIn = this.session.state.status === "signedIn";
-    this.workspace.hidden = !signedIn && !this.recordingPanel.hasRetainedWork;
-    this.privateResults.hidden = !signedIn;
+    this.navigation.hidden = !signedIn;
+    this.projectsWorkspace.hidden = !signedIn || this.activeView !== "projects";
+    this.workspace.hidden = signedIn
+      ? this.activeView !== "record"
+      : !this.recordingPanel.hasRetainedWork;
+    this.privateResults.hidden = !signedIn || this.activeView !== "record";
+  }
+
+  private showRecording(): void {
+    this.activeView = "record";
+    this.updateWorkspaceVisibility();
+  }
+
+  private async showProjects(): Promise<void> {
+    if (this.session.state.status !== "signedIn") return;
+    this.activeView = "projects";
+    this.updateWorkspaceVisibility();
+    await this.projectBrowser.showList();
   }
 
   private clearPrivateResults(): void {
