@@ -294,9 +294,11 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     captureFailedToFinalize(problem) {
       state.phase = "ended";
       state.reason = "capture";
-      // As before the split, this replaces a blocked mode too.
-      state.recovery = frames.pendingCount ? "waiting" : "requested";
-      state.problem = problem;
+      // A blocked mode stays, with its more specific problem.
+      if (!blocked()) {
+        state.recovery = frames.pendingCount ? "waiting" : "requested";
+        state.problem = problem;
+      }
       frames.freeze();
     },
     captureNeverStarted(problem) {

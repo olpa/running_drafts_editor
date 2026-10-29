@@ -141,6 +141,17 @@ describe("SectionDelivery", () => {
     assert.equal(sent.length, 0, "recovery must enforce the same guard");
   });
 
+  it("keeps a blocked state when finalization then fails", () => {
+    const { delivery, sent } = harness({ maxFrameBytes: 8 });
+    delivery.accept(frame(0, 9));
+    delivery.captureStopping("oversize");
+    delivery.captureFailedToFinalize("Recorder did not finalize");
+    assert.match(delivery.view.value.problem, /too large to upload/);
+    assert.equal(delivery.view.value.canUploadPending, false);
+    delivery.requestUpload();
+    assert.equal(sent.length, 0);
+  });
+
   it("treats a frame conflict as terminal and keeps every byte", async () => {
     const { delivery, sent, calls, logs } = harness();
     delivery.accept(frame(0));
