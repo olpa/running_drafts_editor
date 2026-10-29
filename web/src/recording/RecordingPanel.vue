@@ -50,11 +50,7 @@ const elapsed = computed(() => (idle.value ? 0 : snapshot.value.elapsedMs));
 </script>
 
 <template>
-  <section
-    aria-labelledby="project-recording-title"
-    :data-cue="recording.lastCue.value?.cue"
-    :data-cue-count="recording.lastCue.value?.count"
-  >
+  <section aria-labelledby="project-recording-title">
     <header class="toolbar">
       <h2 id="project-recording-title" data-testid="project-title">{{ title }}</h2>
       <button

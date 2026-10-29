@@ -163,6 +163,36 @@ it("one recorder uses the configured timeslice and stop retains its final partia
   assert.equal(frames[2]!.startMs, frames[1]!.endMs);
 });
 
+it("times frames with the injected clock", async () => {
+  installRecorder();
+  let now = 1_000;
+  const frames: TransportFrame[] = [];
+  const source = new MediaRecorderFrameSource(
+    {} as MediaStream,
+    10_000,
+    () => true,
+    assert.fail,
+    undefined,
+    undefined,
+    () => now,
+  );
+  await source.start((frame) => frames.push(frame));
+  const recorder = FakeRecorder.instances[0]!;
+  now = 11_000;
+  recorder.emit(new Blob(["first"]));
+  now = 21_500;
+  recorder.emit(new Blob(["second"]));
+
+  assert.deepEqual(
+    frames.map((frame) => [frame.startMs, frame.endMs]),
+    [
+      [0, 10_000],
+      [10_000, 20_500],
+    ],
+  );
+  source.dispose();
+});
+
 it("the second pending frame stops capture and the final partial event makes the three-frame bound", async () => {
   installRecorder();
   const frames: TransportFrame[] = [];
@@ -305,7 +335,7 @@ it("recorder construction and startup failures release the microphone", async ()
 
 it("finalization timeout rejects stop and releases tracks exactly once", async () => {
   installRecorder();
-  vi.useFakeTimers({ toFake: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const track = new FakeTrack();
   installMicrophone([track]);
   const capture = await openMicrophoneCapture({

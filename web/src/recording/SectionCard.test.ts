@@ -23,6 +23,7 @@ function snapshot(overrides: Partial<SectionSnapshot> = {}): SectionSnapshot {
     canUploadPending: false,
     closeProblem: "",
     canRetryClose: false,
+    awaitingSeal: false,
     ...overrides,
   };
 }

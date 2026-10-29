@@ -30,8 +30,8 @@ function ack(sequence: number): FrameAck {
 async function settle(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
-function harness() {
-  vi.useFakeTimers({ toFake: ["setTimeout"] });
+function harness(now?: () => number) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const requests: {
     frame: TransportFrame;
     signal: AbortSignal;
@@ -48,6 +48,7 @@ function harness() {
     changed: () => {},
     acknowledged: (item) => events.push(`health ${item.seq}`),
     delayed: () => events.push("delayed"),
+    ...(now ? { now } : {}),
   });
   cleanups.push(() => delivery.dispose());
   return { delivery, requests, events };
@@ -161,4 +162,14 @@ it("a timed-out request cannot release bytes", async () => {
     events.filter((event) => event.startsWith("health")),
     ["health 0"],
   );
+});
+
+it("reports acknowledgement latency from the injected clock", async () => {
+  let now = 100;
+  const { delivery, requests, events } = harness(() => now);
+  delivery.enqueue(frame(0));
+  now = 350;
+  requests[0]!.resolve(ack(0));
+  await settle();
+  assert.ok(events.includes("f0 ack 250ms"), events.join(" | "));
 });

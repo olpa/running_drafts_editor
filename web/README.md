@@ -131,11 +131,22 @@ HTTP or browser APIs directly. Tests and Storybook replace an adapter or a whole
 module without touching components.
 
 Recording state lives in an application-lifetime module outside any component, so
-switching views cannot lose undelivered audio. `createProjectRecorder` in
-`src/recording/project-recorder.ts` owns one Project, Section creation, all
-delivery queues, start/stop, duration and backlog limits, recovery, sealing, and
-semantic cue decisions, and publishes its state as a Vue ref. `createRecording`
-adds the Account ownership rules, the diagnostic log, and cue playback.
+switching views cannot lose undelivered audio. `createRecording` adds the Account
+ownership rules, the diagnostic log, and cue playback. It creates one
+`createProjectRecorder` per Account (`src/recording/project-recorder.ts`), the
+coordinator that owns Project and Section creation, the start sequence, and the
+Section list, and derives its snapshot with `computed()`. Each Section is two modules
+with no dependency on each other:
+
+- `section-capture.ts` is the transient part: the microphone, the progress and
+  duration timers, and the capture lifecycle. It is the only place the microphone
+  is released.
+- `section-delivery.ts` is the durable part: the frame queue, one recovery mode
+  (automatic, waiting, requested, or blocked), the suspension flag, and sealing the
+  Audio Asset. It outlives capture and survives sign-out.
+
+The coordinator maps events from capture into delivery and asks capture to stop when
+delivery cannot continue safely (backlog, oversize frame, conflict).
 
 `MediaRecorderFrameSource` and `FrameDelivery` retain their separate capture and
 submission responsibilities. `openMicrophoneCapture` owns strict WebM/Opus

@@ -82,7 +82,7 @@ export class MediaRecorderFrameSource implements FrameSource {
 
   private readonly dataAvailable = (event: BlobEvent): void => {
     if (this.state === "terminal" || event.data.size === 0) return;
-    const endMs = Math.max(this.lastEndMs + 1, Math.round(performance.now() - this.startedAt));
+    const endMs = Math.max(this.lastEndMs + 1, Math.round(this.now() - this.startedAt));
     this.onFrame?.({
       seq: ++this.seq,
       startMs: this.lastEndMs,
@@ -135,6 +135,7 @@ export class MediaRecorderFrameSource implements FrameSource {
     private readonly onError: (error: Error) => void,
     private readonly finalizationTimeoutMs = 3_000,
     private readonly onSettled: () => void = () => {},
+    private readonly now: () => number = () => performance.now(),
   ) {
     this.recorder = new MediaRecorder(stream, { mimeType: requireTransportFrameMediaType() });
     if (!isWebmOpus(this.recorder.mimeType)) {
@@ -148,7 +149,7 @@ export class MediaRecorderFrameSource implements FrameSource {
     }
     this.onFrame = onFrame;
     this.attachListeners();
-    this.startedAt = performance.now();
+    this.startedAt = this.now();
     this.state = "recording";
     try {
       this.recorder.start(this.intervalMs);
@@ -305,6 +306,8 @@ export interface CaptureOptions {
   onError: (error: Error) => void;
   /** Maximum wait for MediaRecorder's final data and stop events. Defaults to three seconds. */
   finalizationTimeoutMs?: number;
+  /** Monotonic clock for frame timing. Defaults to `performance.now`. */
+  now?: () => number;
 }
 
 export interface MicrophoneCapture extends FrameSource {
@@ -348,6 +351,7 @@ export async function openMicrophoneCapture(options: CaptureOptions): Promise<Mi
       options.onError,
       options.finalizationTimeoutMs,
       release,
+      options.now,
     );
     for (const track of tracks) track.addEventListener("ended", trackEnded);
     return {
