@@ -1,7 +1,7 @@
 import { computed, inject, shallowRef, watch, type InjectionKey, type Ref } from "vue";
 import { RadarLog } from "../shared/radar-log.ts";
 import type { AccountId } from "../session/gateway.ts";
-import type { Cue, Cues } from "./cues.ts";
+import type { Cues } from "./cues.ts";
 import {
   createProjectRecorder,
   type ProjectRecorder,
@@ -45,7 +45,6 @@ const IDLE_SNAPSHOT: RecordingSnapshot = {
 export interface Recording {
   readonly snapshot: Readonly<Ref<RecordingSnapshot>>;
   readonly ownershipWarning: Readonly<Ref<string>>;
-  readonly lastCue: Readonly<Ref<{ cue: Cue; count: number } | null>>;
   readonly logView: Readonly<Ref<LogView>>;
   /** A recorder exists for a signed-in Account; otherwise the panel is idle. */
   readonly hasRecorder: Readonly<Ref<boolean>>;
@@ -66,14 +65,12 @@ export interface Recording {
 
 export function createRecording(options: RecordingOptions): Recording {
   const { config, environment, cues } = options;
-  const lastCue = shallowRef<{ cue: Cue; count: number } | null>(null);
   const ownershipWarning = shallowRef("");
   const recorder = shallowRef<ProjectRecorder | null>(null);
   const moduleAccountId = shallowRef<AccountId | null>(null);
   const sessionAccountId = shallowRef<AccountId | null>(null);
   const logView = shallowRef<LogView>({ lines: [], cursor: 0 });
   let log = new RadarLog(config.logColumns, config.logRows, config.logGapChars);
-  let cueCount = 0;
   let stopHandover: (() => void) | null = null;
 
   const snapshot = computed(() => recorder.value?.snapshot.value ?? IDLE_SNAPSHOT);
@@ -99,7 +96,6 @@ export function createRecording(options: RecordingOptions): Recording {
     const created: ProjectRecorder = createProjectRecorder(config, environment, context, {
       cue(cue) {
         cues.play(cue);
-        lastCue.value = { cue, count: ++cueCount };
       },
       log(message) {
         if (!ownsCurrentSession.value) return;
@@ -142,7 +138,6 @@ export function createRecording(options: RecordingOptions): Recording {
   return {
     snapshot,
     ownershipWarning,
-    lastCue,
     logView,
     hasRecorder,
     hasRetainedWork,

@@ -335,7 +335,7 @@ it("recorder construction and startup failures release the microphone", async ()
 
 it("finalization timeout rejects stop and releases tracks exactly once", async () => {
   installRecorder();
-  vi.useFakeTimers({ toFake: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const track = new FakeTrack();
   installMicrophone([track]);
   const capture = await openMicrophoneCapture({

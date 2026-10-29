@@ -163,7 +163,6 @@ describe("RecordingPanel", () => {
       "Capture is active. Speak now.",
     );
     expect(wrapper.find("[data-testid=capture-progress]").exists()).toBe(true);
-    expect(wrapper.attributes("data-cue")).toBe("start");
     expect(played).toContain("start");
     expect(wrapper.get("[data-testid=project-title]").text()).toBe("Canonical");
   });

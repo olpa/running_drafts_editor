@@ -175,7 +175,10 @@ function harness(
     open?: (capture: FakeCapture) => Promise<MicrophoneCapture>;
   } = {},
 ) {
-  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date"], now: 0 });
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
+    now: 0,
+  });
   const backend = new Backend();
   const captures: FakeCapture[] = [];
   const events: RecordingEvent[] = [];
@@ -677,4 +680,23 @@ it("a close command waits for every pending frame and for the end of capture", a
   backend.resolveRequest(1);
   await settle();
   assert.deepEqual(backend.completes, [{ assetId: "asset-1", frameCount: 2 }]);
+});
+
+it("only the Section whose state changed gets a new snapshot object", async () => {
+  const { controller, backend, captures } = harness();
+  await controller.start();
+  const stopping = controller.stop();
+  captures[0]!.finalize(500);
+  await stopping;
+  backend.resolveRequest(0);
+  await settle();
+  await controller.start();
+
+  const [first, second] = controller.snapshot.value.sections;
+  assert.equal(second!.capturing, true);
+  vi.advanceTimersByTime(300);
+  const after = controller.snapshot.value.sections;
+  assert.equal(after[0], first, "the finished Section is untouched by the progress tick");
+  assert.notEqual(after[1], second, "the capturing Section shows the new elapsed time");
+  assert.ok(after[1]!.elapsedMs >= 300);
 });

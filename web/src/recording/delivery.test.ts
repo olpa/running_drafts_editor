@@ -31,7 +31,7 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
 function harness(now?: () => number) {
-  vi.useFakeTimers({ toFake: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const requests: {
     frame: TransportFrame;
     signal: AbortSignal;
