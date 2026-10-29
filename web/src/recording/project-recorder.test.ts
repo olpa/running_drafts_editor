@@ -609,3 +609,72 @@ it("capability failure creates no backend resources and permits retry", async ()
   assert.equal(controller.snapshot.value.canStart, true);
   assert.match(controller.snapshot.value.startProblem, /mono unavailable/);
 });
+
+// Characterization tests added for #99: they pin behavior the refactoring must keep.
+
+it("a Section created while authentication is suspended never captures, and closes after resume", async () => {
+  const { controller, backend, captures } = harness();
+  const release = deferred<void>();
+  const createSection = backend.createSection.bind(backend);
+  backend.createSection = async (projectId, key) => {
+    await release.promise;
+    return createSection(projectId, key);
+  };
+
+  const starting = controller.start();
+  await settle();
+  controller.suspendForAuthentication();
+  release.resolve();
+  await starting;
+  await settle();
+
+  const section = controller.snapshot.value.sections[0]!;
+  assert.equal(captures[0]!.disposed, true);
+  assert.equal(captures[0]!.starts, 0, "capture never began");
+  assert.equal(section.problem, "Capture did not start because its Application Session ended.");
+  assert.equal(controller.snapshot.value.capturing, false);
+  assert.deepEqual(backend.interrupts, [], "a suspended Section sends no close command");
+  assert.deepEqual(backend.completes, []);
+
+  controller.resumeAfterAuthentication("account-a");
+  await settle();
+  assert.deepEqual(backend.interrupts, ["asset-1"]);
+  assert.deepEqual(backend.completes, []);
+});
+
+it("the backlog check sees the frame it follows and stops capture exactly once", async () => {
+  const { controller, backend, captures } = harness();
+  await controller.start();
+  const capture = captures[0]!;
+
+  assert.equal(capture.boundary(), true, "one pending frame is allowed");
+  assert.equal(controller.snapshot.value.sections[0]!.pendingFrames, 1);
+  assert.equal(capture.boundary(), false, "the second pending frame stops capture");
+  assert.equal(controller.snapshot.value.sections[0]!.pendingFrames, 2);
+  assert.equal(capture.stops, 1);
+
+  // A user stop while the backlog stop is already finalizing must not stop it again.
+  await controller.stop();
+  assert.equal(capture.stops, 1);
+  capture.finalize();
+  await settle();
+  assert.equal(controller.snapshot.value.sections[0]!.pendingFrames, 3);
+  assert.equal(backend.requests.length, 1, "interruption freezes delivery of the backlog");
+});
+
+it("a close command waits for every pending frame and for the end of capture", async () => {
+  const { controller, backend, captures } = harness();
+  await controller.start();
+  captures[0]!.boundary();
+  backend.resolveRequest(0);
+  await settle();
+  assert.deepEqual(backend.completes, [], "capture is still running");
+
+  const stopping = controller.stop();
+  captures[0]!.finalize(500);
+  await stopping;
+  assert.deepEqual(backend.completes, [], "the final frame is still pending");
+  backend.resolveRequest(1);
+  await settle();
+  assert.deepEqual(backend.completes, [{ assetId: "asset-1", frameCount: 2 }]);
+});
