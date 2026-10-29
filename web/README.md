@@ -28,7 +28,7 @@ Vite/TypeScript page to the authenticated backend Project contract:
   completion, and interruption endpoints. Each recorder run creates one Section
   and Audio Asset; transcription and polling are outside #84's authenticated
   delivery slice.
-- Browsing: `<project-browser>` fetches the authenticated Project list in
+- Browsing: `ProjectBrowser.vue` shows the authenticated Project list in
   backend order, loads one complete Project detail response, displays ordered
   Sections and semantic Audio Asset state, and exposes the backend's native
   download response for sealed assets. The visible Record/Projects navigation
@@ -43,9 +43,11 @@ Product issues #4 and #7 own migrating that suite from the removed seed
 second authoritative Playwright suite here.
 
 Start the application here with `npm install` and `npm run dev`.
-`npm run check` type-checks the application and unit tests. `npm test` runs
-health-client, capture, delivery, and recording-controller unit tests with Node.js 24.
-`npm run build` builds the page.
+`npm run check` runs `vue-tsc`, ESLint (`eslint-plugin-vue` recommended rules
+and `typescript-eslint`), and a Prettier check; `npm run format` rewrites files
+with Prettier. `npm test` runs the Vitest suite (Vue Test Utils, jsdom, and
+`vitest-axe`): module and gateway unit tests, component tests, and the
+application composition tests. `npm run build` checks and builds the page.
 
 The development page is split into two surfaces. Backend liveness and
 database-backed readiness checks are on the left; the existing browser seed is
@@ -56,13 +58,21 @@ application API paths are derived from that one URL.
 
 ## Browser authentication
 
-The editor discovers enabled sign-in providers from the configured backend and
-bootstraps the current Account from its HttpOnly Application Session cookie.
-Run the backend on the configured URL, configure its exact editor origin and
-OIDC callback, then start this application with `npm run dev`. A fresh browser
-shows only providers enabled by the backend. Sign-in navigates the full page to
-the backend and returns to the current editor path and query. The signed-in
-summary shows the backend-reported session expiry in local date and time.
+The editor bootstraps the current Account from its HttpOnly Application Session
+cookie. Run the backend on the configured URL, configure its exact editor origin
+and OIDC callback, then start this application with `npm run dev`. Sign-in
+providers are a source-owned catalog in `src/session/providers.ts`; Google is
+the only entry, and the editor never asks the backend which providers exist.
+The current-session response names the provider by its stable key, and the
+editor resolves the visible name from the catalog. An unknown key is shown as
+received. Adding a provider needs a coordinated backend and editor release.
+Sign-in navigates the full page to the backend and returns to the current
+editor path and query. The signed-in summary shows the backend-reported session
+expiry in local date and time.
+
+`ProfileSummary.vue` in `src/session/` shows the display name, a verified email,
+the full Account ID, the provider, the session expiry, and a `Log out` button
+styled as a link. It reads the session module and has no route yet.
 
 All API requests use credentialed CORS. `public/config.js` contains only the
 public backend URL; provider secrets and tokens never belong in frontend
@@ -98,31 +108,44 @@ rollout, status, logs, and rollback are documented in
 under `/rnotes/RUNNING_DRAFTS_FRONTEND`; neither source nor mutable application
 data is copied there.
 
-## Recording modules
+## Application structure
 
-`<recording-panel>` in `src/components/recording-panel.ts` owns the recording
-controls and visual/audio feedback. It can run independently of `<seed-app>` and
-publishes `recording-event` events for snapshots, cues, and diagnostic log
-entries. The panel owns its page-lifetime controller. A temporary disconnect
-stops active capture and releases microphone resources while preserving its
-Project, Sections, Account ownership, and pending bytes for reconnection;
-`finishModule()` performs permanent disposal when the page module is finished.
+The UI is a Vue 3 application written with the Composition API. `src/` is
+organised by feature, each owning its module, gateway, components, and tests:
 
-`RecordingController` in `src/recording.ts` owns one Project, Section creation,
-all page-lifetime delivery queues, start/stop, duration and backlog limits,
-recovery, sealing, and semantic cue decisions. Its interface is `start()`,
-`stop()`, `uploadPendingAudio(sectionId)`, `retryClose(sectionId)`,
-Account-checked authentication suspension/resumption, `dispose()`, `snapshot`,
-and `subscribe()`. It accepts backend and capture adapters plus clocks and
-identity generation.
+- `session/`: Application Session, the provider catalog, sign-in panel, and
+  `ProfileSummary.vue`.
+- `recording/`: the page-lifetime recording module, one recorder per Project and
+  Account, capture, delivery queues, cues, and the recording panel.
+- `projects/`: the Project list and detail browser with original-audio downloads.
+- `health/`: the development health checks.
+- `app/`: the page layout, private workspace, and the composition root.
+- `shared/`: configuration, HTTP transport, and formatting used by several features.
+
+`src/app/application.ts` is the only place that creates production adapters. It
+builds the gateways, passes them as plain arguments to the module factories
+(`createSession`, `createRecording`, `createProjects`, `createHealth`), and
+provides the finished modules to components with typed `InjectionKey`s. Components
+only inject modules (`useSession()`, `useRecording()`, and so on); they never call
+HTTP or browser APIs directly. Tests and Storybook replace an adapter or a whole
+module without touching components.
+
+Recording state lives in an application-lifetime module outside any component, so
+switching views cannot lose undelivered audio. `createProjectRecorder` in
+`src/recording/project-recorder.ts` owns one Project, Section creation, all
+delivery queues, start/stop, duration and backlog limits, recovery, sealing, and
+semantic cue decisions, and publishes its state as a Vue ref. `createRecording`
+adds the Account ownership rules, the diagnostic log, and cue playback.
 
 `MediaRecorderFrameSource` and `FrameDelivery` retain their separate capture and
 submission responsibilities. `openMicrophoneCapture` owns strict WebM/Opus
 capability checking, preferred-mono microphone acquisition, usable-track
 verification, recorder finalization, and resource release. Channel count and
 sample rate are not capture acceptance gates.
-`<seed-app>` composes the panel and Project browser with authentication and the
-diagnostic log.
+
+Styles: `src/style.css` holds design tokens and base styles; each component keeps
+its own layout in `<style scoped>`. `src/style.test.ts` checks the colour tokens
+against WCAG 2.2 AA contrast ratios.
 
 ## Recording and recovery
 

@@ -16,7 +16,8 @@ and transcription data supporting replay and correction.
 - `docs/agents/` contains shared agent procedures.
 
 Rust proof-of-concept decisions live in `rust-poc/docs/adr/`. Apply them only
-to `rust-poc/`; the product CLI and web seed follow their assigned issues.
+to `rust-poc/`. Web decisions live in `web/docs/adr/` and apply only to `web/`.
+The product CLI follows its assigned issues.
 
 ## Working rules
 

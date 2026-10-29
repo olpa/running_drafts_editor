@@ -20,6 +20,13 @@ Application Sessions for the same Account, and ends independently through local
 logout or expiry. It is distinct from the provider's own login session.
 _Avoid_: Provider session, OIDC token, global logout.
 
+**Provider catalog**:
+The editor's source-defined list of authentication providers. Each entry has a
+stable provider key, which the backend also uses in login routes and
+current-session responses, and the visible name the editor shows. The editor does
+not discover providers at runtime.
+_Avoid_: Enabled providers, provider list from the backend.
+
 ### Working material
 
 **Project**:

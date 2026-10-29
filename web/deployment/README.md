@@ -61,14 +61,15 @@ image digest in the runtime README without treating that history as current
 configuration.
 
 Authentication also requires the backend to allow the exact deployed editor
-origin, use its environment-specific provider registration and callback, and
-advertise only providers ready in that environment. `config.js` must contain
+origin and use its environment-specific provider registration and callback. The
+editor offers only the providers in its source-owned catalog (Google), so a
+backend that lacks one of them must be released together with the editor. `config.js` must contain
 only the public backend URL; never place an OIDC secret or token there.
 
-After the HTTP checks, use a fresh browser profile to verify each advertised
-provider. Start on a non-root editor path with a query, sign in, confirm the
+After the HTTP checks, use a fresh browser profile to verify each provider in
+the editor's catalog. Start on a non-root editor path with a query, sign in, confirm the
 callback restores that destination, and check that the Account appears. Log
-out locally and confirm the provider chooser returns without ending the global
+out locally and confirm the sign-in panel returns without ending the global
 provider session. In a second fresh profile, sign in independently and verify
 the same Account's private data. Record the environment, provider, date, image
 digest, and pass/fail result without recording profile data or credentials.
