@@ -296,6 +296,7 @@ export function createProjectRecorder(
         }
       },
       failed: (_frame, error) => handleFrameFailure(section(), error),
+      now: environment.now,
     });
   }
 
@@ -567,6 +568,7 @@ export function createProjectRecorder(
       capture = await environment.openCapture({
         intervalMs: config.frameIntervalMs,
         canContinue: canContinueCapture,
+        now: environment.now,
         onError: (error) => {
           const current = active;
           if (current?.captureLifecycle.kind === "capturing") {

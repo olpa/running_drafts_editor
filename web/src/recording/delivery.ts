@@ -10,6 +10,8 @@ export interface DeliveryOptions {
   acknowledged: (frame: TransportFrame) => void;
   delayed: () => void;
   failed?: (frame: TransportFrame, error: unknown) => void;
+  /** Monotonic clock for acknowledgement latency. Defaults to `performance.now`. */
+  now?: () => number;
 }
 
 /** Retains ordered bytes until success, independent of capture and processing. */
@@ -89,7 +91,8 @@ export class FrameDelivery {
 
   private attempt(frame: TransportFrame, attempt: number): void {
     const controller = new AbortController();
-    const startedAt = performance.now();
+    const now = this.options.now ?? (() => performance.now());
+    const startedAt = now();
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -116,7 +119,7 @@ export class FrameDelivery {
         this.frames.shift();
         this.current = null;
         this.clearRetry();
-        this.options.log(`f${frame.seq} ack ${Math.round(performance.now() - startedAt)}ms`);
+        this.options.log(`f${frame.seq} ack ${Math.round(now() - startedAt)}ms`);
         if (!this.pendingCount) this.delayed = false;
         this.options.acknowledged(frame);
         this.options.changed();
