@@ -103,7 +103,7 @@ describe("ProfileSummary", () => {
     const button = wrapper.get("button");
     expect(button.text()).toBe("Log out");
     expect(button.attributes("type")).toBe("button");
-    expect(button.classes()).toContain("link-button");
+    expect(button.classes()).not.toContain("link-button");
     await button.trigger("click");
     expect(logout).toHaveBeenCalledTimes(1);
   });

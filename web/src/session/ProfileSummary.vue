@@ -48,7 +48,7 @@ const verifiedEmail = computed(() => {
         </dd>
       </div>
     </dl>
-    <button type="button" class="link-button" @click="session.logout()">Log out</button>
+    <button type="button" @click="session.logout()">Log out</button>
   </section>
 </template>
 

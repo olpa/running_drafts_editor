@@ -74,23 +74,6 @@ button:disabled {
   background: var(--accent-dark);
 }
 
-/* An action that looks like a link; it is a button because it does not navigate. */
-.link-button {
-  min-height: 0;
-  padding: 0.15rem 0;
-  border: 0;
-  border-radius: 2px;
-  background: none;
-  color: var(--accent-dark);
-  font-weight: 400;
-  text-decoration: underline;
-}
-
-.link-button:hover:not(:disabled) {
-  border-color: transparent;
-  text-decoration-thickness: 2px;
-}
-
 h1,
 h2,
 h3,
