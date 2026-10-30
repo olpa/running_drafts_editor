@@ -1,5 +1,10 @@
 # Web Agent Context
 
+For user-visible frontend work, read
+[`docs/adr/0002-storybook-review-workbench.md`](docs/adr/0002-storybook-review-workbench.md)
+before implementation. Normally include its reproducible **Manual review** handoff;
+omit it when it would add little review value.
+
 This directory owns the browser seed experiment. Follow shared rules in the
 root `AGENTS.md` and the assigned GitHub issue and its comments.
 

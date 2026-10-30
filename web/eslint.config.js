@@ -4,7 +4,7 @@ import vue from "eslint-plugin-vue";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/", "node_modules/", "public/"] },
+  { ignores: ["dist/", "node_modules/", "public/", "storybook-static/"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...vue.configs["flat/recommended"],

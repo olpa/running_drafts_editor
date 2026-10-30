@@ -49,6 +49,13 @@ with Prettier. `npm test` runs the Vitest suite (Vue Test Utils, jsdom, and
 `vitest-axe`): module and gateway unit tests, component tests, and the
 application composition tests. `npm run build` checks and builds the page.
 
+## Run the UI workbench
+
+Run `npm run storybook` to open the local review workbench on port 6006. For a
+remote or agent environment, run `npm run storybook -- --no-open` and forward
+the port over SSH. The short [Storybook operator guide](docs/storybook.md)
+contains the commands and browser instructions.
+
 The development page is split into two surfaces. Backend liveness and
 database-backed readiness checks are on the left; the existing browser seed is
 kept on the right. Health checks use `http://localhost:18081` by default. A
@@ -71,8 +78,10 @@ editor path and query. The signed-in summary shows the backend-reported session
 expiry in local date and time.
 
 `ProfileSummary.vue` in `src/session/` shows the display name, a verified email,
-the full Account ID, the provider, the session expiry, and a `Log out` button
-styled as a link. It reads the session module and has no route yet.
+the full Account ID, the provider, the session expiry, and a `Log out` button.
+`ProfileWidget.vue` wraps that summary with the corresponding signed-out, loading,
+and problem states, including catalog-driven sign-in actions. Both read the
+session module; the widget has no production route yet.
 
 All API requests use credentialed CORS. `public/config.js` contains only the
 public backend URL; provider secrets and tokens never belong in frontend
