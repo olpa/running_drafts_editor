@@ -13,6 +13,37 @@ An Account is identified by its Account UUID and is distinct from provider
 identity, email address, profile metadata, and any individual login session.
 _Avoid_: Email, provider account, user as an ownership identifier.
 
+**Plan**:
+The named commercial package whose source-controlled policy supplies an
+Account's base allowances. Launch has exactly the Free and Pro Plans; changing
+Plan does not change Account identity or resource ownership.
+_Avoid_: Entitlement tier, Account type, user type, profile.
+
+**Free Plan**:
+The permanent capped Plan assigned to every new Account.
+_Avoid_: Registered tier, guest tier, trial.
+
+**Pro Plan**:
+The paid Plan assigned when an Account has a qualifying Stripe subscription.
+_Avoid_: Paid tier, Paid Account, paid user type.
+
+**Allowance Grant**:
+A persistent, Account-specific addition to one or more Plan allowances. It
+changes effective allowances without changing the Account's Plan.
+_Avoid_: Limit override, custom tier.
+
+**Downgrade Grant**:
+The single Free-only storage addition maintained when an Account moves from Pro
+to Free so previously accepted audio does not consume its restored Free
+allowance. It is an editable kind of Allowance Grant.
+_Avoid_: Free-after-paid tier, legacy quota.
+
+**Account Suspension**:
+An administrative state that blocks all access through an Account and its
+attached provider identities while retaining the Account and its data. It is
+independent of the Account's Plan and Stripe subscription.
+_Avoid_: Blacklist, ban tier.
+
 **Application Session**:
 A time-limited authenticated relationship between one browser and one Account.
 It is established after provider authentication, can coexist with other
@@ -26,6 +57,9 @@ stable provider key, which the backend also uses in login routes and
 current-session responses, and the visible name the editor shows. The editor does
 not discover providers at runtime.
 _Avoid_: Enabled providers, provider list from the backend.
+
+These definitions follow product ADR 0008, “Model allowances with Plans and
+Account-specific grants,” in `running_drafts_product`.
 
 ### Working material
 
