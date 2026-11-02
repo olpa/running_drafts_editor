@@ -35,6 +35,10 @@ class FakeRecorder extends EventTarget {
   mimeType: string;
   starts: (number | undefined)[] = [];
   stops = 0;
+  requests = 0;
+  requestData(): void {
+    this.requests++;
+  }
 
   constructor(_stream: MediaStream, options: { mimeType: string }) {
     super();
@@ -134,10 +138,10 @@ function installMicrophone(
   });
 }
 
-it("one recorder uses the configured timeslice and stop retains its final partial event", async () => {
+it("one recorder uses explicit frame requests and stop retains its final partial event", async () => {
   installRecorder();
   const frames: TransportFrame[] = [];
-  const source = new MediaRecorderFrameSource({} as MediaStream, 10_000, () => true, assert.fail);
+  const source = new MediaRecorderFrameSource({} as MediaStream, assert.fail);
   await source.start((frame) => frames.push(frame));
   const recorder = FakeRecorder.instances[0]!;
   recorder.emit(new Blob(["first"]));
@@ -151,7 +155,7 @@ it("one recorder uses the configured timeslice and stop retains its final partia
   recorder.finish();
   await stopping;
 
-  assert.deepEqual(recorder.starts, [10_000]);
+  assert.deepEqual(recorder.starts, [undefined]);
   assert.equal(recorder.stops, 1);
   assert.deepEqual(
     frames.map((frame) => frame.seq),
@@ -169,8 +173,6 @@ it("times frames with the injected clock", async () => {
   const frames: TransportFrame[] = [];
   const source = new MediaRecorderFrameSource(
     {} as MediaStream,
-    10_000,
-    () => true,
     assert.fail,
     undefined,
     undefined,
@@ -193,25 +195,17 @@ it("times frames with the injected clock", async () => {
   source.dispose();
 });
 
-it("the second pending frame stops capture and the final partial event makes the three-frame bound", async () => {
+it("requests frames only when the owner asks", async () => {
   installRecorder();
-  const frames: TransportFrame[] = [];
-  const source = new MediaRecorderFrameSource(
-    {} as MediaStream,
-    10_000,
-    () => frames.length < 2,
-    assert.fail,
-  );
-  await source.start((frame) => frames.push(frame));
+  const source = new MediaRecorderFrameSource({} as MediaStream, assert.fail);
+  await source.start(() => {});
   const recorder = FakeRecorder.instances[0]!;
-  recorder.emit(new Blob(["first"]));
-  assert.equal(recorder.state, "recording");
-  recorder.emit(new Blob(["second"]));
-  assert.equal(recorder.state, "inactive");
-  recorder.finish();
-  await source.stop();
-  assert.equal(frames.length, 3);
-  assert.deepEqual(recorder.starts, [10_000]);
+  assert.deepEqual(recorder.starts, [undefined]);
+  assert.equal(recorder.requests, 0);
+  source.requestFrame();
+  source.requestFrame();
+  assert.equal(recorder.requests, 2);
+  source.dispose();
 });
 
 it("requires the canonical WebM/Opus capability without a bare WebM fallback", () => {
@@ -229,24 +223,21 @@ it("rejects unsupported WebM/Opus before requesting microphone permission", asyn
   installMicrophone([], () => {
     requested = true;
   });
-  await assert.rejects(
-    () => openMicrophoneCapture({ intervalMs: 1, canContinue: () => true, onError: assert.fail }),
-    /does not support/,
-  );
+  await assert.rejects(() => openMicrophoneCapture({ onError: assert.fail }), /does not support/);
   assert.equal(requested, false);
 });
 
 it("accepts harmless MIME normalization and rejects incompatible recorder reporting", async () => {
   installRecorder();
   FakeRecorder.reportedMediaType = ' Audio/WebM ; codecs = "OPUS" ';
-  const accepted = new MediaRecorderFrameSource({} as MediaStream, 10, () => true, assert.fail);
+  const accepted = new MediaRecorderFrameSource({} as MediaStream, assert.fail);
   accepted.dispose();
 
   const track = new FakeTrack();
   installMicrophone([track]);
   FakeRecorder.reportedMediaType = "";
   await assert.rejects(
-    () => openMicrophoneCapture({ intervalMs: 1, canContinue: () => true, onError: assert.fail }),
+    () => openMicrophoneCapture({ onError: assert.fail }),
     /did not create a WebM\/Opus/,
   );
   assert.equal(track.stops, 1);
@@ -255,7 +246,7 @@ it("accepts harmless MIME normalization and rejects incompatible recorder report
 it("zero-byte events consume neither sequence nor an assigned timing boundary", async () => {
   installRecorder();
   const frames: TransportFrame[] = [];
-  const source = new MediaRecorderFrameSource({} as MediaStream, 10_000, () => true, assert.fail);
+  const source = new MediaRecorderFrameSource({} as MediaStream, assert.fail);
   await source.start((frame) => frames.push(frame));
   const recorder = FakeRecorder.instances[0]!;
   recorder.emit(new Blob([]));
@@ -280,8 +271,6 @@ it("stereo settings and absent channel-constraint reporting do not block capture
     assert.deepEqual(constraints.audio, { channelCount: { ideal: 1 }, echoCancellation: true });
   });
   const capture = await openMicrophoneCapture({
-    intervalMs: 10,
-    canContinue: () => true,
     onError: assert.fail,
   });
   await capture.start(() => {});
@@ -295,7 +284,7 @@ it("missing and ended audio tracks are rejected and all acquired tracks are rele
   installRecorder();
   installMicrophone([]);
   await assert.rejects(
-    () => openMicrophoneCapture({ intervalMs: 1, canContinue: () => true, onError: assert.fail }),
+    () => openMicrophoneCapture({ onError: assert.fail }),
     /one usable audio track/,
   );
 
@@ -303,7 +292,7 @@ it("missing and ended audio tracks are rejected and all acquired tracks are rele
   ended.readyState = "ended";
   installMicrophone([ended]);
   await assert.rejects(
-    () => openMicrophoneCapture({ intervalMs: 1, canContinue: () => true, onError: assert.fail }),
+    () => openMicrophoneCapture({ onError: assert.fail }),
     /one usable audio track/,
   );
   assert.equal(ended.stops, 1);
@@ -315,7 +304,7 @@ it("recorder construction and startup failures release the microphone", async ()
   installMicrophone([constructionTrack]);
   FakeRecorder.throwDuringConstruction = true;
   await assert.rejects(
-    () => openMicrophoneCapture({ intervalMs: 1, canContinue: () => true, onError: assert.fail }),
+    () => openMicrophoneCapture({ onError: assert.fail }),
     /construction failed/,
   );
   assert.equal(constructionTrack.stops, 1);
@@ -324,8 +313,6 @@ it("recorder construction and startup failures release the microphone", async ()
   const startupTrack = new FakeTrack();
   installMicrophone([startupTrack]);
   const capture = await openMicrophoneCapture({
-    intervalMs: 1,
-    canContinue: () => true,
     onError: assert.fail,
   });
   FakeRecorder.throwDuringStart = true;
@@ -339,8 +326,6 @@ it("finalization timeout rejects stop and releases tracks exactly once", async (
   const track = new FakeTrack();
   installMicrophone([track]);
   const capture = await openMicrophoneCapture({
-    intervalMs: 1,
-    canContinue: () => true,
     onError: assert.fail,
     finalizationTimeoutMs: 25,
   });
@@ -359,8 +344,6 @@ it("a spontaneous recorder failure is reported once and cleans up after final by
   const frames: TransportFrame[] = [];
   const errors: Error[] = [];
   const capture = await openMicrophoneCapture({
-    intervalMs: 10,
-    canContinue: () => true,
     onError: (error) => errors.push(error),
   });
   await capture.start((frame) => frames.push(frame));
@@ -386,8 +369,6 @@ it("dispose is immediate and idempotent, and late events only warn", async () =>
   const frames: TransportFrame[] = [];
   const errors: Error[] = [];
   const capture = await openMicrophoneCapture({
-    intervalMs: 10,
-    canContinue: () => true,
     onError: (error) => errors.push(error),
   });
   await capture.start((frame) => frames.push(frame));

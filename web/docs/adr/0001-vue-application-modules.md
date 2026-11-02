@@ -6,19 +6,27 @@ status: accepted
 
 The browser application is a Vue 3 application written with the Composition
 API. All state and behavior live in factory-created application modules
-(`createSession`, `createRecording`, `createProjects`, `createHealth`), not in
+(`createSession`, `createApplicationCapture`, `createProjects`, `createHealth`), not in
 components. Each module takes its external gateways (HTTP, microphone, clock,
 page location) as plain arguments. One composition root, `src/app/application.ts`,
 creates the production adapters and modules and provides the finished modules to
 components through typed `InjectionKey`s. Components inject modules; they never
 call HTTP or browser APIs directly.
 
-Recording state lives in an application-lifetime module outside every component.
+Capture and retained-audio state live in application-lifetime modules outside
+every component.
 Pending audio exists only in browser memory, so no view change, unmount, or
 sign-out may drop it. Components are stateless views of module state and may be
 mounted and unmounted freely. Modules are plain TypeScript with Vue refs, so they
 run in tests without a Vue app, and a test or Storybook story can replace a whole
 module with a stub through the same injection key.
+
+[ADR 0003](0003-section-capture-delivery-owns-frame-cycles.md) refines Capture
+ownership into Application -> Project(s) -> Section(s) -> `CaptureAndDelivery`.
+`ApplicationCapture` handles Account access and the Project reference; only the
+Section's `CaptureAndDelivery` coordinates Capture and delivery. The composition
+root owns the shared `MicrophoneAccess` and independent stop alarm. Application
+disposal releases these resources; removing a workspace view does not.
 
 There is no Pinia store. Reconsider it when several independent Vue branches must
 change or react to the same long-lived state, when forwarding layers appear, or

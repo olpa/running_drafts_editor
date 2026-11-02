@@ -1,8 +1,11 @@
+import { transportFrameTiming } from "../recording/frame-timing.ts";
 import { inject, type InjectionKey } from "vue";
 
 export interface SeedConfig {
   /** Length of one transport frame. */
   frameIntervalMs: number;
+  /** End-to-end securing budget after requesting a Transport frame. */
+  secureDeadlineMs: number;
   /** Automatic-stop limit. */
   maxRecordingMs: number;
   retryFirstMs: number;
@@ -26,6 +29,7 @@ declare global {
 
 export const DEFAULT_CONFIG: Readonly<SeedConfig> = {
   frameIntervalMs: 10_000,
+  secureDeadlineMs: 1_000,
   maxRecordingMs: 10 * 60_000,
   retryFirstMs: 5_000,
   retrySecondMs: 10_000,
@@ -51,6 +55,10 @@ export function loadConfig(
   if (config.logGapChars >= config.logColumns * config.logRows) {
     throw new Error("Seed config logGapChars must be smaller than the log size");
   }
+  transportFrameTiming({
+    intervalMs: config.frameIntervalMs,
+    secureDeadlineMs: config.secureDeadlineMs,
+  });
   return config;
 }
 
@@ -59,5 +67,9 @@ export const configKey: InjectionKey<SeedConfig> = Symbol("config");
 export function useConfig(): SeedConfig {
   const config = inject(configKey);
   if (!config) throw new Error("The configuration was not provided.");
+  transportFrameTiming({
+    intervalMs: config.frameIntervalMs,
+    secureDeadlineMs: config.secureDeadlineMs,
+  });
   return config;
 }

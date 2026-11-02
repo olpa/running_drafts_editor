@@ -40,6 +40,63 @@ export class CuePlayer {
     this.onPlayed(cue, this.count);
   }
 
+  /** A WebAudio loop keeps playing without JavaScript timer or visibility checks. */
+  loopInterrupted(onUnavailable: () => void): () => void {
+    const context = this.context;
+    if (!context || context.state !== "running") {
+      onUnavailable();
+      return () => {};
+    }
+    const duration = 1.18;
+    const buffer = context.createBuffer(
+      1,
+      Math.ceil(context.sampleRate * duration),
+      context.sampleRate,
+    );
+    const samples = buffer.getChannelData(0);
+    const tone = (at: number, length: number, from: number, to: number) => {
+      const first = Math.round(at * context.sampleRate);
+      const count = Math.round(length * context.sampleRate);
+      for (let i = 0; i < count && first + i < samples.length; i++) {
+        const t = i / context.sampleRate;
+        const phase = 2 * Math.PI * (from * t + ((to - from) * t * t) / (2 * length));
+        samples[first + i] = Math.sin(phase) * 0.08 * Math.max(0, 1 - t / length);
+      }
+    };
+    tone(0, 0.15, 220, 160);
+    let position = 0.3;
+    for (const symbol of "-..-") {
+      const length = symbol === "." ? 0.08 : 0.24;
+      tone(position, length, 660, 660);
+      position += length + 0.08;
+    }
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    source.connect(context.destination);
+    let stopped = false;
+    const stateChanged = () => {
+      if (!stopped && context.state !== "running") onUnavailable();
+    };
+    context.addEventListener("statechange", stateChanged);
+    try {
+      source.start();
+    } catch (error) {
+      context.removeEventListener("statechange", stateChanged);
+      source.disconnect();
+      throw error;
+    }
+    this.count++;
+    this.onPlayed("interrupted", this.count);
+    return () => {
+      if (stopped) return;
+      stopped = true;
+      context.removeEventListener("statechange", stateChanged);
+      source.stop();
+      source.disconnect();
+    };
+  }
+
   dispose(): void {
     const context = this.context;
     this.context = null;
@@ -64,5 +121,6 @@ export class CuePlayer {
 export interface Cues {
   prepare(): void;
   play(cue: Cue): void;
+  loopInterrupted(onUnavailable: () => void): () => void;
   dispose(): void;
 }

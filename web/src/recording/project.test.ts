@@ -5,7 +5,8 @@ import { ApiError } from "../shared/http.ts";
 import type { AudioAssetSummary, ProjectSummary } from "../shared/project-types.ts";
 import type { CaptureOptions, MicrophoneCapture, TransportFrame } from "./capture.ts";
 import type { FrameAck, RecordingGateway } from "./gateway.ts";
-import { createProjectRecorder } from "./project-recorder.ts";
+import { playSectionFeedback } from "./feedback.ts";
+import { createProject } from "./project.ts";
 
 type RecordingEvent = { type: "cue"; cue: string } | { type: "log"; message: string };
 
@@ -56,7 +57,11 @@ class FakeCapture implements MicrophoneCapture {
   starts = 0;
   stops = 0;
   disposed = false;
-  constructor(readonly options: CaptureOptions) {}
+  constructor(
+    readonly options: CaptureOptions,
+    private tick: () => void,
+  ) {}
+  requestFrame(): void {}
   async start(onFrame: (frame: TransportFrame) => void): Promise<void> {
     this.starts++;
     this.onFrame = onFrame;
@@ -69,8 +74,9 @@ class FakeCapture implements MicrophoneCapture {
     this.disposed = true;
   }
   boundary(durationMs = 10_000, bytes = 10): boolean {
+    this.tick();
     this.emit(durationMs, bytes);
-    return this.options.canContinue();
+    return this.stops === 0;
   }
   finalize(durationMs = 1_000, bytes = 10): void {
     this.emit(durationMs, bytes);
@@ -188,14 +194,32 @@ function harness(
     "00000000-0000-4000-8000-000000000003",
     "00000000-0000-4000-8000-000000000004",
   ];
+  let tick: (() => void) | null = null;
   const dependencies = {
+    scheduler: {
+      now: () => Date.now(),
+      schedule(delay: number, callback: () => void) {
+        if (delay === DEFAULT_CONFIG.frameIntervalMs) {
+          tick = callback;
+          return () => {
+            if (tick === callback) tick = null;
+          };
+        }
+        const timer = setTimeout(callback, delay);
+        return () => clearTimeout(timer);
+      },
+    },
     gateway: backend,
     now: () => Date.now(),
-    wallClock: () => new Date("2026-10-21T14:32:00Z"),
+    wallClock: () => new Date(2026, 9, 21, 14, 32),
     locale: "en-GB",
     uuid: () => ids.shift()!,
     openCapture: (captureOptions: CaptureOptions) => {
-      const capture = new FakeCapture(captureOptions);
+      const capture = new FakeCapture(captureOptions, () => {
+        const callback = tick;
+        tick = null;
+        callback?.();
+      });
       captures.push(capture);
       return options.open ? options.open(capture) : Promise.resolve(capture);
     },
@@ -203,7 +227,7 @@ function harness(
   const context = options.projectId
     ? { accountId: "account-a", projectId: options.projectId }
     : { accountId: "account-a" };
-  const controller = createProjectRecorder(
+  const controller = createProject(
     {
       ...DEFAULT_CONFIG,
       maxRecordingMs: options.maxRecordingMs ?? 120_000,
@@ -212,7 +236,16 @@ function harness(
     dependencies,
     context,
     {
-      cue: (cue) => events.push({ type: "cue", cue }),
+      event: (event) => {
+        playSectionFeedback(event, {
+          prepare() {},
+          play: (cue) => events.push({ type: "cue", cue }),
+          loopInterrupted: () => () => {},
+          dispose() {},
+        });
+        if (event.type === "unrequestedCaptureStopped")
+          events.push({ type: "cue", cue: "interrupted" });
+      },
       log: (message) => events.push({ type: "log", message }),
     },
   );
@@ -300,10 +333,11 @@ it("failed graceful finalization interrupts the Section instead of completing it
     ),
   );
   assert.equal(controller.snapshot.value.sections[0]!.completion, null);
-  assert.equal(cues().filter((cue) => cue === "interrupted").length, 1);
+  assert.equal(cues().filter((cue) => cue === "interrupted").length, 0);
+  assert.equal(cues().filter((cue) => cue === "delayed").length, 1);
 });
 
-it("duration stop finalizes capture and emits its stop cue only once", async () => {
+it("duration stop raises an alarm and completion follows backend sealing", async () => {
   const { controller, backend, captures, cues } = harness({ maxRecordingMs: 500 });
   await controller.start();
   vi.advanceTimersByTime(500);
@@ -314,6 +348,7 @@ it("duration stop finalizes capture and emits its stop cue only once", async () 
   await settle();
   assert.deepEqual(backend.completes, [{ assetId: "asset-1", frameCount: 1 }]);
   assert.equal(cues().filter((cue) => cue === "stop").length, 1);
+  assert.equal(cues().filter((cue) => cue === "interrupted").length, 1);
   assert.equal(controller.snapshot.value.sections[0]!.problem, "");
 });
 
@@ -653,7 +688,11 @@ it("the backlog check sees the frame it follows and stops capture exactly once",
   assert.equal(capture.boundary(), true, "one pending frame is allowed");
   assert.equal(controller.snapshot.value.sections[0]!.pendingFrames, 1);
   assert.equal(capture.boundary(), false, "the second pending frame stops capture");
-  assert.equal(controller.snapshot.value.sections[0]!.pendingFrames, 2);
+  assert.equal(
+    controller.snapshot.value.sections[0]!.pendingFrames,
+    3,
+    "the requested final frame is already counted",
+  );
   assert.equal(capture.stops, 1);
 
   // A user stop while the backlog stop is already finalizing must not stop it again.
