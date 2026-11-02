@@ -6,7 +6,11 @@ import { axe } from "../test-support/axe.ts";
 import type { MicrophoneCapture, TransportFrame } from "./capture.ts";
 import type { RecordingGateway } from "./gateway.ts";
 import RecordingPanel from "./RecordingPanel.vue";
-import { createRecording, recordingKey, type Recording } from "./recording.ts";
+import {
+  createApplicationCapture,
+  applicationCaptureKey,
+  type ApplicationCapture,
+} from "./application-capture.ts";
 
 const ACCOUNT_A = "5728cdd2-909d-4207-8303-c04b270c308f" as AccountId;
 const ACCOUNT_B = "37a919e8-4091-4c7f-809c-e1c856f3de2c" as AccountId;
@@ -17,17 +21,21 @@ class FakeCapture implements MicrophoneCapture {
   async start(onFrame: (frame: TransportFrame) => void): Promise<void> {
     this.onFrame = onFrame;
   }
+  requestFrame(): void {}
   async stop(): Promise<void> {}
   dispose(): void {
     this.disposed = true;
   }
+  beforeEmit: () => void = () => {};
   emit(frame: TransportFrame): void {
+    this.beforeEmit();
     this.onFrame?.(frame);
   }
 }
 
 function harness(authorize = true) {
   const captures: FakeCapture[] = [];
+  let frameTick: (() => void) | null = null;
   const played: string[] = [];
   const gateway: RecordingGateway = {
     createProject: async () => ({ id: "p", title: "Canonical", createdAt: "x", updatedAt: "x" }),
@@ -37,32 +45,58 @@ function harness(authorize = true) {
     complete: async () => ({ id: "a" }) as never,
     interrupt: async () => ({ id: "a" }) as never,
   };
-  const recording = createRecording({
+  const recording = createApplicationCapture({
     config: DEFAULT_CONFIG,
     environment: {
+      scheduler: {
+        now: () => performance.now(),
+        schedule(delay, callback) {
+          if (delay === DEFAULT_CONFIG.frameIntervalMs) {
+            frameTick = callback;
+            return () => {
+              if (frameTick === callback) frameTick = null;
+            };
+          }
+          const timer = setTimeout(callback, delay);
+          return () => clearTimeout(timer);
+        },
+      },
       gateway,
       now: () => performance.now(),
       openCapture: async () => {
         const capture = new FakeCapture();
+        capture.beforeEmit = () => {
+          const callback = frameTick;
+          frameTick = null;
+          callback?.();
+        };
         captures.push(capture);
         return capture;
       },
     },
-    cues: { prepare() {}, play: (cue) => played.push(cue), dispose() {} },
+    cues: {
+      prepare() {},
+      play: (cue) => played.push(cue),
+      loopInterrupted: () => () => {},
+      dispose() {},
+    },
     authorizeStart: () => authorize,
   });
   return { recording, captures, played };
 }
 
-function mountPanel(recording: Recording) {
+function mountPanel(recording: ApplicationCapture) {
   return mount(RecordingPanel, {
     global: {
-      provide: { [recordingKey as symbol]: recording, [configKey as symbol]: DEFAULT_CONFIG },
+      provide: {
+        [applicationCaptureKey as symbol]: recording,
+        [configKey as symbol]: DEFAULT_CONFIG,
+      },
     },
   });
 }
 
-describe("Recording module", () => {
+describe("ApplicationCapture module", () => {
   it("is idle until an Account signs in, and idle again when it leaves without pending work", () => {
     const { recording } = harness();
     expect(recording.hasRecorder.value).toBe(false);

@@ -1,3 +1,4 @@
+import { browserScheduler, type Scheduler } from "./frame-timing.ts";
 import type { TransportFrame } from "./capture.ts";
 import type { FrameAck } from "./gateway.ts";
 
@@ -12,6 +13,7 @@ export interface DeliveryOptions {
   failed?: (frame: TransportFrame, error: unknown) => void;
   /** Monotonic clock for acknowledgement latency. Defaults to `performance.now`. */
   now?: () => number;
+  scheduler?: Scheduler;
 }
 
 /** Retains ordered bytes until success, independent of capture and processing. */
@@ -19,11 +21,11 @@ export class FrameDelivery {
   private readonly frames: TransportFrame[] = [];
   private lastSequence = -1;
   private current: TransportFrame | null = null;
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: (() => void) | null = null;
   private automatic = true;
   private terminal = false;
   private disposed = false;
-  private readonly requests = new Map<AbortController, ReturnType<typeof setTimeout>>();
+  private readonly requests = new Map<AbortController, () => void>();
   delayed = false;
 
   constructor(private readonly options: DeliveryOptions) {}
@@ -66,7 +68,7 @@ export class FrameDelivery {
     this.terminal = true;
     this.freeze();
     for (const [controller, timer] of this.requests) {
-      clearTimeout(timer);
+      timer();
       controller.abort();
     }
     this.requests.clear();
@@ -76,7 +78,7 @@ export class FrameDelivery {
     this.disposed = true;
     this.freeze();
     for (const [controller, timer] of this.requests) {
-      clearTimeout(timer);
+      timer();
       controller.abort();
     }
     this.requests.clear();
@@ -94,14 +96,17 @@ export class FrameDelivery {
     const now = this.options.now ?? (() => performance.now());
     const startedAt = now();
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      this.requests.delete(controller);
-      controller.abort();
-      if (!this.disposed && this.frames.includes(frame)) {
-        this.options.log(`f${frame.seq} timeout`);
-      }
-    }, this.options.requestTimeoutMs);
+    const timer = (this.options.scheduler ?? browserScheduler).schedule(
+      this.options.requestTimeoutMs,
+      () => {
+        timedOut = true;
+        this.requests.delete(controller);
+        controller.abort();
+        if (!this.disposed && this.frames.includes(frame)) {
+          this.options.log(`f${frame.seq} timeout`);
+        }
+      },
+    );
     this.requests.set(controller, timer);
     this.options.log(`f${frame.seq} sent ${frame.data.size}B a${attempt + 1}`);
     void this.options
@@ -136,13 +141,13 @@ export class FrameDelivery {
         }
       })
       .finally(() => {
-        clearTimeout(timer);
+        timer();
         this.requests.delete(controller);
       });
 
     const delay = this.options.retryDelaysMs[attempt];
     if (delay !== undefined && this.automatic) {
-      this.retryTimer = setTimeout(() => {
+      this.retryTimer = (this.options.scheduler ?? browserScheduler).schedule(delay, () => {
         this.retryTimer = null;
         if (!this.automatic || this.frames[0] !== frame) return;
         if (!this.delayed) {
@@ -152,12 +157,12 @@ export class FrameDelivery {
         }
         this.options.log(`f${frame.seq} retry ${attempt + 1}`);
         this.attempt(frame, attempt + 1);
-      }, delay);
+      });
     }
   }
 
   private clearRetry(): void {
-    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    if (this.retryTimer !== null) this.retryTimer();
     this.retryTimer = null;
   }
 }

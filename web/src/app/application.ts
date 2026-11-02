@@ -1,3 +1,13 @@
+import {
+  createCaptureStopAlarm,
+  captureStopAlarmKey,
+  type CaptureStopAlarm,
+} from "../alarm/capture-stop-alarm.ts";
+import {
+  createMicrophoneAccess,
+  microphoneAccessKey,
+  type MicrophoneAccess,
+} from "../recording/microphone-access.ts";
 import { createApp, watch, type App } from "vue";
 import { createHealth, healthKey } from "../health/health.ts";
 import { createHealthGateway, type HealthGateway } from "../health/gateway.ts";
@@ -6,8 +16,12 @@ import { createProjects, projectsKey, type Projects } from "../projects/projects
 import { openMicrophoneCapture } from "../recording/capture.ts";
 import { CuePlayer, type Cues } from "../recording/cues.ts";
 import { createRecordingGateway, type RecordingGateway } from "../recording/gateway.ts";
-import type { RecordingEnvironment } from "../recording/project-recorder.ts";
-import { createRecording, recordingKey, type Recording } from "../recording/recording.ts";
+import type { RecordingEnvironment } from "../recording/project.ts";
+import {
+  createApplicationCapture,
+  applicationCaptureKey,
+  type ApplicationCapture,
+} from "../recording/application-capture.ts";
 import { createSessionGateway, type SessionGateway } from "../session/gateway.ts";
 import {
   browserLocation,
@@ -30,13 +44,16 @@ export interface ApplicationAdapters {
   healthGateway?: HealthGateway;
   environment?: Partial<Omit<RecordingEnvironment, "gateway">>;
   cues?: Cues;
+  microphoneAccess?: MicrophoneAccess;
 }
 
 export interface Application {
   readonly app: App;
   readonly session: Session;
-  readonly recording: Recording;
+  readonly recording: ApplicationCapture;
   readonly projects: Projects;
+  readonly alarm: CaptureStopAlarm;
+  readonly microphoneAccess: MicrophoneAccess;
 }
 
 /** The composition root: wires adapters into modules and provides them to components. */
@@ -49,15 +66,22 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
   const api = createApiRequester({
     onAuthenticationExpired: () => session.authenticationExpired(),
   });
-  const recording = createRecording({
+  const cues = adapters.cues ?? new CuePlayer();
+  const alarm = createCaptureStopAlarm(cues);
+  const microphoneAccess = adapters.microphoneAccess ?? createMicrophoneAccess();
+  const recording = createApplicationCapture({
     config,
     environment: {
       gateway: adapters.recordingGateway ?? createRecordingGateway(api),
       openCapture: openMicrophoneCapture,
       now: () => performance.now(),
+      microphoneAccess,
       ...adapters.environment,
     },
-    cues: adapters.cues ?? new CuePlayer(),
+    cues,
+    onEvent(event) {
+      if (event.type === "unrequestedCaptureStopped") alarm.activate();
+    },
     authorizeStart: () => session.authorizeRecordingStart(),
   });
   const projects = createProjects(adapters.projectsGateway ?? createProjectsGateway(api));
@@ -81,10 +105,18 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
   );
 
   const app = createApp(AppShell);
+  app.onUnmount(() => {
+    recording.dispose();
+    alarm.dispose();
+    microphoneAccess.dispose();
+    cues.dispose();
+  });
+  app.provide(captureStopAlarmKey, alarm);
+  app.provide(microphoneAccessKey, microphoneAccess);
   app.provide(configKey, config);
   app.provide(sessionKey, session);
-  app.provide(recordingKey, recording);
+  app.provide(applicationCaptureKey, recording);
   app.provide(projectsKey, projects);
   app.provide(healthKey, health);
-  return { app, session, recording, projects };
+  return { app, session, recording, projects, alarm, microphoneAccess };
 }

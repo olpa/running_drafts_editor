@@ -1,3 +1,4 @@
+import type { Scheduler } from "./frame-timing.ts";
 import { computed, reactive, type ComputedRef } from "vue";
 import { ApiError, type ProblemDetails } from "../shared/http.ts";
 import type { AudioAssetSummary } from "../shared/project-types.ts";
@@ -54,8 +55,12 @@ export interface SectionDeliveryOptions {
   maxFrameBytes: number;
   gateway: Pick<RecordingGateway, "putFrame" | "complete" | "interrupt">;
   now: () => number;
+  scheduler?: Scheduler;
   log: (message: string) => void;
-  onAcknowledged: () => void;
+  onAcknowledged: (frame: TransportFrame) => void;
+  onSealed?: () => void;
+  onSealFailure?: (error: unknown) => void;
+  canSeal?: () => boolean;
   onDelayed: () => void;
   /** Delivery cannot continue safely, so capture should stop. */
   requestCaptureStop: (reason: "oversize" | "conflict") => void;
@@ -110,6 +115,7 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     send: (frame, signal) => options.gateway.putFrame(options.audioAssetId, frame, signal),
     log: options.log,
     now: options.now,
+    ...(options.scheduler ? { scheduler: options.scheduler } : {}),
     changed: () => {
       if (disposed) return;
       state.pendingFrames = frames.pendingCount;
@@ -119,7 +125,7 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     },
     acknowledged: (frame) => {
       state.securedMs = Math.max(state.securedMs, frame.endMs);
-      options.onAcknowledged();
+      options.onAcknowledged(frame);
     },
     delayed: () => options.onDelayed(),
     failed: (_frame, error) => handleFrameFailure(error),
@@ -157,6 +163,7 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
       state.suspended ||
       state.phase !== "ended" ||
       frames.pendingCount ||
+      options.canSeal?.() === false ||
       state.close.kind === "closed" ||
       state.close.kind === "closing" ||
       blocked()
@@ -182,6 +189,9 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
           ? await options.gateway.complete(options.audioAssetId, command.frameCount)
           : await options.gateway.interrupt(options.audioAssetId);
       if (disposed) return;
+      // Report confirmed sealing before publishing the terminal state. That
+      // state can synchronously release a former Account's completed work.
+      if (result.isSealed) options.onSealed?.();
       state.close = result.isSealed
         ? { kind: "closed", command, result }
         : {
@@ -192,7 +202,14 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
                 ? "Could not complete recording"
                 : "Could not close recording",
           };
-      if (result.isSealed) state.problem = "";
+      if (result.isSealed) {
+        state.problem = "";
+      } else
+        options.onSealFailure?.(
+          new Error(
+            state.close.kind === "failed" ? state.close.problem : "Audio Asset was not sealed.",
+          ),
+        );
       options.log(command.kind === "complete" ? "complete sent" : "interrupt sent");
     } catch (error) {
       if (disposed) return;
@@ -202,6 +219,7 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
           : `Could not close recording: ${errorMessage(error)}`;
       state.close = { kind: "failed", command, problem };
       options.log(`ERR ${problem}`);
+      options.onSealFailure?.(error);
     }
   }
 

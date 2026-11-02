@@ -1,7 +1,7 @@
 import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 import { axe } from "../test-support/axe.ts";
-import type { SectionSnapshot } from "./project-recorder.ts";
+import type { SectionSnapshot } from "./project.ts";
 import SectionCard from "./SectionCard.vue";
 
 function snapshot(overrides: Partial<SectionSnapshot> = {}): SectionSnapshot {
@@ -15,6 +15,7 @@ function snapshot(overrides: Partial<SectionSnapshot> = {}): SectionSnapshot {
     securedMs: 0,
     pendingMs: 0,
     pendingFrames: 0,
+    overdueFrames: [],
     hasUnsecuredAudio: false,
     completion: null,
     completionProblem: "",
@@ -97,4 +98,44 @@ describe("SectionCard", () => {
     expect(wrapper.emitted("uploadPending")).toHaveLength(1);
     expect(await axe(wrapper.element as HTMLElement)).toHaveNoViolations();
   });
+});
+
+it("keeps one silent visual counter and one stable announcement per overdue frame", async () => {
+  const wrapper = mount(SectionCard, {
+    props: { section: snapshot({ overdueFrames: [{ frameId: 0, elapsedSeconds: null }] }) },
+  });
+  const firstAnnouncement = wrapper.get(".frame-delay [role=status]").element;
+  expect(wrapper.get('[data-testid="frame-delay"]').text()).toBe("Saving audio is delayed.");
+  await wrapper.setProps({
+    section: snapshot({
+      overdueFrames: [
+        { frameId: 0, elapsedSeconds: 1 },
+        { frameId: 1, elapsedSeconds: null },
+      ],
+    }),
+  });
+  expect(wrapper.findAll(".frame-delay [role=status]")).toHaveLength(2);
+  expect(wrapper.get(".frame-delay [role=status]").element).toBe(firstAnnouncement);
+  expect(wrapper.get(".frame-delay [role=status]").text()).toBe("Saving audio is delayed.");
+  expect(wrapper.findAll('[data-testid="frame-delay"]')[0]!.text()).toBe(
+    "Saving audio is delayed by 1 second.",
+  );
+  await wrapper.setProps({
+    section: snapshot({
+      overdueFrames: [
+        { frameId: 0, elapsedSeconds: 2 },
+        { frameId: 1, elapsedSeconds: null },
+      ],
+    }),
+  });
+  expect(wrapper.findAll('[data-testid="frame-delay"]')[0]!.attributes("aria-live")).toBe("off");
+  expect(wrapper.findAll('[data-testid="frame-delay"]')[0]!.text()).toBe(
+    "Saving audio is delayed by 2 seconds.",
+  );
+  expect(wrapper.get(".frame-delay [role=status]").element).toBe(firstAnnouncement);
+  await wrapper.setProps({
+    section: snapshot({ overdueFrames: [{ frameId: 1, elapsedSeconds: null }] }),
+  });
+  expect(wrapper.findAll(".frame-delay")).toHaveLength(1);
+  wrapper.unmount();
 });

@@ -10,6 +10,15 @@ transport frame, decode span, and chunk; those definitions also apply here.
 Acquiring audio from the microphone for a recording.
 _Avoid_: Recording when referring only to microphone activity.
 
+**Microphone access** (`MicrophoneAccess`):
+The exclusive right to use the microphone for one Capture within the application.
+It is distinct from browser microphone permission. Ending Capture releases this
+right even when delivery of captured audio continues.
+
+**Unrequested Capture stop**:
+Capture ending for any reason other than an explicit user stop, including
+automatic limits and failures. Failure before Capture begins is not a stop.
+
 **Captured audio**:
 Audio already acquired from the microphone for a recording.
 Different portions can be secured or unsecured while capture continues or after

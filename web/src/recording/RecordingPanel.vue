@@ -3,36 +3,31 @@ import { computed } from "vue";
 import { formatClock } from "../shared/format.ts";
 import { useConfig } from "../shared/config.ts";
 import SectionCard from "./SectionCard.vue";
-import { useRecording } from "./recording.ts";
+import { useApplicationCapture } from "./application-capture.ts";
 
-const recording = useRecording();
+const recording = useApplicationCapture();
 const config = useConfig();
 
 const snapshot = recording.snapshot;
 const idle = computed(() => !recording.hasRecorder.value);
 const busyStarting = computed(() => snapshot.value.starting);
-const finalizing = computed(() =>
-  snapshot.value.sections.some((section) => section.finalizingCapture),
-);
 
 const mode = computed(() => {
   if (idle.value) return "start";
   if (snapshot.value.capturing) return "stop";
-  if (busyStarting.value || finalizing.value) return "busy";
+  if (busyStarting.value) return "busy";
   return snapshot.value.sections.length ? "start-new" : "start";
 });
 const label = computed(() => {
   if (idle.value) return "Start";
   if (snapshot.value.capturing) return "Stop current recording to start new";
   if (busyStarting.value) return "Starting…";
-  if (finalizing.value) return "Finishing capture…";
   return snapshot.value.sections.length ? "Start new recording" : "Start";
 });
 const message = computed(() => {
   if (idle.value) return "Sign in to start capture.";
   if (snapshot.value.capturing) return "Capture is active. Speak now.";
   if (busyStarting.value) return "Preparing microphone capture. Please wait.";
-  if (finalizing.value) return "Finalizing captured audio.";
   return snapshot.value.sections.length
     ? "Ready to capture another recording."
     : "Press Start when you are ready to capture audio.";
@@ -40,7 +35,7 @@ const message = computed(() => {
 const disabled = computed(() => {
   if (idle.value) return true;
   if (snapshot.value.capturing) return false;
-  if (busyStarting.value || finalizing.value) return true;
+  if (busyStarting.value) return true;
   return !snapshot.value.canStart || !recording.ownsCurrentSession.value;
 });
 const title = computed(

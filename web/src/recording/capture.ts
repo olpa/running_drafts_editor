@@ -14,6 +14,8 @@ export interface TransportFrame {
 export interface FrameSource {
   /** Resolves when the browser accepts startup, before the first frame necessarily exists. */
   start(onFrame: (frame: TransportFrame) => void): Promise<void>;
+  /** Request the current Transport frame; Blob delivery may happen later. */
+  requestFrame(): void;
   /** Resolves after the final data event and recorder stop event. */
   stop(): Promise<void>;
 }
@@ -91,21 +93,6 @@ export class MediaRecorderFrameSource implements FrameSource {
       data: event.data,
     });
     this.lastEndMs = endMs;
-    if (this.state === "recording") {
-      let shouldContinue: boolean;
-      try {
-        shouldContinue = this.canContinue();
-      } catch (error) {
-        this.interrupt(errorFrom(error, "Microphone capture continuation check failed."));
-        return;
-      }
-      // The continuation callback may synchronously ask the caller to stop.
-      if (!shouldContinue && this.state === "recording") {
-        void this.beginFinalization("explicit").catch((error: unknown) => {
-          this.reportSpontaneous(errorFrom(error, "Microphone capture could not be finalized."));
-        });
-      }
-    }
   };
 
   private readonly recorderError = (): void => {
@@ -129,9 +116,6 @@ export class MediaRecorderFrameSource implements FrameSource {
 
   constructor(
     stream: MediaStream,
-    private readonly intervalMs: number,
-    /** Called after each non-empty frame; false stops and flushes the final partial frame. */
-    private readonly canContinue: () => boolean,
     private readonly onError: (error: Error) => void,
     private readonly finalizationTimeoutMs = 3_000,
     private readonly onSettled: () => void = () => {},
@@ -152,13 +136,18 @@ export class MediaRecorderFrameSource implements FrameSource {
     this.startedAt = this.now();
     this.state = "recording";
     try {
-      this.recorder.start(this.intervalMs);
+      this.recorder.start();
     } catch (error) {
       const startupError = errorFrom(error, "Microphone capture could not start.");
       this.terminalError = startupError;
       this.finish();
       throw startupError;
     }
+  }
+
+  requestFrame(): void {
+    if (this.state !== "recording") return;
+    this.recorder.requestData();
   }
 
   stop(): Promise<void> {
@@ -301,8 +290,6 @@ export class MediaRecorderFrameSource implements FrameSource {
 }
 
 export interface CaptureOptions {
-  intervalMs: number;
-  canContinue: () => boolean;
   onError: (error: Error) => void;
   /** Maximum wait for MediaRecorder's final data and stop events. Defaults to three seconds. */
   finalizationTimeoutMs?: number;
@@ -346,8 +333,6 @@ export async function openMicrophoneCapture(options: CaptureOptions): Promise<Mi
     }
     source = new MediaRecorderFrameSource(
       stream,
-      options.intervalMs,
-      options.canContinue,
       options.onError,
       options.finalizationTimeoutMs,
       release,
@@ -356,6 +341,7 @@ export async function openMicrophoneCapture(options: CaptureOptions): Promise<Mi
     for (const track of tracks) track.addEventListener("ended", trackEnded);
     return {
       start: (onFrame) => source!.start(onFrame),
+      requestFrame: () => source!.requestFrame(),
       stop: () => source!.stop(),
       dispose: () => source!.dispose(),
     };

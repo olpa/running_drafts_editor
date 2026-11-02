@@ -1,6 +1,7 @@
 dist/
 storybook-static/
 node_modules/
+.vite/
 package-lock.json
 public/
 deployment/

@@ -5,6 +5,7 @@ import type { CaptureOptions, MicrophoneCapture, TransportFrame } from "../recor
 import type { FrameAck, RecordingGateway } from "../recording/gateway.ts";
 import type { AccountId, CurrentSession, SessionGateway } from "../session/gateway.ts";
 import { resolveProvider } from "../session/providers.ts";
+import { DEFAULT_CONFIG } from "../shared/config.ts";
 import { ApiError } from "../shared/http.ts";
 import type { AudioAssetSummary, ProjectSummary } from "../shared/project-types.ts";
 import { createApplication, type Application, type ApplicationAdapters } from "./application.ts";
@@ -60,11 +61,14 @@ class FakeCapture implements MicrophoneCapture {
   async start(onFrame: (frame: TransportFrame) => void): Promise<void> {
     this.onFrame = onFrame;
   }
+  requestFrame(): void {}
   async stop(): Promise<void> {}
   dispose(): void {
     this.disposed = true;
   }
+  beforeEmit: () => void = () => {};
   emit(frame: TransportFrame): void {
+    this.beforeEmit();
     this.onFrame?.(frame);
   }
 }
@@ -124,6 +128,7 @@ const roots: HTMLElement[] = [];
 
 function mountApplication(adapters: ApplicationAdapters = {}) {
   const captures: FakeCapture[] = [];
+  let frameTick: (() => void) | null = null;
   const recordingGateway = new FakeRecordingGateway();
   const { backend, gateway } = sessionBackend();
   const application = createApplication({
@@ -131,11 +136,29 @@ function mountApplication(adapters: ApplicationAdapters = {}) {
     recordingGateway,
     projectsGateway: { listProjects: async () => [] } as unknown as ProjectsGateway,
     healthGateway: { check: async () => Promise.reject(new Error("unused")) },
-    cues: { prepare() {}, play() {}, dispose() {} },
+    cues: { prepare() {}, play() {}, loopInterrupted: () => () => {}, dispose() {} },
     environment: {
+      scheduler: {
+        now: () => performance.now(),
+        schedule(delay, callback) {
+          if (delay === DEFAULT_CONFIG.frameIntervalMs) {
+            frameTick = callback;
+            return () => {
+              if (frameTick === callback) frameTick = null;
+            };
+          }
+          const timer = setTimeout(callback, delay);
+          return () => clearTimeout(timer);
+        },
+      },
       now: () => performance.now(),
       openCapture: async (options) => {
         const capture = new FakeCapture(options);
+        capture.beforeEmit = () => {
+          const callback = frameTick;
+          frameTick = null;
+          callback?.();
+        };
         captures.push(capture);
         return capture;
       },
@@ -352,4 +375,128 @@ describe("application", () => {
     expect(testId(root, "projects-workspace")).toBeNull();
     expect(application.projects.view.value).toEqual({ kind: "empty" });
   });
+});
+
+it("keeps the stop alarm across views, new Capture, and sign-out until explicit acknowledgement", async () => {
+  let starts = 0;
+  let stops = 0;
+  const { root, application, captures } = mountApplication({
+    cues: {
+      prepare() {},
+      play() {},
+      dispose() {},
+      loopInterrupted() {
+        starts++;
+        return () => {
+          stops++;
+        };
+      },
+    },
+  });
+  await flushPromises();
+  testId(root, "start")!.click();
+  await flushPromises();
+  const focused = document.activeElement;
+  captures[0]!.options.onError(new Error("Microphone ended"));
+  await flushPromises();
+  expect(testId(root, "capture-stop-alarm")).not.toBeNull();
+  expect(document.activeElement).toBe(focused);
+  expect(starts).toBe(1);
+  testId(root, "projects-view")!.click();
+  await flushPromises();
+  expect(testId(root, "capture-stop-alarm")).not.toBeNull();
+  testId(root, "record-view")!.click();
+  await flushPromises();
+  testId(root, "start")!.click();
+  await flushPromises();
+  expect(application.recording.snapshot.value.capturing).toBe(true);
+  expect(starts).toBe(1);
+  expect(stops).toBe(0);
+  await application.session.logout();
+  await flushPromises();
+  expect(testId(root, "capture-stop-alarm")).not.toBeNull();
+  expect(stops).toBe(0);
+  button(root, "Acknowledge")!.click();
+  await flushPromises();
+  expect(testId(root, "capture-stop-alarm")).toBeNull();
+  expect(stops).toBe(1);
+});
+
+it("offers takeover when an earlier Capture is stuck finalizing, and keeps the alarm independent", async () => {
+  const { root, application, captures } = mountApplication();
+  await flushPromises();
+  testId(root, "start")!.click();
+  await flushPromises();
+  // A stale finalization promise must not prevent the user's explicit takeover.
+  captures[0]!.stop = () => new Promise(() => {});
+  testId(root, "start")!.click();
+  await flushPromises();
+  expect(application.recording.snapshot.value.sections[0]!.finalizingCapture).toBe(true);
+  testId(root, "start")!.click();
+  await flushPromises();
+  expect(root.querySelector('[role="dialog"]')).not.toBeNull();
+  button(root, "Cancel")!.click();
+  await flushPromises();
+  expect(captures).toHaveLength(1);
+  expect(captures[0]!.disposed).toBe(false);
+  testId(root, "start")!.click();
+  await flushPromises();
+  application.alarm.activate();
+  button(root, "Stop previous Capture and start new")!.click();
+  await flushPromises();
+  expect(captures).toHaveLength(2);
+  expect(captures[0]!.disposed).toBe(true);
+  expect(application.recording.snapshot.value.capturing).toBe(true);
+  expect(application.recording.snapshot.value.sections[0]!.finalizingCapture).toBe(false);
+  expect(application.alarm.active.value).toBe(true);
+  expect(root.querySelector('[role="dialog"]')).toBeNull();
+});
+
+it("plays completion when a signed-out Account's last retained Section seals", async () => {
+  const played: string[] = [];
+  const { application, root, captures, recordingGateway, backend } = mountApplication({
+    cues: {
+      prepare() {},
+      play: (cue) => {
+        played.push(cue);
+      },
+      loopInterrupted: () => () => {},
+      dispose() {},
+    },
+  });
+  await flushPromises();
+  testId(root, "start")!.click();
+  await flushPromises();
+  captures[0]!.emit({
+    seq: 0,
+    startMs: 0,
+    endMs: 10_000,
+    mediaType: "audio/webm;codecs=opus",
+    data: new Blob(["retained"]),
+  });
+  testId(root, "start")!.click();
+  await flushPromises();
+  await application.session.logout();
+  await flushPromises();
+  // Complete the retained work after restoring its Account, then sign out while
+  // sealing is in flight. Completion must precede synchronous ownership cleanup.
+  backend.current = session(ACCOUNT_A, 8 * HOUR);
+  await application.session.bootstrap();
+  await flushPromises();
+  const sealing = deferred<AudioAssetSummary>();
+  recordingGateway.complete = () => sealing.promise;
+  const request = recordingGateway.requests.at(-1)!;
+  request.result.resolve({
+    sequence: 0,
+    acknowledged: true,
+    sha256: "a".repeat(64),
+    nextExpectedSequence: 1,
+  });
+  await flushPromises();
+  await application.session.logout();
+  await flushPromises();
+  sealing.resolve(asset(recordingGateway.assetId, "completed"));
+  await flushPromises();
+  expect(played).toEqual(["start", "stop"]);
+  expect(application.recording.hasRecorder.value).toBe(false);
 });

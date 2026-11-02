@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import FrameDelay from "./FrameDelay.vue";
 import { computed } from "vue";
-import type { SectionSnapshot } from "./project-recorder.ts";
+import type { SectionSnapshot } from "./project.ts";
 
 const props = defineProps<{ section: SectionSnapshot }>();
 const emit = defineEmits<{ uploadPending: []; retryClose: [] }>();
@@ -37,6 +38,7 @@ const completionClass = computed(() => {
       >{{ completionText }}</span
     >
     <span v-if="section.problem" class="section-status error">{{ section.problem }}</span>
+    <FrameDelay v-for="frame in section.overdueFrames" :key="frame.frameId" :frame="frame" />
     <button v-if="section.canUploadPending" type="button" @click="emit('uploadPending')">
       Upload pending audio
     </button>

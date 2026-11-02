@@ -2,18 +2,21 @@ import { computed, inject, shallowRef, watch, type InjectionKey, type Ref } from
 import { RadarLog } from "../shared/radar-log.ts";
 import type { AccountId } from "../session/gateway.ts";
 import type { Cues } from "./cues.ts";
+import { playSectionFeedback } from "./feedback.ts";
+import type { SectionEvent } from "./section-events.ts";
 import {
-  createProjectRecorder,
-  type ProjectRecorder,
-  type RecordingConfig,
+  createProject,
+  type Project,
+  type CaptureConfig,
   type RecordingEnvironment,
   type RecordingSnapshot,
-} from "./project-recorder.ts";
+} from "./project.ts";
 
-export interface RecordingOptions {
-  config: RecordingConfig & { logColumns: number; logRows: number; logGapChars: number };
+export interface ApplicationCaptureOptions {
+  config: CaptureConfig & { logColumns: number; logRows: number; logGapChars: number };
   environment: RecordingEnvironment;
   cues: Cues;
+  onEvent?: (event: SectionEvent) => void;
   /** Decide whether the Application Session may start a recording now. */
   authorizeStart: () => boolean;
   /** Existing Project to extend instead of creating a new one. */
@@ -42,7 +45,7 @@ const IDLE_SNAPSHOT: RecordingSnapshot = {
  * Page-lifetime recording. It outlives every view, so retained audio is never lost by
  * navigation, and it follows the signed-in Account.
  */
-export interface Recording {
+export interface ApplicationCapture {
   readonly snapshot: Readonly<Ref<RecordingSnapshot>>;
   readonly ownershipWarning: Readonly<Ref<string>>;
   readonly logView: Readonly<Ref<LogView>>;
@@ -63,10 +66,10 @@ export interface Recording {
   dispose(): void;
 }
 
-export function createRecording(options: RecordingOptions): Recording {
+export function createApplicationCapture(options: ApplicationCaptureOptions): ApplicationCapture {
   const { config, environment, cues } = options;
   const ownershipWarning = shallowRef("");
-  const recorder = shallowRef<ProjectRecorder | null>(null);
+  const recorder = shallowRef<Project | null>(null);
   const moduleAccountId = shallowRef<AccountId | null>(null);
   const sessionAccountId = shallowRef<AccountId | null>(null);
   const logView = shallowRef<LogView>({ lines: [], cursor: 0 });
@@ -93,9 +96,10 @@ export function createRecording(options: RecordingOptions): Recording {
   function startRecorder(accountId: AccountId): void {
     moduleAccountId.value = accountId;
     const context = options.projectId ? { accountId, projectId: options.projectId } : { accountId };
-    const created: ProjectRecorder = createProjectRecorder(config, environment, context, {
-      cue(cue) {
-        cues.play(cue);
+    const created: Project = createProject(config, environment, context, {
+      event(event) {
+        playSectionFeedback(event, cues);
+        options.onEvent?.(event);
       },
       log(message) {
         if (!ownsCurrentSession.value) return;
@@ -184,15 +188,14 @@ export function createRecording(options: RecordingOptions): Recording {
     clearLog,
     dispose() {
       resetRecorder();
-      cues.dispose();
     },
   };
 }
 
-export const recordingKey: InjectionKey<Recording> = Symbol("recording");
+export const applicationCaptureKey: InjectionKey<ApplicationCapture> = Symbol("recording");
 
-export function useRecording(): Recording {
-  const recording = inject(recordingKey);
-  if (!recording) throw new Error("The Recording module was not provided.");
+export function useApplicationCapture(): ApplicationCapture {
+  const recording = inject(applicationCaptureKey);
+  if (!recording) throw new Error("The ApplicationCapture module was not provided.");
   return recording;
 }

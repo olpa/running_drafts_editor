@@ -133,35 +133,40 @@ organised by feature, each owning its module, gateway, components, and tests:
 
 `src/app/application.ts` is the only place that creates production adapters. It
 builds the gateways, passes them as plain arguments to the module factories
-(`createSession`, `createRecording`, `createProjects`, `createHealth`), and
+(`createSession`, `createApplicationCapture`, `createProjects`, `createHealth`), and
 provides the finished modules to components with typed `InjectionKey`s. Components
-only inject modules (`useSession()`, `useRecording()`, and so on); they never call
+only inject modules (`useSession()`, `useApplicationCapture()`, and so on); they never call
 HTTP or browser APIs directly. Tests and Storybook replace an adapter or a whole
 module without touching components.
 
-Recording state lives in an application-lifetime module outside any component, so
-switching views cannot lose undelivered audio. `createRecording` adds the Account
-ownership rules, the diagnostic log, and cue playback. It creates one
-`createProjectRecorder` per Account (`src/recording/project-recorder.ts`), the
-coordinator that owns Project and Section creation, the start sequence, and the
-Section list, and derives its snapshot with `computed()`. Each Section is two modules
-with no dependency on each other:
+Capture state lives outside Vue components, so switching views cannot lose
+undelivered audio. `createApplicationCapture` manages Account ownership and the
+diagnostic log. It holds a Project (`src/recording/project.ts`), which owns its
+identity and ordered Sections. Each Section holds its identity, Audio Asset
+identity, and one `CaptureAndDelivery` instance.
 
-- `section-capture.ts` is the transient part: the microphone, the progress and
-  duration timers, and the capture lifecycle. It is the only place the microphone
-  is released.
-- `section-delivery.ts` is the durable part: the frame queue, one recovery mode
-  (automatic, waiting, requested, or blocked), the suspension flag, and sealing the
-  Audio Asset. It outlives capture and survives sign-out.
+`capture-and-delivery.ts` owns the complete Section workflow: microphone Capture,
+frame requests, securing deadlines, retained audio, recovery, sealing, and semantic
+events. `section-delivery.ts` and `delivery.ts` are internal queue and sealing
+helpers. Typed callbacks connect events to baseline sound feedback and the
+application-owned stop alarm; Vue renders reactive state. There is no message bus.
 
-The coordinator maps events from capture into delivery and asks capture to stop when
-delivery cannot continue safely (backlog, oversize frame, conflict).
+Internal `FrameTiming` schedules regular ticks and independent securing deadlines
+from actual frame-request times. Stopping ticks leaves deadlines active. Secured
+frames ignore their later deadline events; disposal cancels all timers. An injected
+monotonic clock/scheduler supports deterministic tests without browser globals.
 
-`MediaRecorderFrameSource` and `FrameDelivery` retain their separate capture and
-submission responsibilities. `openMicrophoneCapture` owns strict WebM/Opus
-capability checking, preferred-mono microphone acquisition, usable-track
-verification, recorder finalization, and resource release. Channel count and
-sample rate are not capture acceptance gates.
+Shared `MicrophoneAccess` reserves microphone use before startup. If another
+reservation is held, a modal offers **Cancel** or **Stop previous Capture and
+start new**. Takeover releases the previous recorder while keeping its Section's
+retained audio and delivery state. A revoked reservation cannot release its
+successor. Browser permission remains the recorder adapter's responsibility.
+
+`openMicrophoneCapture` owns strict WebM/Opus capability checking, preferred-mono
+microphone acquisition, usable-track verification, recorder finalization, and
+resource release. `MediaRecorder` starts without a timeslice; the Section workflow
+requests each frame explicitly. Channel count and sample rate are not Capture
+acceptance gates.
 
 Styles: `src/style.css` holds design tokens and base styles; each component keeps
 its own layout in `<style scoped>`. `src/style.test.ts` checks the colour tokens
@@ -172,7 +177,12 @@ against WCAG 2.2 AA contrast ratios.
 The page keeps one microphone stream and recorder open per Section. Stop waits
 for the final partial transport frame, then the Section completes only after all
 assigned frames are acknowledged. The ten-minute recording limit, transport
-interval, and 2 MiB frame guard are configurable through `window.__SEED_CONFIG__`.
+interval, securing deadline, and 2 MiB frame guard are configurable through
+`window.__SEED_CONFIG__`. The frame interval defaults to 10 seconds and the securing
+deadline to 1000 ms, validated within 500–1500 ms. Timing is never read from
+`localStorage`. The securing budget starts when a frame is requested, before Blob
+production and HTTP setup. A late boundary shifts the next request; it does not
+create a short catch-up frame.
 A prominent green **Speak now** indicator and duration progress appear during
 microphone capture. They stop indicating capture as soon as capture stops,
 independently of pending uploads and backend work.
@@ -183,7 +193,8 @@ start. Requests time out independently after 60 seconds, so retries can overlap.
 The backend must accept duplicates idempotently.
 
 The three-frame backlog limit applies independently to each Section and includes
-the current frame: two completed pending frames plus one being captured. If
+the current frame: two requested unsecured frames plus the final partial frame. Missing Blobs count
+as unsecured frames, just like stalled HTTP requests. If
 delivery stays blocked, capture stops at the current boundary. New automatic
 attempts for that Section stop, while existing attempts may finish. Per-Section
 **Upload pending audio** actions retry retained bytes without restarting capture.
@@ -193,18 +204,36 @@ Any frame-upload HTTP `409` stops capture and permanently freezes delivery for
 that Section without sealing it. Exact pending audio and returned Problem
 Details remain visible for diagnosis, while another Section may start normally.
 
-Start and capture stop play short rising/falling cues. Each newly acknowledged
-frame for the actively capturing Section plays a quiet rising health cue. At the
-time limit, the falling stop cue plays immediately instead of waiting for
-delivery or sealing.
-Delayed upload plays an attention tone followed by Morse U (`..-`) once per delay
-episode. A Capture interruption immediately plays the attention tone followed
-by Morse X (`-..-`) and shows why capture stopped.
+### Baseline sound and visible feedback
 
-Before real-microphone use, check cue recognition and leakage on the intended
-speakers/headset: speak while health cues play, force an upload failure, listen
-for distinct delay and stopped-capture cues, and inspect the recording for cue
-contamination. Fake-microphone tests cannot verify acoustic leakage.
+- Capture starting plays the existing rising start cue. Failure before Capture
+  begins shows a local error and raises no stop alarm.
+- Each frame secured while its Section is actively capturing plays the quiet
+  rising health cue immediately. Older stopped Sections and final partial frames
+  do not play healthy heartbeats.
+- Each frame still unsecured at its deadline plays the attention tone and Morse U
+  (`..-`) once and shows its own **Saving audio is delayed.** line. After another
+  deadline interval, the line shows elapsed whole seconds from the frame request
+  and updates once per second. Each new overdue line is announced politely;
+  elapsed-second updates stay silent. Securing the frame clears its line.
+- User-requested stop is silent. The falling completion cue plays only after the
+  backend confirms Audio Asset sealing, including recovery and older Sections.
+- Capture finalization failure after a user stop and every failed sealing attempt,
+  including a failed retry, play the problem cue once and retain visible details.
+- Every unrequested stop, including the duration limit, activates the global alarm.
+  The baseline attention tone and Morse X (`-..-`) loop continuously without an
+  added pause between repetitions. The top alert bar says **Capture stopped. Up to
+  30 seconds of recent audio may not be saved.** Only **Acknowledge** stops the loop
+  and removes the bar. Views, sign-out, recovery, and a new Capture do not clear it.
+  Additional stops keep the existing alarm rather than restarting it.
+- If alarm sound is blocked or fails, the bar also shows **Alarm sound is
+  unavailable.** There is no sound-enable button. Visible feedback remains usable.
+
+Independent cues can overlap, including completion or final-frame delivery
+warnings during an alarm. The alarm's WebAudio source loops without visibility
+checks or repeated JavaScript timers. Application disposal stops playback and
+releases resources without acknowledging the alarm. New sound palettes and the
+Storybook sound laboratory belong to separate issues.
 
 ## Diagnostic log
 

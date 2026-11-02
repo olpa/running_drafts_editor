@@ -1,10 +1,14 @@
 <script setup lang="ts">
+import CaptureStopAlarm from "../alarm/CaptureStopAlarm.vue";
+import MicrophoneAccessDialog from "../recording/MicrophoneAccessDialog.vue";
 import HealthPanel from "../health/HealthPanel.vue";
 import SeedApp from "./SeedApp.vue";
 </script>
 
 <template>
   <main class="app-shell">
+    <CaptureStopAlarm />
+    <MicrophoneAccessDialog />
     <header class="topbar">
       <div>
         <h1>Running Drafts</h1>

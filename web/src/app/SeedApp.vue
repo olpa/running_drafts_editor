@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import ProjectBrowser from "../projects/ProjectBrowser.vue";
 import { useProjects } from "../projects/projects.ts";
 import { useLeaveGuard } from "../recording/leave-guard.ts";
 import RecordingPanel from "../recording/RecordingPanel.vue";
-import { useRecording } from "../recording/recording.ts";
+import { useApplicationCapture } from "../recording/application-capture.ts";
 import SessionPanel from "../session/SessionPanel.vue";
 import { useSession } from "../session/session.ts";
 import { useConfig } from "../shared/config.ts";
 import RadarLogView from "../shared/RadarLogView.vue";
 
 const session = useSession();
-const recording = useRecording();
+const recording = useApplicationCapture();
 const projects = useProjects();
 const config = useConfig();
 useLeaveGuard(recording);
@@ -33,7 +33,6 @@ async function showProjects(): Promise<void> {
 }
 
 onMounted(() => void session.start());
-onBeforeUnmount(() => recording.dispose());
 </script>
 
 <template>

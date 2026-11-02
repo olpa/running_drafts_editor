@@ -1,8 +1,8 @@
 import { onBeforeUnmount, onMounted } from "vue";
-import type { Recording } from "./recording.ts";
+import type { ApplicationCapture } from "./application-capture.ts";
 
 /** Ask the browser to confirm leaving the page while audio is not yet durably delivered. */
-export function useLeaveGuard(recording: Recording): void {
+export function useLeaveGuard(recording: ApplicationCapture): void {
   const beforeLeave = (event: BeforeUnloadEvent): void => {
     if (recording.hasUnsecuredAudio.value) {
       event.preventDefault();
