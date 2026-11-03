@@ -13,6 +13,19 @@ through the real UI. Co-locate stories, harnesses, and fake adapters with their
 owning feature, and extract shared story support only after another feature
 needs it.
 
+An explicitly scoped exploration may retain temporary feedback logic in its
+Storybook adapters while the corresponding production behavior is being decided.
+Mark that behavior as an experiment and record its scope in the assigned issue.
+Once the behavior is implemented in production, remove the temporary product
+logic and use the production modules, cue definitions, and application wiring.
+Keeping a second implementation in Storybook would let review scenarios drift
+from the behavior they are meant to demonstrate.
+
+Retain useful stories, candidate catalogs, listening controls, deterministic
+environmental adapters, and arranged review playback. These provide review
+inputs and drive real product actions; they do not own product feedback
+decisions. Pausing exploration does not itself authorize deleting its code.
+
 Storybook is development tooling rather than a product surface or acceptance
 framework. Keep it out of the production application, build, image, deployment,
 and navigation. Focused production tests remain with their owning features, and

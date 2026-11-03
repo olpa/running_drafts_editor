@@ -163,6 +163,14 @@ application alarm remain independent processes.
 
 ## Semantic feedback
 
+This section records the production baseline established by #111. The repeating
+Problem experiment is tracked in [#110](https://github.com/olpa/running_drafts_editor/issues/110),
+and its production implementation is tracked in
+[#112](https://github.com/olpa/running_drafts_editor/issues/112). Its temporary
+Storybook feedback logic does not replace the production decision below. Update
+this ADR when that behavior is promoted, and replace the temporary laboratory
+logic with production code and wiring as required by ADR 0002.
+
 Production logic reports domain events rather than oscillator or audio-file
 choices. Its meaningful outcomes include Capture starting, a Transport frame
 being secured, a Transport frame becoming overdue, Capture finalization

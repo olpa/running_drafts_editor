@@ -1,0 +1,4 @@
+Author: Kenney
+Original: https://kenney.nl/assets/interface-sounds
+Mirror: https://github.com/GeorgeQLe/assets-sfx-ui/tree/760afd035e8fc3cd7fb5bc58d49a967649875e3e/assets/kenney/interface-sounds/Audio
+Files copied without modification. Playback normalization is applied in the laboratory.
