@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { afterEach, it, vi } from "vitest";
+import { createCaptureAlerts } from "../alerts/capture-alerts.ts";
 import { DEFAULT_CONFIG } from "../shared/config.ts";
 import { ApiError } from "../shared/http.ts";
 import type { AudioAssetSummary, ProjectSummary } from "../shared/project-types.ts";
 import type { CaptureOptions, MicrophoneCapture, TransportFrame } from "./capture.ts";
 import type { FrameAck, RecordingGateway } from "./gateway.ts";
-import { playSectionFeedback } from "./feedback.ts";
+import { createCaptureFeedback } from "./capture-feedback.ts";
 import { createProject } from "./project.ts";
 
 type RecordingEvent = { type: "cue"; cue: string } | { type: "log"; message: string };
@@ -227,6 +228,17 @@ function harness(
   const context = options.projectId
     ? { accountId: "account-a", projectId: options.projectId }
     : { accountId: "account-a" };
+  const sound = {
+    prepare() {},
+    play: (cue: string) => events.push({ type: "cue" as const, cue }),
+    loopProblem: () => {
+      events.push({ type: "cue" as const, cue: "problem" });
+      return () => {};
+    },
+    dispose() {},
+  };
+  const alerts = createCaptureAlerts(sound);
+  const feedback = createCaptureFeedback(sound, alerts);
   const controller = createProject(
     {
       ...DEFAULT_CONFIG,
@@ -236,20 +248,14 @@ function harness(
     dependencies,
     context,
     {
-      event: (event) => {
-        playSectionFeedback(event, {
-          prepare() {},
-          play: (cue) => events.push({ type: "cue", cue }),
-          loopInterrupted: () => () => {},
-          dispose() {},
-        });
-        if (event.type === "unrequestedCaptureStopped")
-          events.push({ type: "cue", cue: "interrupted" });
-      },
+      event: feedback,
       log: (message) => events.push({ type: "log", message }),
     },
   );
-  cleanups.push(() => controller.dispose());
+  cleanups.push(() => {
+    controller.dispose();
+    alerts.dispose();
+  });
   const cues = () => events.filter((event) => event.type === "cue").map((event) => event.cue);
   return { controller, backend, captures, events, cues };
 }
@@ -333,11 +339,10 @@ it("failed graceful finalization interrupts the Section instead of completing it
     ),
   );
   assert.equal(controller.snapshot.value.sections[0]!.completion, null);
-  assert.equal(cues().filter((cue) => cue === "interrupted").length, 0);
-  assert.equal(cues().filter((cue) => cue === "delayed").length, 1);
+  assert.equal(cues().filter((cue) => cue === "problem").length, 1);
 });
 
-it("duration stop raises an alarm and completion follows backend sealing", async () => {
+it("duration stop raises a Capture alert and sealing does not claim clean completion", async () => {
   const { controller, backend, captures, cues } = harness({ maxRecordingMs: 500 });
   await controller.start();
   vi.advanceTimersByTime(500);
@@ -347,8 +352,8 @@ it("duration stop raises an alarm and completion follows backend sealing", async
   backend.resolveRequest(0);
   await settle();
   assert.deepEqual(backend.completes, [{ assetId: "asset-1", frameCount: 1 }]);
-  assert.equal(cues().filter((cue) => cue === "stop").length, 1);
-  assert.equal(cues().filter((cue) => cue === "interrupted").length, 1);
+  assert.equal(cues().filter((cue) => cue === "capture-completed").length, 0);
+  assert.equal(cues().filter((cue) => cue === "problem").length, 1);
   assert.equal(controller.snapshot.value.sections[0]!.problem, "");
 });
 
@@ -467,10 +472,14 @@ it("backlog retains three frames while a new Section uploads concurrently and ol
   assert.notEqual(newAssetRequest, -1);
   backend.resolveRequest(0);
   await settle();
-  assert.equal(cues().filter((cue) => cue === "health").length, 0, "old acknowledgement is silent");
+  assert.equal(
+    cues().filter((cue) => cue === "healthy-heartbeat").length,
+    0,
+    "old acknowledgement is silent",
+  );
   backend.resolveRequest(newAssetRequest);
   await settle();
-  assert.equal(cues().filter((cue) => cue === "health").length, 1);
+  assert.equal(cues().filter((cue) => cue === "healthy-heartbeat").length, 1);
 
   const oldSection = controller.snapshot.value.sections[0]!;
   controller.uploadPendingAudio(oldSection.sectionId);
@@ -482,7 +491,7 @@ it("backlog retains three frames while a new Section uploads concurrently and ol
   await settle();
   assert.deepEqual(backend.interrupts, ["asset-1"]);
   assert.equal(controller.snapshot.value.sections[0]!.completion, null);
-  assert.equal(cues().filter((cue) => cue === "health").length, 1);
+  assert.equal(cues().filter((cue) => cue === "healthy-heartbeat").length, 1);
 });
 
 it("interruption close failure is retryable and does not block a later recorder", async () => {

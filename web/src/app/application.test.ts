@@ -136,7 +136,7 @@ function mountApplication(adapters: ApplicationAdapters = {}) {
     recordingGateway,
     projectsGateway: { listProjects: async () => [] } as unknown as ProjectsGateway,
     healthGateway: { check: async () => Promise.reject(new Error("unused")) },
-    cues: { prepare() {}, play() {}, loopInterrupted: () => () => {}, dispose() {} },
+    cues: { prepare() {}, play() {}, loopProblem: () => () => {}, dispose() {} },
     environment: {
       scheduler: {
         now: () => performance.now(),
@@ -377,7 +377,7 @@ describe("application", () => {
   });
 });
 
-it("keeps the stop alarm across views, new Capture, and sign-out until explicit acknowledgement", async () => {
+it("keeps Capture alerts across views, new Capture, and sign-out until explicit acknowledgement", async () => {
   let starts = 0;
   let stops = 0;
   const { root, application, captures } = mountApplication({
@@ -385,7 +385,7 @@ it("keeps the stop alarm across views, new Capture, and sign-out until explicit 
       prepare() {},
       play() {},
       dispose() {},
-      loopInterrupted() {
+      loopProblem() {
         starts++;
         return () => {
           stops++;
@@ -399,12 +399,12 @@ it("keeps the stop alarm across views, new Capture, and sign-out until explicit 
   const focused = document.activeElement;
   captures[0]!.options.onError(new Error("Microphone ended"));
   await flushPromises();
-  expect(testId(root, "capture-stop-alarm")).not.toBeNull();
+  expect(testId(root, "capture-alerts")).not.toBeNull();
   expect(document.activeElement).toBe(focused);
   expect(starts).toBe(1);
   testId(root, "projects-view")!.click();
   await flushPromises();
-  expect(testId(root, "capture-stop-alarm")).not.toBeNull();
+  expect(testId(root, "capture-alerts")).not.toBeNull();
   testId(root, "record-view")!.click();
   await flushPromises();
   testId(root, "start")!.click();
@@ -414,15 +414,15 @@ it("keeps the stop alarm across views, new Capture, and sign-out until explicit 
   expect(stops).toBe(0);
   await application.session.logout();
   await flushPromises();
-  expect(testId(root, "capture-stop-alarm")).not.toBeNull();
+  expect(testId(root, "capture-alerts")).not.toBeNull();
   expect(stops).toBe(0);
   button(root, "Acknowledge")!.click();
   await flushPromises();
-  expect(testId(root, "capture-stop-alarm")).toBeNull();
+  expect(testId(root, "capture-alerts")).toBeNull();
   expect(stops).toBe(1);
 });
 
-it("offers takeover when an earlier Capture is stuck finalizing, and keeps the alarm independent", async () => {
+it("offers takeover when an earlier Capture is stuck finalizing, and keeps Capture alerts independent", async () => {
   const { root, application, captures } = mountApplication();
   await flushPromises();
   testId(root, "start")!.click();
@@ -441,14 +441,14 @@ it("offers takeover when an earlier Capture is stuck finalizing, and keeps the a
   expect(captures[0]!.disposed).toBe(false);
   testId(root, "start")!.click();
   await flushPromises();
-  application.alarm.activate();
+  application.alerts.raise({ kind: "unrequested-capture-stop", sectionId: "manual" });
   button(root, "Stop previous Capture and start new")!.click();
   await flushPromises();
   expect(captures).toHaveLength(2);
   expect(captures[0]!.disposed).toBe(true);
   expect(application.recording.snapshot.value.capturing).toBe(true);
   expect(application.recording.snapshot.value.sections[0]!.finalizingCapture).toBe(false);
-  expect(application.alarm.active.value).toBe(true);
+  expect(application.alerts.alerts.value).toHaveLength(1);
   expect(root.querySelector('[role="dialog"]')).toBeNull();
 });
 
@@ -460,7 +460,7 @@ it("plays completion when a signed-out Account's last retained Section seals", a
       play: (cue) => {
         played.push(cue);
       },
-      loopInterrupted: () => () => {},
+      loopProblem: () => () => {},
       dispose() {},
     },
   });
@@ -497,6 +497,6 @@ it("plays completion when a signed-out Account's last retained Section seals", a
   await flushPromises();
   sealing.resolve(asset(recordingGateway.assetId, "completed"));
   await flushPromises();
-  expect(played).toEqual(["start", "stop"]);
+  expect(played).toEqual(["capture-started", "capture-completed"]);
   expect(application.recording.hasRecorder.value).toBe(false);
 });

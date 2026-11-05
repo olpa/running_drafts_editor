@@ -22,9 +22,9 @@ export function transportFrameTiming(value: TransportFrameTiming): Readonly<Tran
   if (
     !Number.isFinite(value.secureDeadlineMs) ||
     value.secureDeadlineMs < 500 ||
-    value.secureDeadlineMs > 1500
+    value.secureDeadlineMs > 2000
   )
-    throw new Error("Transport frame securing deadline must be between 500 and 1500 ms.");
+    throw new Error("Transport frame securing deadline must be between 500 and 2000 ms.");
   return Object.freeze({ ...value });
 }
 

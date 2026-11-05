@@ -8,8 +8,8 @@ const meta = {
     scenarioName: "palette",
     clockMode: "automatic",
     playbackSpeed: 1,
-    intervalSeconds: 10,
-    securingDeadlineMs: 1000,
+    intervalSeconds: 5,
+    securingDeadlineMs: 2000,
     simulatePlaybackFailure: false,
   },
   argTypes: {
@@ -26,10 +26,10 @@ const meta = {
     },
     intervalSeconds: {
       control: { type: "range", min: 1, max: 20, step: 1 },
-      name: "Simulated frame interval (seconds; production: 10)",
+      name: "Simulated frame interval (seconds; production: 5)",
     },
     securingDeadlineMs: {
-      control: { type: "range", min: 500, max: 1500, step: 100 },
+      control: { type: "range", min: 500, max: 2000, step: 100 },
       name: "Securing deadline (ms)",
     },
     simulatePlaybackFailure: { control: "boolean", name: "Simulate unavailable audio" },
@@ -39,7 +39,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Click Play scenario to enable sound and listen to the arranged sequence. Automatic review advances the injected clock and performs real production actions; manual review retains the Advance controls. Environmental adapters never reach a live service. Real-time playback uses 1× speed; Accelerated Healthy Dictation defaults to 5×. Alarm audio keeps real time. The real-time frame interval is a local exception to ADR 0002's three-second wait limit. Findings belong in #110; Storybook stores none.",
+          "Click Play scenario to enable sound and listen to the arranged sequence. Automatic review advances the injected clock and performs real production actions; manual review retains the Advance controls. Environmental adapters never reach a live service. Real-time playback uses 1× speed; Accelerated Healthy Dictation defaults to 5×. Problem audio keeps real time. The real-time frame interval is a local exception to ADR 0002's three-second wait limit. Record findings in the issue requesting the current experiment; Storybook stores none.",
       },
     },
   },
@@ -68,7 +68,7 @@ export const UserStopAndSuccessfulSeal: Story = scenario("stop");
 export const FinalFrameDelayed: Story = scenario("final");
 export const UnrequestedDurationStop: Story = scenario("duration");
 export const CaptureFailure: Story = scenario("failure");
-export const CompletionDuringAlarm: Story = scenario("coexist");
+export const SealingDuringCaptureAlert: Story = scenario("coexist");
 export const OlderSectionCompletes: Story = scenario("older");
 export const RepeatedStopEvents: Story = scenario("repeated");
 export const AudioPlaybackUnavailable: Story = {

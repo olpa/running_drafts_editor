@@ -7,12 +7,9 @@ npm install
 npm run storybook
 ```
 
-Storybook opens `http://localhost:6006` in the local browser. Use its Controls
-panel to change a story's environmental inputs and its Accessibility panel for
-an interactive accessibility inspection. The upstream
-[Controls](https://storybook.js.org/docs/essentials/controls) and
-[accessibility](https://storybook.js.org/docs/writing-tests/accessibility-testing)
-documentation covers the general interface.
+Storybook opens `http://localhost:6006`. Use its Controls panel to change a
+story's environmental inputs and its Accessibility panel for interactive
+inspection.
 
 For a remote machine or agent environment, leave browser opening disabled:
 
@@ -28,189 +25,161 @@ ssh -N -L 6006:127.0.0.1:6006 user@remote-host
 
 Then open `http://127.0.0.1:6006` locally. If local port 6006 is occupied, use
 another local port, for example `-L 16006:127.0.0.1:6006`, and open that port.
-
-Press Ctrl+C in the terminal running Storybook to stop it.
+Press Ctrl+C in the Storybook terminal to stop it.
 
 ## Capture sound laboratory: Manual review
 
-The current exploration is complete. Retain the entire current
-laboratory, including all candidates and experimental behavior. The current
-palette remains a pre-selection; production promotion and replacement of
-temporary Storybook product logic with production code and wiring belong to
-[#112](https://github.com/olpa/running_drafts_editor/issues/112). Keep useful review
-infrastructure when doing that cleanup. ADR 0002 records this boundary.
-
-Run `npm run storybook` from `web/`, then open **Capture → Sound laboratory →
-Sound Palette**. The direct story path is
+Open **Capture → Sound laboratory → Sound Palette**. The direct story path is
 `/?path=/story/capture-sound-laboratory--sound-palette`.
-In **Sound Palette**, click **Enable laboratory sound** before auditioning.
-In each named scenario, click **Play scenario**: it enables sound and runs the
-arranged sequence without Advance, recovery, Stop, or sealing clicks. Browser
-audio restrictions or missing local audio appear visibly; Capture and its visible
-feedback still work.
-The laboratory requests no microphone and uses no backend, credentials, or saved
-Project data. Downloaded sound files are bundled with the story.
 
-The default **Production candidate** palette pre-selects the current proposal:
+The laboratory requests no microphone, backend, credentials, or saved Project
+data. It renders the production `RecordingPanel` and Capture-alert component over
+the production application modules and event wiring. Deterministic adapters
+replace microphone, delivery, sealing, clock, and sound output. Unexpected
+activity fails visibly rather than reaching a live service.
+
+Click **Enable laboratory sound** before direct audition. In an arranged story,
+**Play scenario** enables sound and performs the documented production actions
+automatically. Browser audio restrictions or simulated playback failure remain
+visible while Capture and alert controls stay usable.
+
+### Production palette
+
+The default **Production** preset uses the production definitions:
 
 | Role | Candidate | Relative volume |
 | --- | --- | --- |
-| Healthy heartbeat | Gentle rise / Triangle cadence | 100% |
-| Problem | Morse Stop (the production interrupted cue) | 100% |
-| Capture completed | Triangle finish / Four-note triangle cadence | 100% |
-| Unrequested-stop alarm | Morse Stop | 100% |
+| Healthy heartbeat | `triangle-cadence` / Triangle cadence | 100% |
+| Problem | `morse-stop` / Morse Stop | 100% |
+| Capture completed | `four-note-triangle-cadence` / Four-note triangle cadence | 100% |
 
-This is a listening proposal, not a production change. Master volume starts at
-100%; the requested 100% relative values remain independently adjustable.
+Capture-started remains fixed. Morse Stop uses the production 1.18-second buffer
+and repeats with no added gap. Production and Storybook import the same promoted
+definitions; the laboratory does not keep copies.
 
-Select **Production baseline** to compare with the current application. Audition any candidate directly,
-then compare **Soft and tactile**, **Glass and bells**, **Minimal signals**, and
-**Kenney interface**. Role selections override the palette independently. The master
-volume applies to all cues, including the fixed production start gesture; relative
-volume applies to each tunable role. Pitch and duration affect synthesized
-alternatives only. Reset restores the selected palette, its relative levels and
-alarm gap, and the laboratory master default of 100%.
+The retained Soft and tactile, Glass and bells, Minimal signals, and Kenney
+interface presets provide alternative starting points. Every role selector
+offers every candidate, grouped as Healthy, Problem, or Completion. The
+laboratory keeps no historical production preset.
 
-Every role selector offers all candidates, grouped by their initially proposed
-role. For example, under **Healthy heartbeat**, open **Candidate for healthy
-heartbeat** and select **Closing bell** in the **Capture completed** group. Click
-**Audition selected sound** to hear it immediately, or Start Capture to hear it
-when a Transport frame secures. Catalog audition buttons use the initially
-proposed role; use the role selectors to try a sound elsewhere.
+Master and relative volume, synthesized pitch and duration, and repeating gap
+are bounded listening controls. Production fixes master and all relative levels
+at 100%, pitch and duration at their definitions, and the Problem gap at zero.
+Changing a candidate does not replace an active Problem loop. Click the
+production **Acknowledge** action, then audition Problem again.
 
-### Repeating Problem experiment
+Direct Healthy and Completion auditions use the one-shot sound adapter. Direct
+Problem audition raises a visibly labelled laboratory alert through the real
+production `CaptureAlerts` module. The production component owns presentation,
+unavailable-sound state, acknowledgement, and repeating playback.
 
-**Production candidate** enables **Repeat Problem until a healthy heartbeat or
-Acknowledge**. Problem events start one continuous loop, without stacking or
-restarting it for further events. A healthy heartbeat clears it before playing;
-the global **Acknowledge** action also clears it. Completion and ordinary Start or
-Stop do not clear it. A secured final frame or an older stopped Section produces
-no healthy heartbeat, so its recovery alone does not stop Problem repetition.
+### Capture-alert behavior
 
-The workbench shows an explicit experiment notice while Problem repetition is
-active, with **Acknowledge** available even when there is no unrequested-stop
-alarm. If both are active, the production alarm bar's **Acknowledge** button clears
-both. Healthy feedback still cannot acknowledge an unrequested-stop alarm.
-The stop alarm takes sound priority when different candidates are selected; when
-both use the same sound and settings, playback is shared without doubling or
-restarting it. This is a preview choice for listening review.
+The application can hold several identified Capture alerts while playing one
+Problem loop. Adding another alert neither stacks nor restarts sound. Resolving
+one alert stops sound only when no alert remains. **Acknowledge** clears all
+current alerts without performing recovery or removing unresolved workflow
+details.
 
-The **Repeating sound gap** control applies to either loop. A zero gap preserves
-continuous Morse Stop playback. Both kinds of loop use real audio time even when
-the simulation clock advances. Timing rebuilds retain their active state until
-healthy feedback or acknowledgement clears the appropriate state.
+An overdue frame resolves only its own alert when that frame becomes secured. A
+Healthy heartbeat does not clear unrelated alerts. A final frame and a frame
+from an older stopped Section resolve their alerts even though they emit no
+Healthy heartbeat. Successful Audio Asset sealing resolves its sealing-failure
+alert. Capture finalization failure and Unrequested Capture stop require
+acknowledgement.
 
-This experiment deliberately changes the sound adapter's response to production
-events. It does not change production modules, per-frame delay UI, delivery,
-sealing, or the production alarm. ADR 0003 still describes production's one-shot
-Problem feedback. Full production behavior and its ADR/test changes belong to
-follow-up #112. Other palette defaults, including **Production baseline**, disable
-the experiment; the checkbox can enable it for any palette.
+Capture alerts outlive the recording view and Application Session while the page
+lives. Storybook timing changes may rebuild its simulated Section environment;
+use **Acknowledge** whenever a retained alert is no longer useful to the review.
 
-### Listen to an arranged scenario
+### Arranged and manual playback
 
-Open **Single Overdue Frame** and click **Play scenario**. Time advances on its
-own. The first frame becomes overdue, Morse Stop sounds, and healthy recovery
-stops it and plays Triangle cadence. The arranged user Stop and sealing then
-complete the sequence. **Final Frame Delayed** automatically performs Stop,
-delayed final delivery, recovery, and sealing; completion leaves the experimental
-Problem loop active until **Acknowledge**.
+Named scenarios default to automatic review. **Accelerated Healthy Dictation**
+defaults to 5× simulated speed; other automatic scenarios start at 1×. **All
+Frames Secured** defaults to real time at the production ten-second frame
+interval. Sound durations and repetition always use real audio time.
 
-Named scenarios default to **automatic** review. **Accelerated Healthy Dictation**
-defaults to 5× simulated speed; other scenarios start at 1×. **All Frames Secured**
-defaults to **real-time**, which always uses 1× speed. Change **Automatic playback
-speed** in Storybook Controls to compare faster scenarios while retaining their
-configured frame interval and securing deadline. Sound durations and repetitions
-always keep real audio time.
+**Pause scenario** freezes simulated Capture and delivery time; repeating Problem
+continues. **Resume scenario** continues from the same point. A finished scenario
+leaves its final visible state for review. When alerts are active, replay is
+labelled **Acknowledge and replay scenario** and explicitly clears them first.
 
-**Pause scenario** freezes the simulated clock and arranged actions; repeating
-alerts continue until **Acknowledge**. **Resume scenario** continues from the same
-point. At the end, the clock pauses and the visible final state remains for
-review. **Replay scenario** creates a fresh run and preserves the palette and
-numbered history. If an alert is active, the button explicitly reads
-**Acknowledge and replay scenario**, clearing the alert as part of that action.
+Choose **manual** under **Review clock** for step-by-step inspection. Use the
+production Start and Stop controls with **Advance**, **Recover simulated
+delivery**, and **Confirm simulated sealing**. Timing or review-clock changes
+create a fresh simulated Section while retaining palette choices and numbered
+activity history. Playback-speed changes apply to the next clock step without
+rebuilding the Section.
 
-The arranged sequence invokes real production actions through the same module
-interface as the Start/Stop buttons. This is explicit workbench playback initiated
-by the reviewer; production does not automatically perform these user actions.
-Manual UI actions and environmental failure controls remain available for
-exploration, though they may change the arranged outcome.
+The real-time frame interval control from 1–20 seconds is a documented local
+exception to ADR 0002's three-second wait limit. Production is visibly marked at
+5 seconds. The securing deadline is bounded from 500–2000 ms and defaults to the
+production 2000 ms. These Storybook controls do not loosen the deployed
+application's fixed 5-second interval.
 
-Choose **manual** in **Review clock** for step-by-step inspection. Then use the
-production **Start**, **Stop current recording to start new**, and **Start new
-recording** controls with the Advance, recovery, and sealing buttons. The clock
-stays still between advances. This is an inspection path, not the default
-listening experience.
+### Reproducible review paths
 
-Timing or review-clock changes create a fresh, stopped scenario while preserving
-sound choices and numbered history. Active alerts remain until acknowledgement
-or appropriate healthy feedback. Playback-speed changes apply to the next clock
-step without rebuilding the Section. Changing a repeating candidate replaces its
-sound immediately. A zero repeating gap means no added pause.
+1. Open **Sound Palette**, enable sound, and compare the three Production roles.
+   For Problem, acknowledge before selecting and auditioning another candidate.
+2. Open **Single Overdue Frame** and play it. Expect Morse Stop and a global
+   Capture alert at the deadline. Securing that frame removes the alert and plays
+   Triangle cadence; Four-note triangle cadence follows at least two seconds later.
+3. Open **Two Overdue Frames**. Expect independent delay lines and alert IDs with
+   one Problem loop. Recovery removes frame alerts independently while the
+   Unrequested Capture stop remains for acknowledgement.
+4. Open **Final Frame Delayed**. Expect its overdue alert to resolve when the
+   final frame secures, without a Healthy heartbeat.
+5. Open **Sealing During Capture Alert**. Expect backend sealing while the
+   Unrequested Capture stop alert and Problem loop remain active, without the
+   Completion cue.
+6. Open **Audio Playback Unavailable**. Expect the global component to report
+   **Problem sound is unavailable.** Acknowledge must remain usable.
 
-The real-time frame interval of 1–20 seconds is a local exception to ADR 0002's
-three-second wait limit. The default and visibly marked production interval is
-10 seconds; the production securing deadline is 1000 ms. Manual advancement moves
-Capture and delivery through the injected clock, while audio plays in real time.
-Fast advancement may overlap cues. It does not replay skipped alarm repetitions.
-Speak continuously during real-time review, comparing reassurance, urgency,
-distinguishability, and distraction. Try speakers and headphones when available.
+Speak continuously during real-time review. Compare reassurance, urgency,
+distinguishability, and distraction through speakers and headphones when
+available. Record findings in the GitHub issue that requested the current sound
+experiment; Storybook stores none.
 
-Each named scenario includes a description at the top. Click **Play scenario**
-once, then listen for its arranged outcome:
+### Scenario catalog
 
 | Story | Arranged listening sequence |
 | --- | --- |
-| Sound Palette | Direct auditions; automatic review can play the healthy Capture sequence. |
-| All Frames Secured | Three frames secure at real production cadence, followed by Stop and sealing. |
-| Accelerated Healthy Dictation | The same healthy sequence at 5× simulated speed by default. |
-| Single Overdue Frame | One delay warning, healthy recovery, then Stop and completion. |
-| Two Overdue Frames | Two independent delay lines and the actual backlog stop/alarm, then recovery. |
-| Recovery Burst | Recovery just before the next request produces healthy cues 40 simulated ms apart, then Stop and sealing. |
-| User Stop and Successful Seal | A short Capture stops; final audio secures before explicit simulated sealing confirmation. |
-| Final Frame Delayed | Stop, overdue final frame, delivery recovery, and independent completion. |
-| Unrequested Duration Stop | Capture reaches its duration limit; the global alarm remains for acknowledgement. |
-| Capture Failure | Recorder failure, Section cause, independent global alarm, and delivery recovery. |
-| Completion During Alarm | The backend confirms sealing after the duration stop while the alarm remains active. |
-| Older Section Completes | Section 1 stops; Section 2 starts before the older Section seals, then the newer Section stops and seals. |
-| Repeated Stop Events | Two successive Sections reach their duration limits without acknowledging the first alarm. |
-| Audio Playback Unavailable | Capture reaches its duration limit while the visible alarm reports unavailable sound. |
+| Sound Palette | Direct auditions; automatic mode can play a healthy Capture sequence. |
+| All Frames Secured | Three frames secure at production cadence, followed by Stop and sealing. |
+| Accelerated Healthy Dictation | The healthy sequence at 5× simulated speed by default. |
+| Single Overdue Frame | One identified overdue alert, recovery, then Completion after a two-second listening gap. |
+| Two Overdue Frames | Two delay lines, backlog stop, recovery, and persistent unrequested-stop alert. |
+| Recovery Burst | Healthy cues arrive 40 simulated ms apart; Completion waits at least two seconds. |
+| User Stop and Successful Seal | Final audio secures before explicit sealing confirmation. |
+| Final Frame Delayed | An overdue final frame resolves without a Healthy heartbeat. |
+| Unrequested Duration Stop | Duration limit raises a Capture alert requiring acknowledgement. |
+| Capture Failure | Recorder failure raises unrequested-stop and finalization alerts. |
+| Sealing During Capture Alert | Sealing succeeds, but the same Section's alert suppresses Completion. |
+| Older Section Completes | An older Section seals during a newer Capture. |
+| Repeated Stop Events | Two Sections add alerts to one Problem loop. |
+| Audio Playback Unavailable | Visible alert behavior remains usable without sound. |
 
-Use **Fail next Capture finalization** before Stop, or **Fail next sealing attempt**
-before confirming a seal, to review their distinct visible failure details and
-shared problem cue. Production retry buttons remain available. **Recover simulated
-delivery** releases held responses and permits subsequent simulated delivery;
-**Confirm simulated sealing** releases held and future sealing confirmations.
-These are environmental controls, not additional product recovery actions.
-
-Record findings in [issue #110](https://github.com/olpa/running_drafts_editor/issues/110)
-using candidate IDs from the log, palette/tuning, story, clock mode, and playback
-equipment. The workbench saves no findings. The initial broad catalog remains
-until listening review identifies the shortlist and alternatives. Production
-palette promotion remains #112. Storybook is review infrastructure; focused
-production tests remain the behavioral acceptance evidence.
+Use **Fail next Capture finalization** before Stop or **Fail next sealing
+attempt** before sealing confirmation to inspect those identified alerts and
+retry behavior. These controls vary deterministic environmental inputs; they do
+not implement product decisions.
 
 ### Candidate maintenance and provenance
 
-The laboratory is co-located under `src/recording/sound-lab/`. Add a candidate in
-`candidates.ts` using a small note definition or a bundled asset, its stable ID,
-role, acoustic family, source, author, exact license, and attribution requirement.
-Optionally refer to that ID in a palette. No registry, upload system, or persistent
-preferences are needed. Production imports none of these files.
+The laboratory is co-located under `src/recording/sound-lab/`. Add an alternative
+in `candidates.ts` with a stable acoustic ID and name, role, family, source,
+author, exact license, and attribution requirement. Production definitions live
+in `src/recording/sound-definitions.ts` and are imported into the catalog.
 
 Synthesized alternatives and decoded assets share an RMS target of 0.028 with a
 0.08 sample-peak cap before bounded master and relative gain. Silence is not
-amplified. Baseline definitions preserve production tone envelopes and frequencies;
-the interrupted buffer remains 1.18 seconds with no added gap. The fixed start
-uses the production rising gesture. Downloaded audio is mixed to mono and normalized
-in memory without changing the source files. Loudness matching is a starting point
-for listening review, not a claim of identical perceived loudness.
+amplified. Fixed definitions preserve their production envelopes and
+frequencies. Downloaded audio is mixed to mono and normalized in memory without
+changing source files.
 
 The twelve downloaded candidates come from Kenney's
 [Interface Sounds](https://kenney.nl/assets/interface-sounds), licensed under
 [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/).
-Attribution is optional; suggested credit is **Kenney (www.kenney.nl)**. Each
-candidate displays this provenance. The pack's original notice is retained in
-`assets/KENNEY-LICENSE.txt`; `assets/SOURCE.txt` records the pinned download mirror.
-The original site denied direct downloads during implementation, so the source
-files were copied unchanged from that mirror after checking the author's license.
+Attribution is optional; suggested credit is **Kenney (www.kenney.nl)**. The
+original notice remains in `assets/KENNEY-LICENSE.txt`; `assets/SOURCE.txt`
+records the pinned download mirror.

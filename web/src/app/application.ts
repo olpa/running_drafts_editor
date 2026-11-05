@@ -1,8 +1,8 @@
 import {
-  createCaptureStopAlarm,
-  captureStopAlarmKey,
-  type CaptureStopAlarm,
-} from "../alarm/capture-stop-alarm.ts";
+  captureAlertsKey,
+  createCaptureAlerts,
+  type CaptureAlerts,
+} from "../alerts/capture-alerts.ts";
 import {
   createMicrophoneAccess,
   microphoneAccessKey,
@@ -52,7 +52,7 @@ export interface Application {
   readonly session: Session;
   readonly recording: ApplicationCapture;
   readonly projects: Projects;
-  readonly alarm: CaptureStopAlarm;
+  readonly alerts: CaptureAlerts;
   readonly microphoneAccess: MicrophoneAccess;
 }
 
@@ -67,7 +67,7 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
     onAuthenticationExpired: () => session.authenticationExpired(),
   });
   const cues = adapters.cues ?? new CuePlayer();
-  const alarm = createCaptureStopAlarm(cues);
+  const alerts = createCaptureAlerts(cues);
   const microphoneAccess = adapters.microphoneAccess ?? createMicrophoneAccess();
   const recording = createApplicationCapture({
     config,
@@ -79,9 +79,7 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
       ...adapters.environment,
     },
     cues,
-    onEvent(event) {
-      if (event.type === "unrequestedCaptureStopped") alarm.activate();
-    },
+    alerts,
     authorizeStart: () => session.authorizeRecordingStart(),
   });
   const projects = createProjects(adapters.projectsGateway ?? createProjectsGateway(api));
@@ -107,16 +105,16 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
   const app = createApp(AppShell);
   app.onUnmount(() => {
     recording.dispose();
-    alarm.dispose();
+    alerts.dispose();
     microphoneAccess.dispose();
     cues.dispose();
   });
-  app.provide(captureStopAlarmKey, alarm);
+  app.provide(captureAlertsKey, alerts);
   app.provide(microphoneAccessKey, microphoneAccess);
   app.provide(configKey, config);
   app.provide(sessionKey, session);
   app.provide(applicationCaptureKey, recording);
   app.provide(projectsKey, projects);
   app.provide(healthKey, health);
-  return { app, session, recording, projects, alarm, microphoneAccess };
+  return { app, session, recording, projects, alerts, microphoneAccess };
 }

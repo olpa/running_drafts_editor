@@ -8,35 +8,35 @@ import type { AudioAssetSummary } from "../../shared/project-types.ts";
 import { DEFAULT_CONFIG } from "../../shared/config.ts";
 import { ManualScheduler, settle } from "../../test-support/manual-scheduler.ts";
 import type { Cues } from "../cues.ts";
-import type { CaptureStopAlarm } from "../../alarm/capture-stop-alarm.ts";
+import type { CaptureAlerts } from "../../alerts/capture-alerts.ts";
 
 export const scenarios = {
   palette:
     "Audition candidates directly. Choose automatic review to play a healthy Capture sequence.",
   healthy:
-    "Listen to three secured frames at the production cadence, followed by user Stop and sealing. The selected frame interval applies; production is 10 seconds.",
+    "Listen to three secured frames at the production cadence, followed by user Stop and sealing. The workbench leaves at least two seconds between the last heartbeat and Completion.",
   accelerated:
     "The healthy Capture sequence plays at 5× speed by default. The simulated clock increases automatically; audio keeps its normal duration.",
   single:
-    "The first frame misses its securing deadline, sounds Problem, then recovers 600 simulated ms later with a healthy cue. The sequence then stops and seals.",
-  two: "Two frames become overdue. Production backlog protection stops Capture and raises the alarm. Both delay lines remain visible before arranged recovery; acknowledgement stays yours.",
+    "The first frame misses its securing deadline and keeps sounding Problem. Automatic playback recovers before the next frame boundary, then leaves at least two seconds between its recovery heartbeat and Completion.",
+  two: "Two frames become overdue. Production backlog protection stops Capture and raises Capture alerts. Both delay lines remain visible before arranged recovery; acknowledgement stays yours.",
   burst:
-    "The first frame recovers just before the second frame request. Their healthy cues arrive 40 simulated ms apart and overlap without a sound queue, followed by Stop and sealing.",
+    "The first frame recovers just before the second frame request. Their healthy cues arrive 40 simulated ms apart and overlap without a sound queue; Completion follows at least two seconds later.",
   stop: "A short Capture ends through user Stop. Final audio secures, then the simulated backend confirms sealing and completion sounds.",
   final:
-    "User Stop is followed by an overdue final frame, recovery, and sealing. In the repeating Problem experiment, completion leaves Problem active until Acknowledge.",
+    "User Stop is followed by an overdue final frame, recovery, and sealing. Securing the final frame resolves its identified Capture alert without a Healthy heartbeat.",
   duration:
-    "Capture reaches its duration limit automatically. The global alarm repeats until you acknowledge it.",
+    "Capture reaches its duration limit automatically. Its Capture alert repeats Problem until you acknowledge it.",
   failure:
-    "The recorder fails after one frame interval plus 500 simulated ms. Inspect its Section cause, the independent alarm, and arranged delivery recovery.",
+    "The recorder fails after one frame interval plus 500 simulated ms. Inspect its Section causes, global Capture alerts, and arranged delivery recovery.",
   coexist:
-    "Capture reaches the duration limit. The simulated backend then confirms sealing while the repeating alarm stays active.",
+    "Capture reaches the duration limit. The simulated backend then confirms sealing while the unrequested-stop Capture alert stays active and suppresses Completion.",
   older:
     "Section 1 stops, Section 2 starts, and the older Section seals during newer Capture. The sequence then stops and seals the newer Section.",
   repeated:
-    "Two successive Sections reach their duration limits. The existing global alarm remains active without restarting or queuing; acknowledgement stays yours.",
+    "Two successive Sections reach their duration limits. Two identified Capture alerts share one Problem loop; acknowledgement stays yours.",
   unavailable:
-    "Sound failure is simulated. Capture reaches its duration limit automatically; the visible alarm reports unavailable sound and remains usable.",
+    "Sound failure is simulated. Capture reaches its duration limit automatically; the visible Capture alert reports unavailable sound and remains usable.",
 } as const;
 export type ScenarioName = keyof typeof scenarios;
 
@@ -52,7 +52,7 @@ export function createLabScenario(options: {
   intervalMs: number;
   deadlineMs: number;
   cues: Cues;
-  alarm: CaptureStopAlarm;
+  alerts: CaptureAlerts;
   log: (message: string) => void;
 }) {
   const { log, name } = options;
@@ -87,8 +87,18 @@ export function createLabScenario(options: {
   const assets = new Map<string, { frames: number; duration: number }>();
   const frames = new Set<Pending>();
   const seals = new Set<Pending>();
-  let holdFrames = name === "two" || name === "final";
-  let holdSeals = ["stop", "final", "coexist", "older"].includes(name);
+  let holdFrames = name === "single" || name === "two" || name === "final";
+  let holdSeals = [
+    "palette",
+    "healthy",
+    "accelerated",
+    "single",
+    "burst",
+    "stop",
+    "final",
+    "coexist",
+    "older",
+  ].includes(name);
   let finalizationFailure = false;
   let sealingFailures = 0;
   let disposed = false;
@@ -148,14 +158,7 @@ export function createLabScenario(options: {
           return;
         }
         if (holdFrames) return;
-        const delay =
-          name === "burst"
-            ? frame.seq === 0
-              ? options.intervalMs - 30
-              : 10
-            : name === "single" && frame.seq === 0
-              ? options.deadlineMs + 600
-              : 80;
+        const delay = name === "burst" ? (frame.seq === 0 ? options.intervalMs - 30 : 10) : 80;
         scheduler.schedule(delay, () => pending.finish());
       });
     },
@@ -198,6 +201,7 @@ export function createLabScenario(options: {
   const app = createApplicationCapture({
     config,
     cues: options.cues,
+    alerts: options.alerts,
     authorizeStart: () => true,
     environment: {
       gateway,
@@ -226,9 +230,8 @@ export function createLabScenario(options: {
         return microphone;
       },
     },
-    onEvent(event) {
+    onEvent(_sectionId, event) {
       log(`event: ${event.type}${"frameId" in event ? ` f${event.frameId}` : ""}`);
-      if (event.type === "unrequestedCaptureStopped") options.alarm.activate();
     },
   });
   app.setSessionAccount("5728cdd2-909d-4207-8303-c04b270c308f" as AccountId);
