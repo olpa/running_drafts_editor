@@ -10,15 +10,17 @@ import {
   watch,
   type WatchStopHandle,
 } from "vue";
-import CaptureStopAlarm from "../../alarm/CaptureStopAlarm.vue";
-import { captureStopAlarmKey, createCaptureStopAlarm } from "../../alarm/capture-stop-alarm.ts";
-import { playSectionFeedback } from "../feedback.ts";
-import type { SectionEvent } from "../section-events.ts";
+import CaptureAlertsView from "../../alerts/CaptureAlerts.vue";
+import {
+  captureAlertId,
+  captureAlertsKey,
+  createCaptureAlerts,
+} from "../../alerts/capture-alerts.ts";
 import {
   candidate,
   candidates,
   palettes,
-  productionCandidate,
+  productionPalette,
   roleNames,
   roles,
   type Role,
@@ -41,22 +43,21 @@ const props = withDefaults(
     scenarioName: "palette",
     clockMode: "manual",
     playbackSpeed: 1,
-    intervalSeconds: 10,
-    securingDeadlineMs: 1000,
+    intervalSeconds: 5,
+    securingDeadlineMs: 2000,
     simulatePlaybackFailure: false,
   },
 );
-const selectedPalette = ref(productionCandidate.id);
-const defaults = productionCandidate;
+const selectedPalette = ref(productionPalette.id);
+const defaults = productionPalette;
 const settings = reactive<SoundSettings>({
   choices: { ...defaults.choices },
   levels: { ...defaults.levels },
   master: 1,
   pitch: 0,
   duration: 1,
-  alarmGap: 0,
+  problemGap: 0,
   unavailable: props.simulatePlaybackFailure,
-  repeatProblem: defaults.repeatProblem ?? false,
 });
 const scenario = shallowRef<LabScenario | null>(null);
 const revision = ref(0);
@@ -81,21 +82,14 @@ function log(message: string): void {
 const sound = createLabSound(settings, log, (message) => {
   audioError.value = message;
 });
-const stopAlarm = createCaptureStopAlarm(sound.cues, log);
-const alarm = {
-  ...stopAlarm,
-  acknowledge() {
-    sound.acknowledgeProblem();
-    stopAlarm.acknowledge();
-  },
-};
-provide(captureStopAlarmKey, alarm);
+const alerts = createCaptureAlerts(sound.cues);
+provide(captureAlertsKey, alerts);
 const instruction = computed(() => scenarios[props.scenarioName]);
 const effectiveSpeed = computed(() => (props.clockMode === "real-time" ? 1 : props.playbackSpeed));
 const playLabel = computed(() => {
   const state = playback.value?.status.value;
   if (state === "paused") return "Resume scenario";
-  const prefix = alarm.active.value || sound.problemActive.value ? "Acknowledge and " : "";
+  const prefix = alerts.alerts.value.length ? "Acknowledge and " : "";
   return `${prefix}${state === "finished" ? "replay" : "play"} scenario`.replace(
     /^./,
     (character) => character.toUpperCase(),
@@ -109,26 +103,10 @@ function resetPalette(): void {
   settings.master = 1;
   settings.pitch = 0;
   settings.duration = 1;
-  settings.alarmGap = palette.value.alarmGap;
-  settings.repeatProblem = palette.value.repeatProblem ?? false;
+  settings.problemGap = palette.value.problemGap;
   log(`Palette defaults: ${palette.value.id}; master 100%`);
 }
 watch(selectedPalette, resetPalette);
-watch(
-  () => [
-    settings.choices.interrupted,
-    settings.levels.interrupted,
-    settings.choices.delayed,
-    settings.levels.delayed,
-    settings.repeatProblem,
-    settings.master,
-    settings.pitch,
-    settings.duration,
-    settings.alarmGap,
-    settings.unavailable,
-  ],
-  () => sound.refreshAlarm(),
-);
 watch(
   () => props.simulatePlaybackFailure,
   (value) => {
@@ -163,7 +141,7 @@ function rebuild(): void {
       intervalMs: intervalMs.value,
       deadlineMs: props.securingDeadlineMs,
       cues: sound.cues,
-      alarm,
+      alerts,
       log,
     });
     scenario.value = next;
@@ -205,7 +183,7 @@ onBeforeUnmount(() => {
   stopCaptureWatch?.();
   playback.value?.dispose();
   scenario.value?.dispose();
-  alarm.dispose();
+  alerts.dispose();
   sound.cues.dispose();
 });
 async function enable(): Promise<void> {
@@ -216,10 +194,10 @@ async function enable(): Promise<void> {
 async function playScenario(): Promise<void> {
   if (!playback.value) return;
   if (playback.value.status.value === "finished") {
-    alarm.acknowledge();
+    alerts.acknowledgeAll();
     rebuild();
   } else if (playback.value.status.value === "ready") {
-    alarm.acknowledge();
+    alerts.acknowledgeAll();
   }
   const current = playback.value;
   await enable();
@@ -245,15 +223,22 @@ async function advance(ms: number): Promise<void> {
 function audition(role: Role, id?: string): void {
   if (id) settings.choices[role] = id;
   log(`Manual semantic audition: ${roleNames[role]} (no Section state change)`);
-  const events: Record<Role, SectionEvent> = {
-    health: { type: "transportFrameSecured", frameId: 0, captureActive: true, finalFrame: false },
-    delayed: { type: "transportFrameOverdue", frameId: 0 },
-    stop: { type: "audioAssetSealed" },
-    interrupted: { type: "unrequestedCaptureStopped" },
-  };
-  if (role === "interrupted") alarm.activate();
-  else playSectionFeedback(events[role], sound.cues);
+  if (role === "problem") {
+    alerts.raise({ kind: "audio-asset-sealing-failed", sectionId: "sound-lab-audition" });
+    return;
+  }
+  sound.cues.play(role);
 }
+const auditionAlertId = captureAlertId({
+  kind: "audio-asset-sealing-failed",
+  sectionId: "sound-lab-audition",
+});
+const auditionAlertActive = computed(() =>
+  alerts.alerts.value.some((alert) => captureAlertId(alert) === auditionAlertId),
+);
+const overdueFrameActive = computed(() =>
+  alerts.alerts.value.some((alert) => alert.kind === "transport-frame-overdue"),
+);
 </script>
 
 <template>
@@ -287,18 +272,19 @@ function audition(role: Role, id?: string): void {
         Manual clock: use the production Start control, then the Advance buttons. Select automatic
         review in Storybook Controls to listen to the arranged scenario.
       </p>
+      <p v-if="scenarioName === 'single'">
+        To repeat: choose <strong>Replay scenario</strong> after automatic playback finishes, or
+        choose <strong>Restart this scenario</strong> and use Start again. In manual review, advance
+        one frame interval and one deadline, listen for as long as needed, then choose
+        <strong>Secure overdue frame</strong>.
+      </p>
       <p v-if="audioError" role="status" class="warning">{{ audioError }}</p>
       <p v-if="setupError" role="alert" class="warning">{{ setupError }}</p>
     </header>
-    <CaptureStopAlarm />
-    <aside v-if="sound.problemActive.value" class="problem-preview" role="status">
-      <strong>Problem sound is repeating — Storybook experiment.</strong>
-      <span>A healthy heartbeat or Acknowledge stops Problem repetition. Completion does not.</span>
-      <span v-if="alarm.active.value"
-        >The unrequested-stop alarm has sound priority and still requires acknowledgement.</span
-      >
-      <button v-else type="button" @click="alarm.acknowledge()">Acknowledge</button>
-    </aside>
+    <p v-if="auditionAlertActive" role="status" class="problem-preview">
+      This Capture alert was raised by the laboratory's direct Problem audition.
+    </p>
+    <CaptureAlertsView />
     <section aria-labelledby="palette-heading">
       <h2 id="palette-heading">Palette and listening level</h2>
       <div class="controls">
@@ -324,19 +310,15 @@ function audition(role: Role, id?: string): void {
         </label>
         <label
           >Repeating sound gap:
-          {{ settings.alarmGap === 0 ? "continuous, no added pause" : `${settings.alarmGap}s` }}
-          <input v-model.number="settings.alarmGap" type="range" min="0" max="3" step="0.1" />
+          {{ settings.problemGap === 0 ? "continuous, no added pause" : `${settings.problemGap}s` }}
+          <input v-model.number="settings.problemGap" type="range" min="0" max="3" step="0.1" />
         </label>
         <button type="button" @click="resetPalette">Reset to selected palette defaults</button>
       </div>
-      <label class="repeat-problem">
-        <input v-model="settings.repeatProblem" type="checkbox" />
-        Repeat Problem until a healthy heartbeat or Acknowledge (Storybook experiment)
-      </label>
       <p>
-        Production start stays fixed. Pitch and duration affect synthesized alternatives only;
-        production baseline definitions and downloaded assets stay fixed. An active alarm switches
-        sound immediately and plays until Acknowledge.
+        Production start stays fixed. Pitch and duration affect synthesized alternatives only; fixed
+        definitions and downloaded assets stay fixed. Problem repeats through the production
+        Capture-alert module until every alert resolves or Acknowledge clears them.
       </p>
       <p>
         Each role can use any candidate. The lists group sounds by their initially proposed role.
@@ -369,7 +351,7 @@ function audition(role: Role, id?: string): void {
             />
           </label>
           <button type="button" @click="audition(role)">
-            {{ role === "interrupted" ? "Turn alarm on" : "Audition selected sound" }}
+            {{ role === "problem" ? "Audition Problem" : "Audition selected sound" }}
           </button>
           <small
             >{{ candidate(settings.choices[role]).id }} ·
@@ -382,14 +364,14 @@ function audition(role: Role, id?: string): void {
       <h2 id="simulation-heading">Production behavior with simulated inputs</h2>
       <p>
         Use Storybook Controls to change the clock, playback speed, frame interval (1–20 seconds),
-        or securing deadline (500–1500 ms). Timing changes create a fresh scenario and retain the
+        or securing deadline (500–2000 ms). Timing changes create a fresh scenario and retain the
         palette and numbered history.
       </p>
       <p>
         <strong>{{
-          intervalSeconds === 10
-            ? "Production baseline: 10-second frame interval"
-            : `Experimental frame interval: ${intervalSeconds}s (production: 10s)`
+          intervalSeconds === 5
+            ? "Production baseline: 5-second frame interval"
+            : `Experimental frame interval: ${intervalSeconds}s (production: 5s)`
         }}</strong>
         · Securing deadline {{ securingDeadlineMs }} ms · {{ clockMode }} clock
       </p>
@@ -403,14 +385,33 @@ function audition(role: Role, id?: string): void {
       <ProductionCapture v-if="scenario" :key="revision" :scenario="scenario" />
       <div v-if="scenario" class="actions">
         <template v-if="clockMode === 'manual'">
-          <button type="button" :disabled="busy" @click="advance(100)">Advance 100 ms</button>
-          <button type="button" :disabled="busy" @click="advance(securingDeadlineMs)">
+          <button
+            type="button"
+            :disabled="busy || (scenarioName === 'single' && overdueFrameActive)"
+            @click="advance(100)"
+          >
+            Advance 100 ms
+          </button>
+          <button
+            type="button"
+            :disabled="busy || (scenarioName === 'single' && overdueFrameActive)"
+            @click="advance(securingDeadlineMs)"
+          >
             Advance deadline
           </button>
-          <button type="button" :disabled="busy" @click="advance(intervalMs)">
+          <button
+            type="button"
+            :disabled="busy || (scenarioName === 'single' && overdueFrameActive)"
+            @click="advance(intervalMs)"
+          >
             Advance one frame interval
           </button>
-          <button type="button" :disabled="busy" @click="advance(intervalMs * 3 + 100)">
+          <button
+            v-if="scenarioName !== 'single'"
+            type="button"
+            :disabled="busy"
+            @click="advance(intervalMs * 3 + 100)"
+          >
             Advance three frame intervals
           </button>
           <button
@@ -426,22 +427,36 @@ function audition(role: Role, id?: string): void {
             Advance to duration limit
           </button>
         </template>
-        <button type="button" @click="scenario.recover()">Recover simulated delivery</button>
-        <button type="button" @click="scenario.confirmSealing()">Confirm simulated sealing</button>
-        <button type="button" @click="scenario.failCapture()">Simulate recorder failure</button>
-        <button type="button" @click="scenario.failFinalization()">
-          Fail next Capture finalization
+        <button
+          v-if="scenarioName === 'single'"
+          type="button"
+          :disabled="!overdueFrameActive"
+          @click="scenario.recover()"
+        >
+          Secure overdue frame
         </button>
-        <button type="button" @click="scenario.failNextSeal()">Fail next sealing attempt</button>
-        <button type="button" @click="rebuild">Fresh scenario (keep palette and history)</button>
+        <template v-else>
+          <button type="button" @click="scenario.recover()">Recover simulated delivery</button>
+          <button type="button" @click="scenario.confirmSealing()">
+            Confirm simulated sealing
+          </button>
+          <button type="button" @click="scenario.failCapture()">Simulate recorder failure</button>
+          <button type="button" @click="scenario.failFinalization()">
+            Arm finalization failure for next Stop
+          </button>
+          <button type="button" @click="scenario.failNextSeal()">
+            Arm sealing failure for next Stop
+          </button>
+        </template>
+        <button type="button" @click="rebuild">Restart this scenario</button>
       </div>
     </section>
     <details :open="scenarioName === 'palette'">
       <summary>All candidates and provenance ({{ candidates.length }})</summary>
       <p>
-        Audition selects the candidate for its role. Alarm auditions repeat until Acknowledge.
-        Downloaded assets are bundled, mixed to mono, and normalized during playback; source files
-        are unchanged.
+        Audition selects the candidate for its role. Problem auditions raise a production Capture
+        alert and repeat until Acknowledge. Downloaded assets are bundled, mixed to mono, and
+        normalized during playback; source files are unchanged.
       </p>
       <section v-for="role in roles" :key="role" class="catalog">
         <h2>{{ roleNames[role] }}</h2>
@@ -462,19 +477,13 @@ function audition(role: Role, id?: string): void {
       <h2 id="review-heading">Listening review</h2>
       <p>
         Prioritize low disruption to continuous speaking. Compare reassurance, urgency,
-        distinguishability, and distraction. Try speakers and headphones when available. Keep the
-        production baseline as your reference.
+        distinguishability, and distraction. Try speakers and headphones when available. Keep
+        Production as your reference.
       </p>
       <p>
-        Record findings in
-        <a
-          href="https://github.com/olpa/running_drafts_editor/issues/110"
-          target="_blank"
-          rel="noreferrer"
-          >issue #110</a
-        >
-        using candidate IDs, palette, tuning, story, clock mode, and playback equipment. Nothing is
-        saved by this workbench.
+        Record findings in the GitHub issue that requested the current experiment, using candidate
+        IDs, palette, tuning, story, clock mode, and playback equipment. Nothing is saved by this
+        workbench.
       </p>
     </section>
     <details open>

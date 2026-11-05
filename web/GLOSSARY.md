@@ -19,6 +19,14 @@ right even when delivery of captured audio continues.
 Capture ending for any reason other than an explicit user stop, including
 automatic limits and failures. Failure before Capture begins is not a stop.
 
+**Capture alert**:
+An application-lifetime request for the user's attention after a Capture
+condition that can arise while the application is unattended. A Capture alert
+has an identity so its condition can resolve independently of other alerts.
+Acknowledging Capture alerts clears the current requests for attention without
+performing recovery or claiming that their underlying conditions are resolved.
+_Avoid_: Notification as a synonym, local alert, unrequested-stop alarm.
+
 **Captured audio**:
 Audio already acquired from the microphone for a recording.
 Different portions can be secured or unsecured while capture continues or after

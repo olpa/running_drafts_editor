@@ -4,11 +4,11 @@ import { createFrameTiming, transportFrameTiming } from "./frame-timing.ts";
 
 describe("FrameTiming", () => {
   it("validates explicit timing and copies it", () => {
-    for (const secureDeadlineMs of [500, 1000, 1500])
+    for (const secureDeadlineMs of [500, 1000, 1500, 2000])
       expect(transportFrameTiming({ intervalMs: 10_000, secureDeadlineMs }).secureDeadlineMs).toBe(
         secureDeadlineMs,
       );
-    for (const secureDeadlineMs of [499, 1501, NaN, Infinity])
+    for (const secureDeadlineMs of [499, 2001, NaN, Infinity])
       expect(() => transportFrameTiming({ intervalMs: 10_000, secureDeadlineMs })).toThrow();
     for (const intervalMs of [0, -1, NaN, Infinity])
       expect(() => transportFrameTiming({ intervalMs, secureDeadlineMs: 1000 })).toThrow();

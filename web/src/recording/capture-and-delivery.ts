@@ -19,7 +19,7 @@ import {
 
 export interface CaptureConfig {
   frameIntervalMs: number;
-  secureDeadlineMs?: number;
+  secureDeadlineMs: number;
   maxRecordingMs: number;
   retryFirstMs: number;
   retrySecondMs: number;
@@ -66,7 +66,7 @@ export function createCaptureAndDelivery(options: {
   const { config } = options;
   const timingValue = transportFrameTiming({
     intervalMs: config.frameIntervalMs,
-    secureDeadlineMs: config.secureDeadlineMs ?? 1000,
+    secureDeadlineMs: config.secureDeadlineMs,
   });
   const scheduler = options.scheduler ?? browserScheduler;
   const phase = shallowRef<"preparing" | "capturing" | "finalizing" | "ended">("preparing");
@@ -103,10 +103,7 @@ export function createCaptureAndDelivery(options: {
       .filter(([, frame]) => frame.overdue)
       .map(([frameId, frame]) => ({
         frameId,
-        elapsedSeconds:
-          scheduler.now() < frame.at + 2 * timingValue.secureDeadlineMs
-            ? null
-            : Math.floor((scheduler.now() - frame.at) / 1000),
+        elapsedSeconds: Math.ceil((scheduler.now() - frame.at) / 1000),
       }));
   }
   function updateDelay(frameId: number): void {
@@ -119,8 +116,12 @@ export function createCaptureAndDelivery(options: {
     if (!frame || frame.overdue) return;
     frame.overdue = true;
     refreshOverdue();
-    emit({ type: "transportFrameOverdue", frameId });
-    schedule(timingValue.secureDeadlineMs, () => updateDelay(frameId));
+    emit({
+      type: "transportFrameOverdue",
+      frameId,
+      elapsedSeconds: Math.ceil((scheduler.now() - frame.at) / 1000),
+    });
+    schedule(1000, () => updateDelay(frameId));
   }
   const timing = createFrameTiming({
     timing: timingValue,

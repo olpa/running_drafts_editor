@@ -1,10 +1,10 @@
 import { flushPromises } from "@vue/test-utils";
 import { afterEach, describe, expect, it } from "vitest";
-import { createCaptureStopAlarm } from "../../alarm/capture-stop-alarm.ts";
+import { createCaptureAlerts } from "../../alerts/capture-alerts.ts";
 import { ManualScheduler } from "../../test-support/manual-scheduler.ts";
 import type { Cues } from "../cues.ts";
 import { createScenarioPlayback } from "./playback.ts";
-import { createLabScenario, scenarios, type ScenarioName } from "./scenario.ts";
+import { createLabScenario, scenarios, type LabScenario, type ScenarioName } from "./scenario.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -13,27 +13,29 @@ afterEach(() => {
 function harness(name: ScenarioName, speed = 5) {
   const wall = new ManualScheduler();
   const sounds: string[] = [];
+  const soundEvents: { cue: string; at: number }[] = [];
   const log: string[] = [];
   const errors: unknown[] = [];
   const cues: Cues = {
     prepare() {},
     play(cue) {
       sounds.push(cue);
+      soundEvents.push({ cue, at: scenario?.scheduler.now() ?? 0 });
     },
-    loopInterrupted() {
-      sounds.push("alarm");
+    loopProblem() {
+      sounds.push("problem");
       return () => {};
     },
     dispose() {},
   };
-  const alarm = createCaptureStopAlarm(cues);
-  const scenario = createLabScenario({
+  const alerts = createCaptureAlerts(cues);
+  const scenario: LabScenario = createLabScenario({
     name,
     manual: true,
     intervalMs: 2000,
     deadlineMs: 500,
     cues,
-    alarm,
+    alerts,
     log: (message) => log.push(message),
   });
   let rate = speed;
@@ -48,7 +50,7 @@ function harness(name: ScenarioName, speed = 5) {
   cleanups.push(() => {
     player.dispose();
     scenario.dispose();
-    alarm.dispose();
+    alerts.dispose();
   });
   async function elapse(ms: number) {
     for (let left = ms; left > 0; left -= 40) {
@@ -60,6 +62,7 @@ function harness(name: ScenarioName, speed = 5) {
     scenario,
     player,
     sounds,
+    soundEvents,
     errors,
     log,
     wall,
@@ -99,15 +102,30 @@ describe("arranged scenario playback", () => {
       expect(h.player.status.value).toBe("finished");
       expect(h.scenario.app.snapshot.value.capturing).toBe(false);
       expect(h.errors).toEqual([]);
-      expect(h.sounds).toContain("start");
-      expect(h.sounds).toContain("stop");
+      expect(h.sounds).toContain("capture-started");
+      if (["healthy", "accelerated", "single", "burst", "stop", "final", "older"].includes(name))
+        expect(h.sounds).toContain("capture-completed");
+      else expect(h.sounds).not.toContain("capture-completed");
       if (name === "older" || name === "repeated")
         expect(h.scenario.app.snapshot.value.sections).toHaveLength(2);
       if (["duration", "coexist", "repeated", "failure", "two", "unavailable"].includes(name))
-        expect(h.sounds).toContain("alarm");
+        expect(h.sounds).toContain("problem");
       const before = h.player.positionMs.value;
       await h.elapse(1000);
       expect(h.player.positionMs.value).toBe(before);
+    },
+  );
+  it.each(["healthy", "single", "burst"] as const)(
+    "leaves at least two seconds between the last heartbeat and Completion in %s",
+    async (name) => {
+      const h = harness(name, 10);
+      await h.player.play();
+      await h.elapse(2000);
+      const heartbeat = h.soundEvents.findLast((event) => event.cue === "healthy-heartbeat");
+      const completion = h.soundEvents.find((event) => event.cue === "capture-completed");
+      expect(heartbeat).toBeDefined();
+      expect(completion).toBeDefined();
+      expect(completion!.at - heartbeat!.at).toBeGreaterThanOrEqual(2000);
     },
   );
 });

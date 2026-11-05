@@ -102,39 +102,43 @@ describe("SectionCard", () => {
 
 it("keeps one silent visual counter and one stable announcement per overdue frame", async () => {
   const wrapper = mount(SectionCard, {
-    props: { section: snapshot({ overdueFrames: [{ frameId: 0, elapsedSeconds: null }] }) },
+    props: { section: snapshot({ overdueFrames: [{ frameId: 0, elapsedSeconds: 2 }] }) },
   });
   const firstAnnouncement = wrapper.get(".frame-delay [role=status]").element;
-  expect(wrapper.get('[data-testid="frame-delay"]').text()).toBe("Saving audio is delayed.");
+  expect(wrapper.get('[data-testid="frame-delay"]').text()).toBe(
+    "Saving audio is delayed by 2 seconds.",
+  );
   await wrapper.setProps({
     section: snapshot({
       overdueFrames: [
-        { frameId: 0, elapsedSeconds: 1 },
-        { frameId: 1, elapsedSeconds: null },
+        { frameId: 0, elapsedSeconds: 3 },
+        { frameId: 1, elapsedSeconds: 2 },
       ],
     }),
   });
   expect(wrapper.findAll(".frame-delay [role=status]")).toHaveLength(2);
   expect(wrapper.get(".frame-delay [role=status]").element).toBe(firstAnnouncement);
-  expect(wrapper.get(".frame-delay [role=status]").text()).toBe("Saving audio is delayed.");
+  expect(wrapper.get(".frame-delay [role=status]").text()).toBe(
+    "Saving audio is delayed by 2 seconds.",
+  );
   expect(wrapper.findAll('[data-testid="frame-delay"]')[0]!.text()).toBe(
-    "Saving audio is delayed by 1 second.",
+    "Saving audio is delayed by 3 seconds.",
   );
   await wrapper.setProps({
     section: snapshot({
       overdueFrames: [
-        { frameId: 0, elapsedSeconds: 2 },
-        { frameId: 1, elapsedSeconds: null },
+        { frameId: 0, elapsedSeconds: 4 },
+        { frameId: 1, elapsedSeconds: 3 },
       ],
     }),
   });
   expect(wrapper.findAll('[data-testid="frame-delay"]')[0]!.attributes("aria-live")).toBe("off");
   expect(wrapper.findAll('[data-testid="frame-delay"]')[0]!.text()).toBe(
-    "Saving audio is delayed by 2 seconds.",
+    "Saving audio is delayed by 4 seconds.",
   );
   expect(wrapper.get(".frame-delay [role=status]").element).toBe(firstAnnouncement);
   await wrapper.setProps({
-    section: snapshot({ overdueFrames: [{ frameId: 1, elapsedSeconds: null }] }),
+    section: snapshot({ overdueFrames: [{ frameId: 1, elapsedSeconds: 3 }] }),
   });
   expect(wrapper.findAll(".frame-delay")).toHaveLength(1);
   wrapper.unmount();

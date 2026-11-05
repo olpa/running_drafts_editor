@@ -25,8 +25,8 @@ module with a stub through the same injection key.
 ownership into Application -> Project(s) -> Section(s) -> `CaptureAndDelivery`.
 `ApplicationCapture` handles Account access and the Project reference; only the
 Section's `CaptureAndDelivery` coordinates Capture and delivery. The composition
-root owns the shared `MicrophoneAccess` and independent stop alarm. Application
-disposal releases these resources; removing a workspace view does not.
+root owns the shared `MicrophoneAccess` and application-lifetime `CaptureAlerts`.
+Application disposal releases these resources; removing a workspace view does not.
 
 There is no Pinia store. Reconsider it when several independent Vue branches must
 change or react to the same long-lived state, when forwarding layers appear, or

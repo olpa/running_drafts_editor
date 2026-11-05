@@ -21,7 +21,7 @@ Vite/TypeScript page to the authenticated backend Project contract:
 
 - Capture: `MediaRecorderFrameSource` in `src/capture.ts` uses one continuous
   MediaRecorder with mono requested as a preference. It sends ordered WebM/Opus
-  pieces every 10 seconds by default.
+  pieces every 5 seconds.
   These transport frames are successive bytes of one recording; backend decode
   spans and transcript chunks have separate boundaries.
 - Backend: `src/api.ts` uses credentialed `/api/v1/projects`, Section, frame,
@@ -148,8 +148,9 @@ identity, and one `CaptureAndDelivery` instance.
 `capture-and-delivery.ts` owns the complete Section workflow: microphone Capture,
 frame requests, securing deadlines, retained audio, recovery, sealing, and semantic
 events. `section-delivery.ts` and `delivery.ts` are internal queue and sealing
-helpers. Typed callbacks connect events to baseline sound feedback and the
-application-owned stop alarm; Vue renders reactive state. There is no message bus.
+helpers. Typed callbacks connect events to normal sound feedback and the
+application-owned Capture-alert collection; Vue renders reactive state. There is
+no message bus.
 
 Internal `FrameTiming` schedules regular ticks and independent securing deadlines
 from actual frame-request times. Stopping ticks leaves deadlines active. Secured
@@ -176,20 +177,21 @@ against WCAG 2.2 AA contrast ratios.
 
 The page keeps one microphone stream and recorder open per Section. Stop waits
 for the final partial transport frame, then the Section completes only after all
-assigned frames are acknowledged. The ten-minute recording limit, transport
-interval, securing deadline, and 2 MiB frame guard are configurable through
-`window.__SEED_CONFIG__`. The frame interval defaults to 10 seconds and the securing
-deadline to 1000 ms, validated within 500–1500 ms. Timing is never read from
-`localStorage`. The securing budget starts when a frame is requested, before Blob
-production and HTTP setup. A late boundary shifts the next request; it does not
-create a short catch-up frame.
+assigned frames are acknowledged. Production fixes the Transport frame interval
+at 5 seconds; Storybook owns interval experiments. The ten-minute recording limit,
+securing deadline, retry delays, and 2 MiB frame guard remain explicit configuration
+through `window.__SEED_CONFIG__`. The production securing deadline is 2000 ms,
+validated within 500–2000 ms. Timing is never read from `localStorage`. The securing
+budget starts when a frame is requested, before Blob production and HTTP setup. A
+late boundary shifts the next request; it does not create a short catch-up frame.
 A prominent green **Speak now** indicator and duration progress appear during
 microphone capture. They stop indicating capture as soon as capture stops,
 independently of pending uploads and backend work.
 
 Audio stays in browser memory until acknowledged. The sender retries the oldest
-pending transport frame after 5, 10, and 17 seconds from each preceding attempt's
-start. Requests time out independently after 60 seconds, so retries can overlap.
+pending transport frame after 3, 10, and 17 seconds from each preceding attempt's
+start. The first retry therefore has two seconds to succeed before the next frame
+boundary. Requests time out independently after 60 seconds, so retries can overlap.
 The backend must accept duplicates idempotently.
 
 The three-frame backlog limit applies independently to each Section and includes
@@ -204,36 +206,40 @@ Any frame-upload HTTP `409` stops capture and permanently freezes delivery for
 that Section without sealing it. Exact pending audio and returned Problem
 Details remain visible for diagnosis, while another Section may start normally.
 
-### Baseline sound and visible feedback
+### Sound and visible feedback
 
 - Capture starting plays the existing rising start cue. Failure before Capture
-  begins shows a local error and raises no stop alarm.
-- Each frame secured while its Section is actively capturing plays the quiet
-  rising health cue immediately. Older stopped Sections and final partial frames
+  begins shows a local error and raises no Capture alert.
+- Each frame secured while its Section is actively capturing plays **Triangle
+  cadence** immediately. Older stopped Sections and final partial frames
   do not play healthy heartbeats.
-- Each frame still unsecured at its deadline plays the attention tone and Morse U
-  (`..-`) once and shows its own **Saving audio is delayed.** line. After another
-  deadline interval, the line shows elapsed whole seconds from the frame request
-  and updates once per second. Each new overdue line is announced politely;
-  elapsed-second updates stay silent. Securing the frame clears its line.
-- User-requested stop is silent. The falling completion cue plays only after the
-  backend confirms Audio Asset sealing, including recovery and older Sections.
-- Capture finalization failure after a user stop and every failed sealing attempt,
-  including a failed retry, play the problem cue once and retain visible details.
-- Every unrequested stop, including the duration limit, activates the global alarm.
-  The baseline attention tone and Morse X (`-..-`) loop continuously without an
-  added pause between repetitions. The top alert bar says **Capture stopped. Up to
-  30 seconds of recent audio may not be saved.** Only **Acknowledge** stops the loop
-  and removes the bar. Views, sign-out, recovery, and a new Capture do not clear it.
-  Additional stops keep the existing alarm rather than restarting it.
-- If alarm sound is blocked or fails, the bar also shows **Alarm sound is
-  unavailable.** There is no sound-enable button. Visible feedback remains usable.
+- Each frame still unsecured at its deadline raises an identified Capture alert
+  and immediately shows its elapsed whole seconds, beginning with **Saving audio
+  is delayed by 2 seconds.** The line updates once per second. Each new overdue
+  line is announced politely;
+  elapsed-second updates stay silent. Securing the frame clears its line and its
+  matching alert, even for a final frame or an older stopped Section.
+- User-requested stop is silent. **Four-note triangle cadence** plays after the
+  backend confirms Audio Asset sealing only when that Section has no unresolved
+  Capture integrity failure. Acknowledgement does not turn a problematic stop
+  into success. Recovery and older Sections can still complete cleanly.
+- Capture finalization failure, Audio Asset sealing failure, and every Unrequested
+  Capture stop also raise identified Capture alerts. Authentication, health,
+  Project loading, and failure before Capture begins do not.
+- One global **Morse Stop** Problem sound loops continuously with no added gap
+  while any Capture alert remains. Raising more alerts does not stack or restart
+  it. Resolving one alert leaves it playing while another remains.
+- **Acknowledge** clears every current Capture alert and stops Problem without
+  performing delivery recovery or hiding unresolved workflow state. It stores no
+  ID history; a later failure can alert again. Views, sign-out, recovery,
+  completion, and a new Capture do not acknowledge alerts.
+- If Problem playback is blocked or fails, the global surface shows **Problem
+  sound is unavailable.** There is no sound-enable or playback-retry button.
 
-Independent cues can overlap, including completion or final-frame delivery
-warnings during an alarm. The alarm's WebAudio source loops without visibility
-checks or repeated JavaScript timers. Application disposal stops playback and
-releases resources without acknowledging the alarm. New sound palettes and the
-Storybook sound laboratory belong to separate issues.
+One-shot cues from another Section can overlap with the Problem loop. Completion
+does not play when its own Section still needs attention. The loop uses one WebAudio
+source without visibility checks or repeated JavaScript timers. Application disposal
+releases playback resources without acknowledging alerts.
 
 ## Diagnostic log
 

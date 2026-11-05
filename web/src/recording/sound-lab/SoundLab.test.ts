@@ -61,60 +61,120 @@ describe("sound laboratory workbench", () => {
     expect(wrapper.get(".scenario-playback").text()).toContain("Scenario playing");
     expect(wrapper.get(".scenario-playback").text()).toContain("1.0 simulated seconds");
   });
-  it("starts with the production candidate and clears a repeated Problem on actual healthy recovery", async () => {
+  it("starts with Production and resolves an overdue alert by its frame identity", async () => {
     const wrapper = mountLab({ scenarioName: "single" });
     await flushPromises();
     expect(wrapper.find<HTMLInputElement>('input[type="range"]').element.value).toBe("1");
     expect(wrapper.findAll("select").map((select) => select.element.value)).toEqual([
-      "production-candidate",
-      "gentle-rise",
-      "baseline-interrupted",
-      "triangle-finish",
-      "baseline-interrupted",
+      "production",
+      "triangle-cadence",
+      "morse-stop",
+      "four-note-triangle-cadence",
     ]);
     expect(
       wrapper
         .findAll<HTMLInputElement>('.roles input[type="range"]')
         .map((input) => input.element.value),
-    ).toEqual(["1", "1", "1", "1"]);
+    ).toEqual(["1", "1", "1"]);
+    expect(
+      wrapper
+        .findAll("button")
+        .find((button) => button.text() === "Secure overdue frame")
+        ?.attributes("disabled"),
+    ).toBeDefined();
     await wrapper.get('[data-testid="start"]').trigger("click");
     await flushPromises();
     await click(wrapper, "Advance one frame interval");
     await click(wrapper, "Advance deadline");
-    expect(wrapper.find(".problem-preview").exists()).toBe(true);
-    await click(wrapper, "Advance deadline");
-    expect(wrapper.find(".problem-preview").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(true);
+    expect(
+      wrapper
+        .findAll("button")
+        .find((button) => button.text() === "Secure overdue frame")
+        ?.attributes("disabled"),
+    ).toBeUndefined();
+    expect(
+      wrapper
+        .findAll("button")
+        .filter((button) => button.text().startsWith("Advance"))
+        .every((button) => button.attributes("disabled") !== undefined),
+    ).toBe(true);
+    expect(
+      wrapper.findAll("button").some((button) => button.text() === "Advance three frame intervals"),
+    ).toBe(false);
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(true);
+    await click(wrapper, "Secure overdue frame");
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(false);
   });
-  it("uses one global acknowledgement for both previews while health only clears Problem", async () => {
+  it("keeps the single overdue alert active for listening before arranged recovery", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const wrapper = mountLab({
+      scenarioName: "single",
+      clockMode: "automatic",
+      intervalSeconds: 10,
+    });
+    await flushPromises();
+    await click(wrapper, "Play scenario");
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(true);
+    expect(wrapper.get(".scenario-playback").text()).toContain("12.0 simulated seconds");
+    await vi.advanceTimersByTimeAsync(5_200);
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(4_100);
+    expect(wrapper.get(".scenario-playback").text()).toContain("Scenario finished");
+    expect(wrapper.text()).toContain("Recording complete");
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Capture stopped. Up to 15 seconds");
+  });
+  it("recovers a five-second Single Overdue Frame before backlog protection stops Capture", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const wrapper = mountLab({
+      scenarioName: "single",
+      clockMode: "automatic",
+      intervalSeconds: 5,
+    });
+    await flushPromises();
+    await click(wrapper, "Play scenario");
+    await vi.advanceTimersByTimeAsync(7_000);
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(true);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_200);
+    expect(wrapper.text()).toContain("Recording complete");
+    const history = wrapper.findAll(".activity li").map((entry) => entry.text());
+    expect(history.some((entry) => entry.includes("unrequestedCaptureStopped"))).toBe(false);
+    expect(
+      history.filter((entry) => entry.includes("sound: four-note-triangle-cadence")),
+    ).toHaveLength(1);
+    const recovery = history.find((entry) => entry.includes("sound: triangle-cadence"));
+    const completion = history.find((entry) => entry.includes("sound: four-note-triangle-cadence"));
+    const at = (entry: string | undefined) =>
+      Number(entry?.match(/ · ([\d.]+)s · /)?.[1] ?? Number.NaN);
+    expect(at(completion) - at(recovery)).toBeGreaterThanOrEqual(2);
+    await vi.advanceTimersByTimeAsync(1_800);
+    expect(wrapper.get(".scenario-playback").text()).toContain("Scenario finished");
+  });
+  it("auditions Problem through production Capture-alert wiring", async () => {
     const wrapper = mountLab();
     await flushPromises();
     const roleButtons = wrapper.findAll(".roles article button");
     await roleButtons[1]!.trigger("click");
-    await roleButtons[2]!.trigger("click");
     expect(wrapper.find(".problem-preview").exists()).toBe(true);
-    await roleButtons[3]!.trigger("click");
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(true);
     expect(
       wrapper.findAll("button").filter((button) => button.text() === "Acknowledge"),
     ).toHaveLength(1);
     await roleButtons[0]!.trigger("click");
-    expect(wrapper.find(".problem-preview").exists()).toBe(false);
-    expect(wrapper.find('[data-testid="capture-stop-alarm"]').exists()).toBe(true);
-    await roleButtons[1]!.trigger("click");
+    await roleButtons[2]!.trigger("click");
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(true);
     await click(wrapper, "Acknowledge");
     expect(wrapper.find(".problem-preview").exists()).toBe(false);
-    expect(wrapper.find('[data-testid="capture-stop-alarm"]').exists()).toBe(false);
-    await roleButtons[1]!.trigger("click");
-    await click(wrapper, "Acknowledge");
-    expect(wrapper.find(".problem-preview").exists()).toBe(false);
-    await wrapper.findAll("select")[0]!.setValue("production");
-    expect(wrapper.get('input[type="checkbox"]').element).toHaveProperty("checked", false);
-    await roleButtons[1]!.trigger("click");
-    expect(wrapper.find(".problem-preview").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(false);
   });
   it("reports invalid timing visibly before constructing a scenario", async () => {
     const wrapper = mountLab({ securingDeadlineMs: 400 });
     await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toContain("between 500 and 1500 ms");
+    expect(wrapper.get('[role="alert"]').text()).toContain("between 500 and 2000 ms");
     expect(wrapper.find('[data-testid="start"]').exists()).toBe(false);
   });
   it("stages a recovery burst through adapter timing while Capture remains active", async () => {
@@ -126,16 +186,16 @@ describe("sound laboratory workbench", () => {
     await click(wrapper, "Advance three frame intervals");
     const entries = wrapper.findAll(".activity li").map((entry) => entry.text());
     expect(entries.filter((entry) => entry.includes("sound: closing-bell"))).toHaveLength(3);
-    expect(wrapper.findAll("select")[3]!.element.value).toBe("triangle-finish");
+    expect(wrapper.findAll("select")[3]!.element.value).toBe("four-note-triangle-cadence");
     expect(entries.some((entry) => entry.includes("event: transportFrameOverdue f0"))).toBe(true);
     expect(
       entries.some(
-        (entry) => entry.includes("19.97s") && entry.includes("event: transportFrameSecured f0"),
+        (entry) => entry.includes("9.97s") && entry.includes("event: transportFrameSecured f0"),
       ),
     ).toBe(true);
     expect(
       entries.some(
-        (entry) => entry.includes("20.01s") && entry.includes("event: transportFrameSecured f1"),
+        (entry) => entry.includes("10.01s") && entry.includes("event: transportFrameSecured f1"),
       ),
     ).toBe(true);
     expect(wrapper.get('[data-testid="capture-indicator"]').attributes("data-capturing")).toBe(
@@ -158,7 +218,7 @@ describe("sound laboratory workbench", () => {
     await flushPromises();
     expect(wrapper.findAll("select")[0]!.element.value).toBe("soft");
     expect(wrapper.findAll("select")[1]!.element.value).toBe("wood-tap");
-    expect(wrapper.text()).toContain("Experimental frame interval: 2s");
+    expect(wrapper.text()).toContain("Experimental frame interval: 2s (production: 5s)");
     const history = wrapper.findAll(".activity li");
     expect(history[0]!.text()).toContain("q1");
     expect(history.at(-1)!.text()).toContain("q2");
@@ -193,20 +253,20 @@ describe("sound laboratory workbench", () => {
     expect(wrapper.text()).toContain("Recording complete");
     expect(fetch).not.toHaveBeenCalled();
   });
-  it("keeps the application alarm and history across scenario rebuilds, with sound unavailable", async () => {
+  it("keeps a Capture alert and history across scenario rebuilds, with sound unavailable", async () => {
     const wrapper = mountLab({ scenarioName: "unavailable", simulatePlaybackFailure: true });
     await settle();
     await flushPromises();
-    await click(wrapper, "Turn alarm on");
-    expect(wrapper.get('[data-testid="capture-stop-alarm"]').text()).toContain(
-      "Alarm sound is unavailable.",
+    await click(wrapper, "Audition Problem");
+    expect(wrapper.get('[data-testid="capture-alerts"]').text()).toContain(
+      "Problem sound is unavailable.",
     );
     await wrapper.setProps({ intervalSeconds: 1 });
     await settle();
     await flushPromises();
-    expect(wrapper.find('[data-testid="capture-stop-alarm"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(true);
     await click(wrapper, "Acknowledge");
-    expect(wrapper.find('[data-testid="capture-stop-alarm"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(false);
     expect(wrapper.findAll(".activity li").some((entry) => entry.text().includes("q1"))).toBe(true);
   });
 });

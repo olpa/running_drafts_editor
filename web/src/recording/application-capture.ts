@@ -1,8 +1,9 @@
 import { computed, inject, shallowRef, watch, type InjectionKey, type Ref } from "vue";
 import { RadarLog } from "../shared/radar-log.ts";
 import type { AccountId } from "../session/gateway.ts";
+import type { CaptureAlerts } from "../alerts/capture-alerts.ts";
+import { createCaptureFeedback } from "./capture-feedback.ts";
 import type { Cues } from "./cues.ts";
-import { playSectionFeedback } from "./feedback.ts";
 import type { SectionEvent } from "./section-events.ts";
 import {
   createProject,
@@ -16,7 +17,8 @@ export interface ApplicationCaptureOptions {
   config: CaptureConfig & { logColumns: number; logRows: number; logGapChars: number };
   environment: RecordingEnvironment;
   cues: Cues;
-  onEvent?: (event: SectionEvent) => void;
+  alerts: CaptureAlerts;
+  onEvent?: (sectionId: string, event: SectionEvent) => void;
   /** Decide whether the Application Session may start a recording now. */
   authorizeStart: () => boolean;
   /** Existing Project to extend instead of creating a new one. */
@@ -68,6 +70,7 @@ export interface ApplicationCapture {
 
 export function createApplicationCapture(options: ApplicationCaptureOptions): ApplicationCapture {
   const { config, environment, cues } = options;
+  const feedback = createCaptureFeedback(cues, options.alerts);
   const ownershipWarning = shallowRef("");
   const recorder = shallowRef<Project | null>(null);
   const moduleAccountId = shallowRef<AccountId | null>(null);
@@ -97,9 +100,9 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
     moduleAccountId.value = accountId;
     const context = options.projectId ? { accountId, projectId: options.projectId } : { accountId };
     const created: Project = createProject(config, environment, context, {
-      event(event) {
-        playSectionFeedback(event, cues);
-        options.onEvent?.(event);
+      event(sectionId, event) {
+        feedback(sectionId, event);
+        options.onEvent?.(sectionId, event);
       },
       log(message) {
         if (!ownsCurrentSession.value) return;

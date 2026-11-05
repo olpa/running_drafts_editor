@@ -1,5 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
+import { createCaptureAlerts } from "../alerts/capture-alerts.ts";
 import type { AccountId } from "../session/gateway.ts";
 import { DEFAULT_CONFIG, configKey } from "../shared/config.ts";
 import { axe } from "../test-support/axe.ts";
@@ -45,6 +46,12 @@ function harness(authorize = true) {
     complete: async () => ({ id: "a" }) as never,
     interrupt: async () => ({ id: "a" }) as never,
   };
+  const cues = {
+    prepare() {},
+    play: (cue: string) => played.push(cue),
+    loopProblem: () => () => {},
+    dispose() {},
+  };
   const recording = createApplicationCapture({
     config: DEFAULT_CONFIG,
     environment: {
@@ -74,12 +81,8 @@ function harness(authorize = true) {
         return capture;
       },
     },
-    cues: {
-      prepare() {},
-      play: (cue) => played.push(cue),
-      loopInterrupted: () => () => {},
-      dispose() {},
-    },
+    cues,
+    alerts: createCaptureAlerts(cues),
     authorizeStart: () => authorize,
   });
   return { recording, captures, played };
@@ -197,7 +200,7 @@ describe("RecordingPanel", () => {
       "Capture is active. Speak now.",
     );
     expect(wrapper.find("[data-testid=capture-progress]").exists()).toBe(true);
-    expect(played).toContain("start");
+    expect(played).toContain("capture-started");
     expect(wrapper.get("[data-testid=project-title]").text()).toBe("Canonical");
   });
 

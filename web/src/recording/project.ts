@@ -69,7 +69,7 @@ export interface RecordingSnapshot {
 }
 
 export interface RecordingSinks {
-  event(event: SectionEvent): void;
+  event(sectionId: string, event: SectionEvent): void;
   log(message: string): void;
 }
 
@@ -192,7 +192,10 @@ export function createProject(
             `${(workflow.view.value.elapsedMs / 1000).toFixed(1)} s${identity ? identity.position + 1 : "?"} ${message}`,
           );
       },
-      onEvent: sinks.event,
+      onEvent(event) {
+        if (!identity) throw new Error("A Section event was emitted before Section creation.");
+        sinks.event(identity.sectionId, event);
+      },
       onCreated(created) {
         identity = created;
         const section: Section = {

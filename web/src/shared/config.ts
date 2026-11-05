@@ -28,10 +28,10 @@ declare global {
 }
 
 export const DEFAULT_CONFIG: Readonly<SeedConfig> = {
-  frameIntervalMs: 10_000,
-  secureDeadlineMs: 1_000,
+  frameIntervalMs: 5_000,
+  secureDeadlineMs: 2_000,
   maxRecordingMs: 10 * 60_000,
-  retryFirstMs: 5_000,
+  retryFirstMs: 3_000,
   retrySecondMs: 10_000,
   retryThirdMs: 17_000,
   requestTimeoutMs: 60_000,
@@ -51,6 +51,11 @@ export function loadConfig(
       throw new Error(`Seed config ${key} must be a positive integer, got ${String(value)}`);
     }
     config[key as keyof SeedConfig] = value as number;
+  }
+  if (config.frameIntervalMs !== DEFAULT_CONFIG.frameIntervalMs) {
+    throw new Error(
+      `Seed config frameIntervalMs must be the production value ${DEFAULT_CONFIG.frameIntervalMs}, got ${config.frameIntervalMs}`,
+    );
   }
   if (config.logGapChars >= config.logColumns * config.logRows) {
     throw new Error("Seed config logGapChars must be smaller than the log size");

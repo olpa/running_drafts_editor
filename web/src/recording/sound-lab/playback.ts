@@ -139,11 +139,17 @@ function stepsFor(scenario: LabScenario, name: ScenarioName): { duration: number
     case "healthy":
     case "accelerated":
       action(3 * interval + 300, "Stop after three secured frames", stop);
-      duration = 3 * interval + 2200;
+      action(3 * interval + 2200, "Confirm sealing after cue spacing", scenario.confirmSealing);
+      duration = 3 * interval + 4000;
       break;
     case "single":
-      action(interval + deadline + 2000, "Stop after the overdue frame recovers", stop);
-      duration = interval + deadline + 4000;
+      {
+        const recoveryAt = Math.min(interval + deadline + 5000, 2 * interval - 200);
+        action(recoveryAt, "Secure the overdue frame", scenario.recover);
+        action(recoveryAt + 100, "Stop after the overdue frame recovers", stop);
+        action(recoveryAt + 2100, "Confirm sealing after cue spacing", scenario.confirmSealing);
+        duration = recoveryAt + 4100;
+      }
       break;
     case "two":
       action(2 * interval + deadline + 2000, "Recover the two delayed frames", scenario.recover);
@@ -151,7 +157,8 @@ function stepsFor(scenario: LabScenario, name: ScenarioName): { duration: number
       break;
     case "burst":
       action(2 * interval + 500, "Stop after the recovery burst", stop);
-      duration = 2 * interval + 2500;
+      action(2 * interval + 2100, "Confirm sealing after cue spacing", scenario.confirmSealing);
+      duration = 2 * interval + 4100;
       break;
     case "stop":
       action(shortCapture, "User Stop", stop);
@@ -179,7 +186,7 @@ function stepsFor(scenario: LabScenario, name: ScenarioName): { duration: number
     case "coexist":
       action(
         limit + 500,
-        "Backend confirms sealing while the alarm remains active",
+        "Backend confirms sealing while the Capture alert remains active",
         scenario.confirmSealing,
       );
       duration = limit + 2500;
@@ -196,7 +203,7 @@ function stepsFor(scenario: LabScenario, name: ScenarioName): { duration: number
       duration = shortCapture + 4400;
       break;
     case "repeated":
-      action(limit + 500, "Start another Section without acknowledging the alarm", start);
+      action(limit + 500, "Start another Section without acknowledging Capture alerts", start);
       duration = 2 * limit + 2500;
       break;
   }

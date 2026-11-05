@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import CaptureStopAlarm from "../alarm/CaptureStopAlarm.vue";
+import CaptureAlerts from "../alerts/CaptureAlerts.vue";
 import MicrophoneAccessDialog from "../recording/MicrophoneAccessDialog.vue";
 import HealthPanel from "../health/HealthPanel.vue";
 import SeedApp from "./SeedApp.vue";
@@ -7,7 +7,7 @@ import SeedApp from "./SeedApp.vue";
 
 <template>
   <main class="app-shell">
-    <CaptureStopAlarm />
+    <CaptureAlerts />
     <MicrophoneAccessDialog />
     <header class="topbar">
       <div>

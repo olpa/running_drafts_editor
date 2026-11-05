@@ -1,20 +1,19 @@
-export const roles = ["health", "delayed", "stop", "interrupted"] as const;
+import {
+  productionSounds,
+  soundNote,
+  type SoundDefinition,
+  type SoundNote,
+} from "../sound-definitions.ts";
+
+export const roles = ["healthy-heartbeat", "problem", "capture-completed"] as const;
 export type Role = (typeof roles)[number];
 export const roleNames: Record<Role, string> = {
-  health: "Healthy heartbeat",
-  delayed: "Problem",
-  stop: "Capture completed",
-  interrupted: "Unrequested-stop alarm",
+  "healthy-heartbeat": "Healthy heartbeat",
+  problem: "Problem",
+  "capture-completed": "Capture completed",
 };
 
-type Voice = "sine" | "triangle" | "bell" | "wood" | "noise";
-export interface Note {
-  at: number;
-  length: number;
-  from: number;
-  to: number;
-  voice: Voice;
-}
+export type Note = SoundNote;
 export interface Candidate {
   id: string;
   name: string;
@@ -23,25 +22,13 @@ export interface Candidate {
   notes?: readonly Note[];
   duration?: number;
   asset?: string;
-  baseline?: boolean;
+  fixed?: boolean;
   author: string;
   source: string;
   license: string;
   attribution: string;
 }
-const note = (
-  at: number,
-  length: number,
-  from: number,
-  to = from,
-  voice: Voice = "sine",
-): Note => ({
-  at,
-  length,
-  from,
-  to,
-  voice,
-});
+const note = soundNote;
 const morse = (pattern: string): Note[] => {
   let at = 0.3;
   return [
@@ -75,17 +62,28 @@ function synth(
     attribution: "No third-party material",
   };
 }
-function baseline(role: Role, notes: Note[], duration: number): Candidate {
+function fixed(
+  role: Role,
+  id: string,
+  name: string,
+  family: string,
+  notes: Note[],
+  duration: number,
+): Candidate {
   return {
-    ...synth(
-      role,
-      `baseline-${role}`,
-      `Production ${roleNames[role].toLowerCase()}`,
-      "Production baseline",
-      notes,
-      duration,
-    ),
-    baseline: true,
+    ...synth(role, id, name, family, notes, duration),
+    fixed: true,
+  };
+}
+function promoted(value: SoundDefinition, role: Role, family: string): Candidate {
+  return {
+    ...value,
+    role,
+    family,
+    author: "Running Drafts contributors",
+    source: "Promoted production definition in sound-definitions.ts",
+    license: "Original project synthesis; no third-party assets",
+    attribution: "No third-party material",
   };
 }
 function asset(role: Role, file: string, name: string, family: string): Candidate {
@@ -104,85 +102,99 @@ function asset(role: Role, file: string, name: string, family: string): Candidat
 
 /** Add one definition here and optionally refer to its stable ID in a palette below. */
 export const candidates: readonly Candidate[] = [
-  baseline("health", [note(0, 0.1, 660, 880)], 0.1),
-  synth("health", "felt-pulse", "Felt pulse", "Soft triangle", [
+  fixed(
+    "healthy-heartbeat",
+    "short-rising-tone",
+    "Short rising tone",
+    "Rising sine",
+    [note(0, 0.1, 660, 880)],
+    0.1,
+  ),
+  synth("healthy-heartbeat", "felt-pulse", "Felt pulse", "Soft triangle", [
     note(0, 0.12, 420, 420, "triangle"),
   ]),
-  synth("health", "wood-tap", "Wood tap", "Percussion", [note(0, 0.07, 630, 260, "wood")]),
-  synth("health", "glass-drop", "Glass drop", "Bell", [note(0, 0.23, 1050, 1050, "bell")]),
-  synth("health", "breath-tick", "Breath tick", "Filtered noise", [
+  synth("healthy-heartbeat", "wood-tap", "Wood tap", "Percussion", [
+    note(0, 0.07, 630, 260, "wood"),
+  ]),
+  synth("healthy-heartbeat", "glass-drop", "Glass drop", "Bell", [
+    note(0, 0.23, 1050, 1050, "bell"),
+  ]),
+  synth("healthy-heartbeat", "breath-tick", "Breath tick", "Filtered noise", [
     note(0, 0.065, 1100, 700, "noise"),
   ]),
-  synth("health", "soft-pair", "Soft pair", "Paired sine", [
+  synth("healthy-heartbeat", "soft-pair", "Soft pair", "Paired sine", [
     note(0, 0.07, 520),
     note(0.1, 0.08, 650),
   ]),
-  synth("health", "low-bloom", "Low bloom", "Low sine", [note(0, 0.18, 260, 360)]),
-  asset("health", "tick_001", "Kenney tick", "Mechanical tick"),
-  asset("health", "pluck_001", "Kenney pluck", "Plucked string"),
-  asset("health", "glass_001", "Kenney glass", "Glass percussion"),
+  synth("healthy-heartbeat", "low-bloom", "Low bloom", "Low sine", [note(0, 0.18, 260, 360)]),
+  asset("healthy-heartbeat", "tick_001", "Kenney tick", "Mechanical tick"),
+  asset("healthy-heartbeat", "pluck_001", "Kenney pluck", "Plucked string"),
+  asset("healthy-heartbeat", "glass_001", "Kenney glass", "Glass percussion"),
 
-  baseline("delayed", morse("..-"), 1.02),
-  synth("delayed", "hollow-knock", "Hollow knock", "Wooden pair", [
+  fixed("problem", "morse-u", "Morse U", "Morse signal", morse("..-"), 1.02),
+  synth("problem", "hollow-knock", "Hollow knock", "Wooden pair", [
     note(0, 0.16, 330, 200, "wood"),
     note(0.25, 0.16, 330, 200, "wood"),
   ]),
-  synth("delayed", "minor-second", "Minor second", "Dissonant bell", [
+  synth("problem", "minor-second", "Minor second", "Dissonant bell", [
     note(0, 0.35, 520, 520, "bell"),
     note(0, 0.35, 550, 550, "bell"),
   ]),
-  synth("delayed", "downward-call", "Downward call", "Falling triangle", [
+  synth("problem", "downward-call", "Downward call", "Falling triangle", [
     note(0, 0.35, 820, 380, "triangle"),
   ]),
-  synth("delayed", "dry-rattle", "Dry rattle", "Noise pulses", [
+  synth("problem", "dry-rattle", "Dry rattle", "Noise pulses", [
     note(0, 0.09, 1300, 700, "noise"),
     note(0.14, 0.09, 1300, 700, "noise"),
     note(0.28, 0.09, 1300, 700, "noise"),
   ]),
-  synth("delayed", "double-bell", "Double bell", "Bell pair", [
+  synth("problem", "double-bell", "Double bell", "Bell pair", [
     note(0, 0.22, 740, 740, "bell"),
     note(0.3, 0.3, 620, 620, "bell"),
   ]),
-  synth("delayed", "low-wobble", "Low wobble", "Sine triplet", [
+  synth("problem", "low-wobble", "Low wobble", "Sine triplet", [
     note(0, 0.12, 350, 440),
     note(0.14, 0.12, 440, 350),
     note(0.28, 0.12, 350, 440),
   ]),
-  asset("delayed", "error_001", "Kenney error", "Electronic error"),
-  asset("delayed", "scratch_001", "Kenney scratch", "Friction"),
-  asset("delayed", "question_001", "Kenney question", "Question gesture"),
+  asset("problem", "error_001", "Kenney error", "Electronic error"),
+  asset("problem", "scratch_001", "Kenney scratch", "Friction"),
+  asset("problem", "question_001", "Kenney question", "Question gesture"),
 
-  baseline("stop", [note(0, 0.15, 880, 440)], 0.15),
-  synth("stop", "settled-chord", "Settled chord", "Warm chord", [
+  fixed(
+    "capture-completed",
+    "short-falling-tone",
+    "Short falling tone",
+    "Falling sine",
+    [note(0, 0.15, 880, 440)],
+    0.15,
+  ),
+  synth("capture-completed", "settled-chord", "Settled chord", "Warm chord", [
     note(0, 0.45, 440),
     note(0, 0.45, 550),
     note(0, 0.45, 660),
   ]),
-  synth("stop", "closing-bell", "Closing bell", "Bell cadence", [
+  synth("capture-completed", "closing-bell", "Closing bell", "Bell cadence", [
     note(0, 0.25, 880, 880, "bell"),
     note(0.22, 0.4, 660, 660, "bell"),
   ]),
-  synth("stop", "wood-cadence", "Wood cadence", "Percussion cadence", [
+  synth("capture-completed", "wood-cadence", "Wood cadence", "Percussion cadence", [
     note(0, 0.12, 660, 400, "wood"),
     note(0.18, 0.23, 440, 220, "wood"),
   ]),
-  synth("stop", "gentle-rise", "Gentle rise", "Triangle cadence", [
-    note(0, 0.16, 440, 440, "triangle"),
-    note(0.16, 0.3, 660, 660, "triangle"),
-  ]),
-  synth("stop", "triangle-finish", "Triangle finish", "Four-note triangle cadence", [
-    note(0, 0.14, 440, 440, "triangle"),
-    note(0.22, 0.14, 550, 550, "triangle"),
-    note(0.44, 0.14, 660, 660, "triangle"),
-    note(0.7, 0.65, 880, 880, "triangle"),
-  ]),
-  asset("stop", "confirmation_001", "Kenney confirmation", "Confirmation"),
-  asset("stop", "maximize_001", "Kenney maximize", "Expanding gesture"),
-  asset("stop", "open_001", "Kenney open", "Opening gesture"),
+  promoted(productionSounds["healthy-heartbeat"], "healthy-heartbeat", "Triangle cadence"),
+  promoted(
+    productionSounds["capture-completed"],
+    "capture-completed",
+    "Four-note triangle cadence",
+  ),
+  asset("capture-completed", "confirmation_001", "Kenney confirmation", "Confirmation"),
+  asset("capture-completed", "maximize_001", "Kenney maximize", "Expanding gesture"),
+  asset("capture-completed", "open_001", "Kenney open", "Opening gesture"),
 
-  { ...baseline("interrupted", morse("-..-"), 1.18), name: "Morse Stop" },
+  promoted(productionSounds.problem, "problem", "Morse signal"),
   synth(
-    "interrupted",
+    "problem",
     "alternating-call",
     "Alternating call",
     "Two-tone call",
@@ -190,7 +202,7 @@ export const candidates: readonly Candidate[] = [
     0.6,
   ),
   synth(
-    "interrupted",
+    "problem",
     "urgent-bell",
     "Urgent bell",
     "Repeated bell",
@@ -198,7 +210,7 @@ export const candidates: readonly Candidate[] = [
     0.7,
   ),
   synth(
-    "interrupted",
+    "problem",
     "siren-sweep",
     "Siren sweep",
     "Continuous sweep",
@@ -206,16 +218,16 @@ export const candidates: readonly Candidate[] = [
     1,
   ),
   synth(
-    "interrupted",
+    "problem",
     "rough-beacon",
     "Rough beacon",
     "Noise and tone",
     [note(0, 0.3, 800, 400, "noise"), note(0.35, 0.3, 620, 620, "triangle")],
     0.7,
   ),
-  asset("interrupted", "bong_001", "Kenney bong", "Resonant strike"),
-  asset("interrupted", "glitch_001", "Kenney glitch", "Digital interruption"),
-  asset("interrupted", "error_004", "Kenney error beacon", "Electronic warning"),
+  asset("problem", "bong_001", "Kenney bong", "Resonant strike"),
+  asset("problem", "glitch_001", "Kenney glitch", "Digital interruption"),
+  asset("problem", "error_004", "Kenney error beacon", "Electronic warning"),
 ];
 
 export interface Palette {
@@ -223,90 +235,70 @@ export interface Palette {
   name: string;
   choices: Record<Role, string>;
   levels: Record<Role, number>;
-  alarmGap: number;
-  repeatProblem?: boolean;
+  problemGap: number;
 }
-export const productionCandidate: Palette = {
-  id: "production-candidate",
-  name: "Production candidate",
+export const productionPalette: Palette = {
+  id: "production",
+  name: "Production",
   choices: {
-    health: "gentle-rise",
-    delayed: "baseline-interrupted",
-    stop: "triangle-finish",
-    interrupted: "baseline-interrupted",
+    "healthy-heartbeat": "triangle-cadence",
+    problem: "morse-stop",
+    "capture-completed": "four-note-triangle-cadence",
   },
-  levels: { health: 1, delayed: 1, stop: 1, interrupted: 1 },
-  alarmGap: 0,
-  repeatProblem: true,
+  levels: { "healthy-heartbeat": 1, problem: 1, "capture-completed": 1 },
+  problemGap: 0,
 };
-// Same fixed rising gesture as CuePlayer.play("start"); master gain is laboratory-only.
-export const fixedStart: Candidate = {
-  ...baseline("health", [note(0, 0.15, 440, 880)], 0.15),
-  id: "production-start",
-  name: "Fixed production Capture-started cue",
+export const fixedStart = productionSounds["capture-started"];
+const levels: Record<Role, number> = {
+  "healthy-heartbeat": 0.55,
+  problem: 1,
+  "capture-completed": 0.75,
 };
-const levels: Record<Role, number> = { health: 0.55, delayed: 0.85, stop: 0.75, interrupted: 1 };
 export const palettes: readonly Palette[] = [
-  {
-    id: "production",
-    name: "Production baseline",
-    choices: {
-      health: "baseline-health",
-      delayed: "baseline-delayed",
-      stop: "baseline-stop",
-      interrupted: "baseline-interrupted",
-    },
-    levels: { health: 1, delayed: 1, stop: 1, interrupted: 1 },
-    alarmGap: 0,
-  },
-  productionCandidate,
+  productionPalette,
   {
     id: "soft",
     name: "Soft and tactile",
     choices: {
-      health: "felt-pulse",
-      delayed: "hollow-knock",
-      stop: "wood-cadence",
-      interrupted: "alternating-call",
+      "healthy-heartbeat": "felt-pulse",
+      problem: "alternating-call",
+      "capture-completed": "wood-cadence",
     },
     levels,
-    alarmGap: 0.35,
+    problemGap: 0.35,
   },
   {
     id: "glass",
     name: "Glass and bells",
     choices: {
-      health: "glass-drop",
-      delayed: "double-bell",
-      stop: "closing-bell",
-      interrupted: "urgent-bell",
+      "healthy-heartbeat": "glass-drop",
+      problem: "urgent-bell",
+      "capture-completed": "closing-bell",
     },
     levels,
-    alarmGap: 0.5,
+    problemGap: 0.5,
   },
   {
     id: "minimal",
     name: "Minimal signals",
     choices: {
-      health: "breath-tick",
-      delayed: "downward-call",
-      stop: "settled-chord",
-      interrupted: "siren-sweep",
+      "healthy-heartbeat": "breath-tick",
+      problem: "siren-sweep",
+      "capture-completed": "settled-chord",
     },
     levels,
-    alarmGap: 0,
+    problemGap: 0,
   },
   {
     id: "kenney",
     name: "Kenney interface",
     choices: {
-      health: "kenney-pluck_001",
-      delayed: "kenney-error_001",
-      stop: "kenney-confirmation_001",
-      interrupted: "kenney-error_004",
+      "healthy-heartbeat": "kenney-pluck_001",
+      problem: "kenney-error_004",
+      "capture-completed": "kenney-confirmation_001",
     },
     levels,
-    alarmGap: 0.5,
+    problemGap: 0.5,
   },
 ];
 export function candidate(id: string): Candidate {

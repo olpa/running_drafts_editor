@@ -1,13 +1,11 @@
 import type { Cue, Cues } from "../cues.ts";
-import { readonly, shallowRef } from "vue";
 import {
-  candidate,
-  candidates,
-  fixedStart,
-  type Candidate,
-  type Note,
-  type Role,
-} from "./candidates.ts";
+  normalizeSound,
+  synthesizeSound,
+  type SoundDefinition,
+  type SoundRole,
+} from "../sound-definitions.ts";
+import { candidate, candidates, fixedStart, type Candidate, type Role } from "./candidates.ts";
 
 export interface SoundSettings {
   choices: Record<Role, string>;
@@ -15,13 +13,12 @@ export interface SoundSettings {
   master: number;
   pitch: number;
   duration: number;
-  alarmGap: number;
+  problemGap: number;
   unavailable: boolean;
-  repeatProblem: boolean;
 }
-const bounded = (n: number, low: number, high: number) => Math.min(high, Math.max(low, n));
 
-/** Deterministic voices, with a short attack and no random browser noise source. */
+const bounded = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
+
 export function synthesize(
   value: Candidate,
   sampleRate: number,
@@ -29,53 +26,12 @@ export function synthesize(
   stretch = 1,
 ): Float32Array {
   if (!value.notes?.length) throw new Error(`No synthesis definition for ${value.id}`);
-  const ratio = value.baseline ? 1 : 2 ** (bounded(pitch, -12, 12) / 12);
-  const scale = value.baseline ? 1 : bounded(stretch, 0.5, 2);
-  const duration = (value.duration ?? Math.max(...value.notes.map((n) => n.at + n.length))) * scale;
-  const samples = new Float32Array(Math.ceil(duration * sampleRate));
-  for (const n of value.notes) {
-    const first = Math.round(n.at * scale * sampleRate);
-    const length = n.length * scale;
-    for (let i = 0; i < length * sampleRate && first + i < samples.length; i++) {
-      const t = i / sampleRate;
-      const cycles = ratio * (n.from * t + ((n.to - n.from) * t * t) / (2 * length));
-      const envelope = value.baseline
-        ? 1 - t / length
-        : Math.min(1, t / 0.004) * (1 - t / length) ** 2;
-      samples[first + i] = (samples[first + i] ?? 0) + voice(n, cycles, t) * envelope * 0.08;
-    }
-  }
-  return value.baseline ? samples : normalize(samples);
-}
-function voice(note: Note, cycles: number, t: number): number {
-  const phase = 2 * Math.PI * cycles;
-  switch (note.voice) {
-    case "sine":
-      return Math.sin(phase);
-    case "triangle":
-      return (2 / Math.PI) * Math.asin(Math.sin(phase));
-    case "bell":
-      return Math.sin(phase) + 0.35 * Math.sin(phase * 2.76) * Math.exp(-14 * t);
-    case "wood":
-      return Math.sin(phase) * Math.exp(-30 * t) + 0.3 * Math.sin(phase * 1.73) * Math.exp(-55 * t);
-    case "noise":
-      return (Math.sin(phase * 1.79) + Math.sin(phase * 2.93) + Math.sin(phase * 4.71)) / 3;
-  }
-}
-/** Shared RMS target with a peak cap; silence cannot be amplified into noise. */
-export function normalize(samples: Float32Array): Float32Array {
-  let energy = 0,
-    peak = 0;
-  for (const sample of samples) {
-    energy += sample * sample;
-    peak = Math.max(peak, Math.abs(sample));
-  }
-  const rms = Math.sqrt(energy / samples.length);
-  const gain = rms > 0.000001 ? Math.min(0.028 / rms, 0.08 / peak) : 0;
-  return samples.map((sample) => sample * gain);
+  return synthesizeSound(value as SoundDefinition, sampleRate, pitch, stretch);
 }
 
-/** Story-only audio adapter. Alarm sources use WebAudio looping, never simulation timers. */
+export const normalize = normalizeSound;
+
+/** Story-only sound adapter. Repeating playback uses real WebAudio time. */
 export function createLabSound(
   settings: SoundSettings,
   log: (message: string) => void,
@@ -87,63 +43,73 @@ export function createLabSound(
   let enabling: Promise<void> | null = null;
   const downloaded = new Map<string, AudioBuffer>();
   const sources = new Set<AudioBufferSourceNode>();
-  let alarm: { unavailable: () => void } | null = null;
-  const problemActive = shallowRef(false);
-  let stopRepeating: (() => void) | null = null;
-  let repeatingKey = "";
+  let activeProblem: { unavailable: () => void } | null = null;
+
   const fail = (message: string) => {
     failure(message);
     log(`Audio unavailable: ${message}`);
   };
+
   function stateChanged(): void {
     if (!disposed && ready && context?.state !== "running") {
       fail("Browser audio playback was suspended or closed.");
-      alarm?.unavailable();
+      activeProblem?.unavailable();
     }
   }
+
   function requireAudio(): AudioContext {
-    if (!ready || !context || context.state !== "running" || settings.unavailable)
+    if (!ready || !context || context.state !== "running" || settings.unavailable) {
       throw new Error(
         settings.unavailable
           ? "Playback failure is simulated."
           : "Enable laboratory sound with the explicit button.",
       );
+    }
     return context;
   }
-  function buffer(value: Candidate, ctx: AudioContext): AudioBuffer {
-    if (value.asset) {
+
+  function buffer(value: Candidate | SoundDefinition, audio: AudioContext): AudioBuffer {
+    if ("asset" in value && value.asset) {
       const found = downloaded.get(value.id);
       if (!found) throw new Error(`Local audio was not loaded: ${value.name}`);
       return found;
     }
-    const samples = synthesize(value, ctx.sampleRate, settings.pitch, settings.duration);
-    const result = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+    const samples = synthesizeSound(
+      value as SoundDefinition,
+      audio.sampleRate,
+      settings.pitch,
+      settings.duration,
+    );
+    const result = audio.createBuffer(1, samples.length, audio.sampleRate);
     result.copyToChannel(Float32Array.from(samples), 0);
     return result;
   }
-  function play(role: Cue, loop: boolean): () => void {
-    const value = role === "start" ? fixedStart : candidate(settings.choices[role]);
+
+  function play(role: SoundRole, loop: boolean): () => void {
+    const value =
+      role === "capture-started" ? fixedStart : candidate(settings.choices[role as Role]);
     log(`sound: ${value.id} (${value.name})${loop ? "; repeating" : ""}`);
-    const ctx = requireAudio();
-    let audio = buffer(value, ctx);
-    if (loop && settings.alarmGap > 0) {
-      const padded = ctx.createBuffer(
-        audio.numberOfChannels,
-        audio.length + Math.round(ctx.sampleRate * bounded(settings.alarmGap, 0, 3)),
-        ctx.sampleRate,
+    const audio = requireAudio();
+    let audioBuffer = buffer(value, audio);
+    if (loop && settings.problemGap > 0) {
+      const padded = audio.createBuffer(
+        audioBuffer.numberOfChannels,
+        audioBuffer.length + Math.round(audio.sampleRate * bounded(settings.problemGap, 0, 3)),
+        audio.sampleRate,
       );
-      for (let ch = 0; ch < audio.numberOfChannels; ch++)
-        padded.copyToChannel(Float32Array.from(audio.getChannelData(ch)), ch);
-      audio = padded;
+      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+        padded.copyToChannel(Float32Array.from(audioBuffer.getChannelData(channel)), channel);
+      }
+      audioBuffer = padded;
     }
-    const source = ctx.createBufferSource();
-    const gain = ctx.createGain();
-    source.buffer = audio;
+    const source = audio.createBufferSource();
+    const gain = audio.createGain();
+    source.buffer = audioBuffer;
     source.loop = loop;
     gain.gain.value =
       bounded(settings.master, 0, 1) *
-      (role === "start" ? 1 : bounded(settings.levels[role], 0, 1.5));
-    source.connect(gain).connect(ctx.destination);
+      (role === "capture-started" ? 1 : bounded(settings.levels[role as Role], 0, 1.5));
+    source.connect(gain).connect(audio.destination);
     sources.add(source);
     let cleaned = false;
     const clean = () => {
@@ -162,83 +128,43 @@ export function createLabSound(
     }
     let stopped = false;
     return () => {
-      if (!stopped) {
-        stopped = true;
-        source.stop();
-        clean();
-      }
+      if (stopped) return;
+      stopped = true;
+      source.stop();
+      clean();
     };
   }
-  function refreshAlarm(force = false): void {
-    if (disposed) return;
-    if (!settings.repeatProblem) problemActive.value = false;
-    const role = alarm ? "interrupted" : problemActive.value ? "delayed" : null;
-    const key = role
-      ? JSON.stringify([
-          settings.choices[role],
-          settings.levels[role],
-          settings.master,
-          settings.pitch,
-          settings.duration,
-          settings.alarmGap,
-          settings.unavailable,
-        ])
-      : "";
-    if (!force && key === repeatingKey) {
-      if (role && !stopRepeating) alarm?.unavailable();
-      return;
-    }
-    stopRepeating?.();
-    stopRepeating = null;
-    repeatingKey = key;
-    if (!role) return;
-    try {
-      stopRepeating = play(role, true);
-    } catch (error) {
-      fail(String(error));
-      alarm?.unavailable();
-    }
-  }
-  function acknowledgeProblem(): void {
-    if (!problemActive.value) return;
-    problemActive.value = false;
-    log("Experimental Problem repetition cleared.");
-    refreshAlarm();
-  }
+
   const cues: Cues = {
     prepare() {},
     play(cue: Cue) {
       try {
-        if (cue === "health") acknowledgeProblem();
-        if (cue === "delayed" && settings.repeatProblem) {
-          if (!problemActive.value) log("Experimental Problem repetition activated.");
-          problemActive.value = true;
-          refreshAlarm();
-          return;
-        }
         play(cue, false);
       } catch (error) {
         fail(String(error));
       }
     },
-    loopInterrupted(unavailable) {
+    loopProblem(unavailable) {
       const activation = { unavailable };
-      alarm = activation;
-      refreshAlarm();
-      return () => {
-        if (alarm !== activation) return;
-        alarm = null;
-        refreshAlarm();
-      };
+      activeProblem = activation;
+      try {
+        const stop = play("problem", true);
+        return () => {
+          if (activeProblem === activation) activeProblem = null;
+          stop();
+        };
+      } catch (error) {
+        fail(String(error));
+        unavailable();
+        return () => {
+          if (activeProblem === activation) activeProblem = null;
+        };
+      }
     },
     dispose() {
       disposed = true;
       ready = false;
-      alarm = null;
-      problemActive.value = false;
-      stopRepeating?.();
-      stopRepeating = null;
-      repeatingKey = "";
+      activeProblem = null;
       for (const source of sources) source.stop();
       sources.clear();
       if (context) {
@@ -248,6 +174,7 @@ export function createLabSound(
       context = null;
     },
   };
+
   async function enable(): Promise<void> {
     if (enabling) return enabling;
     enabling = (async () => {
@@ -257,29 +184,28 @@ export function createLabSound(
           context = new AudioContext();
           context.addEventListener("statechange", stateChanged);
         }
-        const ctx = context;
-        await ctx.resume();
+        const audio = context;
+        await audio.resume();
         for (const value of candidates.filter((item) => item.asset)) {
           if (downloaded.has(value.id)) continue;
           const response = await fetch(value.asset!);
           if (!response.ok) throw new Error(`Could not load bundled candidate ${value.id}`);
-          const decoded = await ctx.decodeAudioData(await response.arrayBuffer());
+          const decoded = await audio.decodeAudioData(await response.arrayBuffer());
           if (disposed) return;
-          // Mix to mono so headphones and ordinary speakers hear the same candidate.
           const samples = new Float32Array(decoded.length);
-          for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
-            const channel = decoded.getChannelData(ch);
-            for (let i = 0; i < samples.length; i++)
-              samples[i] = samples[i]! + channel[i]! / decoded.numberOfChannels;
+          for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
+            const input = decoded.getChannelData(channel);
+            for (let index = 0; index < samples.length; index++) {
+              samples[index] = samples[index]! + input[index]! / decoded.numberOfChannels;
+            }
           }
-          const normalized = ctx.createBuffer(1, samples.length, decoded.sampleRate);
-          normalized.copyToChannel(Float32Array.from(normalize(samples)), 0);
+          const normalized = audio.createBuffer(1, samples.length, decoded.sampleRate);
+          normalized.copyToChannel(Float32Array.from(normalizeSound(samples)), 0);
           downloaded.set(value.id, normalized);
         }
         ready = true;
         failure("");
         log("Laboratory audio enabled; all downloaded candidates are bundled locally.");
-        refreshAlarm(true);
       } catch (error) {
         fail(String(error));
       } finally {
@@ -288,5 +214,6 @@ export function createLabSound(
     })();
     return enabling;
   }
-  return { cues, enable, refreshAlarm, acknowledgeProblem, problemActive: readonly(problemActive) };
+
+  return { cues, enable };
 }
