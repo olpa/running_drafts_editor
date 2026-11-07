@@ -20,7 +20,6 @@ import {
 export interface CaptureConfig {
   frameIntervalMs: number;
   secureDeadlineMs: number;
-  maxRecordingMs: number;
   retryFirstMs: number;
   retrySecondMs: number;
   retryThirdMs: number;
@@ -39,6 +38,7 @@ export interface CaptureDeliveryView extends DeliveryView {
   readonly elapsedMs: number;
   readonly hasUnsecuredAudio: boolean;
   readonly overdueFrames: readonly OverdueFrame[];
+  readonly capturedBytes: number;
 }
 
 export interface CaptureAndDelivery {
@@ -71,6 +71,7 @@ export function createCaptureAndDelivery(options: {
   const scheduler = options.scheduler ?? browserScheduler;
   const phase = shallowRef<"preparing" | "capturing" | "finalizing" | "ended">("preparing");
   const elapsedMs = shallowRef(0);
+  const capturedBytes = shallowRef(0);
   const overdueFrames = shallowRef<readonly OverdueFrame[]>([]);
   const requested = reactive(
     new Map<number, { at: number; arrived: boolean; overdue: boolean; final: boolean }>(),
@@ -158,6 +159,13 @@ export function createCaptureAndDelivery(options: {
       return;
     }
     pending.arrived = true;
+    capturedBytes.value += frame.data.size;
+    emit({
+      type: "transportFrameCaptured",
+      bytes: frame.data.size,
+      totalBytes: capturedBytes.value,
+      captureActive: phase.value === "capturing",
+    });
     delivery.accept(frame);
     checkBacklog();
   }
@@ -239,6 +247,7 @@ export function createCaptureAndDelivery(options: {
       elapsedMs: elapsedMs.value,
       hasUnsecuredAudio: running || requested.size > 0,
       overdueFrames: overdueFrames.value,
+      capturedBytes: capturedBytes.value,
     };
   });
   return {
@@ -299,6 +308,8 @@ export function createCaptureAndDelivery(options: {
           onDelayed() {}, // Retry timing is diagnostic, not the securing deadline.
           onSealed: () => emit({ type: "audioAssetSealed" }),
           onSealFailure: (error) => emit({ type: "audioAssetSealingFailed", error }),
+          onAllowanceRejected: (dimension) => emit({ type: "allowanceRejected", dimension }),
+          onAccountSuspended: () => emit({ type: "accountSuspended" }),
           canSeal: () => requested.size === 0,
           requestCaptureStop: (reason) => {
             void stopCapture(reason);
@@ -344,9 +355,6 @@ export function createCaptureAndDelivery(options: {
         emit({ type: "captureStarted" });
         progress();
         schedule(timingValue.intervalMs, () => requestFrame(false));
-        schedule(config.maxRecordingMs, () => {
-          void stopCapture("duration");
-        });
       } catch (error) {
         microphone?.dispose();
         reservation?.release();
@@ -363,6 +371,7 @@ export function createCaptureAndDelivery(options: {
     suspend() {
       suspended = true;
       delivery?.suspend();
+      if (phase.value === "capturing") void stopCapture("authentication");
     },
     resume() {
       suspended = false;

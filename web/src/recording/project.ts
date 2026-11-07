@@ -54,6 +54,7 @@ export interface SectionSnapshot {
   readonly canRetryClose: boolean;
   /** Capture has ended but the Section is not sealed yet. */
   readonly awaitingSeal: boolean;
+  readonly capturedBytes: number;
 }
 
 export interface RecordingSnapshot {
@@ -66,6 +67,8 @@ export interface RecordingSnapshot {
   readonly hasPendingWork: boolean;
   readonly startProblem: string;
   readonly sections: readonly SectionSnapshot[];
+  readonly capturedBytes: number;
+  readonly finalizingCapture: boolean;
 }
 
 export interface RecordingSinks {
@@ -141,6 +144,8 @@ export function createProject(
         starting.value || views.some((view) => view.hasUnsecuredAudio || view.awaitingSeal),
       startProblem: startProblem.value,
       sections: views,
+      capturedBytes: active.value?.snapshot.value.capturedBytes ?? 0,
+      finalizingCapture: active.value?.snapshot.value.finalizingCapture ?? false,
     };
   });
   async function ensureProject(): Promise<string> {

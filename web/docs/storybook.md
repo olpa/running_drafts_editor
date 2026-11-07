@@ -152,7 +152,7 @@ experiment; Storybook stores none.
 | Recovery Burst | Healthy cues arrive 40 simulated ms apart; Completion waits at least two seconds. |
 | User Stop and Successful Seal | Final audio secures before explicit sealing confirmation. |
 | Final Frame Delayed | An overdue final frame resolves without a Healthy heartbeat. |
-| Unrequested Duration Stop | Duration limit raises a Capture alert requiring acknowledgement. |
+| Unrequested Duration Stop | A simulated backend duration rejection raises a Capture alert and retains pending audio. |
 | Capture Failure | Recorder failure raises unrequested-stop and finalization alerts. |
 | Sealing During Capture Alert | Sealing succeeds, but the same Section's alert suppresses Completion. |
 | Older Section Completes | An older Section seals during a newer Capture. |

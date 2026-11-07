@@ -8,6 +8,7 @@ import { resolveProvider } from "../session/providers.ts";
 import { DEFAULT_CONFIG } from "../shared/config.ts";
 import { ApiError } from "../shared/http.ts";
 import type { AudioAssetSummary, ProjectSummary } from "../shared/project-types.ts";
+import type { UsageSnapshot } from "../usage/gateway.ts";
 import { createApplication, type Application, type ApplicationAdapters } from "./application.ts";
 
 const ACCOUNT_A = "5728cdd2-909d-4207-8303-c04b270c308f" as AccountId;
@@ -136,6 +137,23 @@ function mountApplication(adapters: ApplicationAdapters = {}) {
     recordingGateway,
     projectsGateway: { listProjects: async () => [] } as unknown as ProjectsGateway,
     healthGateway: { check: async () => Promise.reject(new Error("unused")) },
+    usageGateway: {
+      current: async (): Promise<UsageSnapshot> => ({
+        plan: "free",
+        audioStorage: {
+          usedBytes: 0,
+          grantedBytes: 0,
+          warningAtBytes: 107_374_182,
+          limitBytes: 134_217_728,
+        },
+        audioAssetDuration: {
+          grantedMs: 0,
+          warningAtMs: 2_880_000,
+          limitMs: 3_600_000,
+        },
+      }),
+    },
+    confirmDiscardPending: () => true,
     cues: { prepare() {}, play() {}, loopProblem: () => () => {}, dispose() {} },
     environment: {
       scheduler: {
@@ -192,11 +210,9 @@ function testId(root: HTMLElement, id: string): HTMLElement | null {
 }
 
 describe("application", () => {
-  it("retains real queued audio across a failed short-session logout and resumes only for its Account", async () => {
+  it("retains real queued audio across short-session reauthentication and resumes only for its Account", async () => {
     window.history.replaceState(null, "", "/projects/one?tab=record");
     const { application, root, captures, recordingGateway, backend } = mountApplication();
-    const firstLogout = deferred<void>();
-    backend.logouts.push(firstLogout.promise);
     await flushPromises();
     expect(root.querySelector("time")?.getAttribute("datetime")).toBe(
       (backend.current as CurrentSession).sessionExpiresAt,
@@ -220,7 +236,7 @@ describe("application", () => {
     expect(recordingGateway.requests[0]!.assetId).toBe(recordingGateway.assetId);
     expect(recordingGateway.requests[0]!.frame.data).toBe(exactBytes);
     await flushPromises();
-    expect(testId(root, "log")!.textContent).toContain("f0 sent");
+    expect(testId(root, "log")).toBeNull();
 
     // The Session now ends within six hours, so the next start is refused and logs out.
     backend.current = session(ACCOUNT_A, HOUR);
@@ -229,23 +245,15 @@ describe("application", () => {
     expect(application.session.authorizeRecordingStart()).toBe(false);
     await flushPromises();
 
-    expect(button(root, "Continue with Google")).toBeNull();
+    expect(button(root, "Continue with Google")).not.toBeNull();
     expect(root.querySelector("time")).toBeNull();
     expect(testId(root, "recording-workspace")).not.toBeNull();
     expect(testId(root, "private-results")).toBeNull();
-    expect(capture.disposed).toBe(false);
+    expect(capture.disposed).toBe(true);
     expect(recordingGateway.requests).toHaveLength(1);
     const leave = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(leave);
     expect(leave.defaultPrevented).toBe(true);
-
-    firstLogout.reject(new TypeError("offline"));
-    await flushPromises();
-    expect(button(root, "Retry logout")).not.toBeNull();
-    expect(button(root, "Continue with Google")).toBeNull();
-    button(root, "Retry logout")!.click();
-    await flushPromises();
-    expect(button(root, "Continue with Google")).not.toBeNull();
 
     backend.current = session(ACCOUNT_A, 8 * HOUR);
     await application.session.bootstrap();
@@ -347,20 +355,22 @@ describe("application", () => {
     expect(testId(root, "projects-workspace")).toBeNull();
   });
 
-  it("keeps a recording in progress while the user looks at Projects", async () => {
+  it("hides navigation during focused recording and restores it after finalization", async () => {
     const { root, captures } = mountApplication();
     await flushPromises();
     testId(root, "start")!.click();
     await flushPromises();
 
-    testId(root, "projects-view")!.click();
+    expect(testId(root, "private-navigation")).toBeNull();
+    expect(testId(root, "projects-workspace")).toBeNull();
+    expect(root.textContent).not.toContain("Backend health");
+    expect(root.textContent).not.toContain("Development tools");
+    testId(root, "start")!.click();
     await flushPromises();
-    testId(root, "record-view")!.click();
-    await flushPromises();
-
     expect(captures).toHaveLength(1);
-    expect(captures[0]!.disposed).toBe(false);
-    expect(testId(root, "start")!.getAttribute("data-mode")).toBe("stop");
+    expect(captures[0]!.disposed).toBe(true);
+    expect(testId(root, "private-navigation")).not.toBeNull();
+    expect(root.textContent).toContain("Backend health");
   });
 
   it("drops private Project data when the user signs out", async () => {
@@ -373,6 +383,74 @@ describe("application", () => {
     await flushPromises();
     expect(testId(root, "private-navigation")).toBeNull();
     expect(testId(root, "projects-workspace")).toBeNull();
+    expect(application.projects.view.value).toEqual({ kind: "empty" });
+  });
+
+  it("confirms destructive logout and clears pending work before the server responds", async () => {
+    let allow = false;
+    let confirmations = 0;
+    const pendingLogout = deferred<void>();
+    const { application, root, captures, recordingGateway, backend } = mountApplication({
+      confirmDiscardPending: () => {
+        confirmations++;
+        return allow;
+      },
+    });
+    backend.logouts.push(pendingLogout.promise);
+    await flushPromises();
+    testId(root, "start")!.click();
+    await flushPromises();
+    captures[0]!.emit({
+      seq: 0,
+      startMs: 0,
+      endMs: 1_000,
+      mediaType: "audio/webm;codecs=opus",
+      data: new Blob(["pending"]),
+    });
+    expect(recordingGateway.requests).toHaveLength(1);
+
+    await application.session.logout();
+    expect(confirmations).toBe(1);
+    expect(application.session.state.value.status).toBe("signedIn");
+    expect(application.recording.hasRetainedWork.value).toBe(true);
+
+    allow = true;
+    const logout = application.session.logout();
+    expect(confirmations).toBe(2);
+    expect(application.recording.hasRecorder.value).toBe(false);
+    expect(application.usage.snapshot.value).toBeNull();
+    expect(application.alerts.alerts.value).toEqual([]);
+    pendingLogout.resolve();
+    await logout;
+    expect(application.session.state.value.status).toBe("signedOut");
+  });
+
+  it("reuses authentication loss for Account suspension and retains pending audio", async () => {
+    const { application, root, captures, recordingGateway } = mountApplication();
+    await flushPromises();
+    testId(root, "start")!.click();
+    await flushPromises();
+    captures[0]!.emit({
+      seq: 0,
+      startMs: 0,
+      endMs: 1_000,
+      mediaType: "audio/webm;codecs=opus",
+      data: new Blob(["pending"]),
+    });
+    recordingGateway.requests[0]!.result.reject(
+      new ApiError("PUT", "/frames/0", 403, {
+        title: "Account unavailable",
+        code: "account_suspended",
+        referenceId: "support-ref",
+      }),
+    );
+    await flushPromises();
+
+    expect(application.session.state.value.status).toBe("signedOut");
+    expect(root.textContent).toContain("Contact support for help.");
+    expect(application.recording.hasRetainedWork.value).toBe(true);
+    expect(application.recording.snapshot.value.sections[0]!.canUploadPending).toBe(false);
+    expect(application.usage.snapshot.value).toBeNull();
     expect(application.projects.view.value).toEqual({ kind: "empty" });
   });
 });
@@ -413,10 +491,6 @@ it("keeps Capture alerts across views, new Capture, and sign-out until explicit 
   expect(starts).toBe(1);
   expect(stops).toBe(0);
   await application.session.logout();
-  await flushPromises();
-  expect(testId(root, "capture-alerts")).not.toBeNull();
-  expect(stops).toBe(0);
-  button(root, "Acknowledge")!.click();
   await flushPromises();
   expect(testId(root, "capture-alerts")).toBeNull();
   expect(stops).toBe(1);
@@ -476,7 +550,7 @@ it("plays completion when a signed-out Account's last retained Section seals", a
   });
   testId(root, "start")!.click();
   await flushPromises();
-  await application.session.logout();
+  application.session.authenticationExpired();
   await flushPromises();
   // Complete the retained work after restoring its Account, then sign out while
   // sealing is in flight. Completion must precede synchronous ownership cleanup.
@@ -493,7 +567,7 @@ it("plays completion when a signed-out Account's last retained Section seals", a
     nextExpectedSequence: 1,
   });
   await flushPromises();
-  await application.session.logout();
+  application.session.authenticationExpired();
   await flushPromises();
   sealing.resolve(asset(recordingGateway.assetId, "completed"));
   await flushPromises();

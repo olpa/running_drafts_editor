@@ -1,9 +1,13 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { computed, shallowRef } from "vue";
+import { describe, expect, it, vi } from "vitest";
 import { createCaptureAlerts } from "../alerts/capture-alerts.ts";
 import type { AccountId } from "../session/gateway.ts";
 import { DEFAULT_CONFIG, configKey } from "../shared/config.ts";
 import { axe } from "../test-support/axe.ts";
+import { ManualScheduler } from "../test-support/manual-scheduler.ts";
+import type { UsageSnapshot } from "../usage/gateway.ts";
+import type { Usage } from "../usage/usage.ts";
 import type { MicrophoneCapture, TransportFrame } from "./capture.ts";
 import type { RecordingGateway } from "./gateway.ts";
 import RecordingPanel from "./RecordingPanel.vue";
@@ -170,6 +174,105 @@ describe("ApplicationCapture module", () => {
     expect(captures[0]!.disposed).toBe(true);
     expect(recording.hasRecorder.value).toBe(false);
   });
+
+  it("warns only on local threshold crossings and never stops at a reported hard limit", async () => {
+    const scheduler = new ManualScheduler();
+    const value = shallowRef<Readonly<UsageSnapshot> | null>({
+      plan: "free",
+      audioStorage: {
+        usedBytes: 4,
+        grantedBytes: 0,
+        warningAtBytes: 8,
+        limitBytes: 10,
+      },
+      audioAssetDuration: { grantedMs: 0, warningAtMs: 500, limitMs: 600 },
+    });
+    const usage: Usage = {
+      snapshot: computed(() => value.value),
+      status: computed(() => "ready"),
+      problem: computed(() => ""),
+      setAccount() {},
+      refresh: vi.fn(async () => {}),
+      dispose() {},
+    };
+    const played: string[] = [];
+    const captures: FakeCapture[] = [];
+    const cues = {
+      prepare() {},
+      play() {},
+      loopProblem: () => () => {},
+      dispose() {},
+    };
+    const recording = createApplicationCapture({
+      config: DEFAULT_CONFIG,
+      usage,
+      allowanceFeedback: {
+        active: computed(() => false),
+        soundUnavailable: computed(() => false),
+        play: (dimension) => played.push(dimension),
+        silence() {},
+        dispose() {},
+      },
+      environment: {
+        scheduler,
+        now: scheduler.now,
+        gateway: {
+          createProject: async () => ({ id: "p", title: "P", createdAt: "x", updatedAt: "x" }),
+          getProject: async () => {
+            throw new Error("unused");
+          },
+          createSection: async () => ({ sectionId: "s", audioAssetId: "a", position: 0 }),
+          putFrame: () => new Promise(() => undefined),
+          complete: async () => ({ id: "a" }) as never,
+          interrupt: async () => ({ id: "a" }) as never,
+        },
+        openCapture: async () => {
+          const capture = new FakeCapture();
+          captures.push(capture);
+          return capture;
+        },
+      },
+      cues,
+      alerts: createCaptureAlerts(cues),
+      authorizeStart: () => true,
+    });
+    recording.setSessionAccount(ACCOUNT_A);
+    recording.toggle();
+    await flushPromises();
+    await scheduler.advanceBy(DEFAULT_CONFIG.frameIntervalMs);
+    captures[0]!.emit({
+      seq: 0,
+      startMs: 0,
+      endMs: 700,
+      mediaType: "audio/webm;codecs=opus",
+      data: new Blob([new Uint8Array(6)]),
+    });
+
+    expect(played).toEqual(["duration", "storage"]);
+    expect(recording.allowanceWarnings.value).toEqual({
+      storageRemainingBytes: 0,
+      durationRemainingMs: 0,
+    });
+    expect(recording.snapshot.value.capturing).toBe(true);
+
+    recording.toggle();
+    await flushPromises();
+    expect(recording.allowanceWarnings.value.durationRemainingMs).toBeNull();
+    expect(recording.allowanceWarnings.value.storageRemainingBytes).toBe(0);
+    value.value = {
+      ...value.value!,
+      audioStorage: { ...value.value!.audioStorage, usedBytes: 1 },
+    };
+    expect(recording.allowanceWarnings.value.storageRemainingBytes).toBeNull();
+    const cueCount = played.length;
+    value.value = {
+      ...value.value!,
+      audioStorage: { ...value.value!.audioStorage, usedBytes: 9 },
+    };
+    expect(recording.allowanceWarnings.value.storageRemainingBytes).toBe(1);
+    expect(played).toHaveLength(cueCount);
+    recording.dispose();
+  });
 });
 
 describe("RecordingPanel", () => {
@@ -199,7 +302,7 @@ describe("RecordingPanel", () => {
     expect(wrapper.get("[data-testid=capture-message]").text()).toBe(
       "Capture is active. Speak now.",
     );
-    expect(wrapper.find("[data-testid=capture-progress]").exists()).toBe(true);
+    expect(wrapper.find("[data-testid=capture-progress]").exists()).toBe(false);
     expect(played).toContain("capture-started");
     expect(wrapper.get("[data-testid=project-title]").text()).toBe("Canonical");
   });

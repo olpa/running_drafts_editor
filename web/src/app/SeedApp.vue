@@ -4,11 +4,13 @@ import ProjectBrowser from "../projects/ProjectBrowser.vue";
 import { useProjects } from "../projects/projects.ts";
 import { useLeaveGuard } from "../recording/leave-guard.ts";
 import RecordingPanel from "../recording/RecordingPanel.vue";
+import AllowanceStatus from "../recording/AllowanceStatus.vue";
 import { useApplicationCapture } from "../recording/application-capture.ts";
 import SessionPanel from "../session/SessionPanel.vue";
 import { useSession } from "../session/session.ts";
 import { useConfig } from "../shared/config.ts";
 import RadarLogView from "../shared/RadarLogView.vue";
+import UsageSummary from "../usage/UsageSummary.vue";
 
 const session = useSession();
 const recording = useApplicationCapture();
@@ -18,8 +20,10 @@ useLeaveGuard(recording);
 
 const activeView = ref<"record" | "projects">("record");
 const signedIn = computed(() => session.state.value.status === "signedIn");
-const showRecordingWorkspace = computed(() =>
-  signedIn.value ? activeView.value === "record" : recording.hasRetainedWork.value,
+const showRecordingWorkspace = computed(
+  () =>
+    recording.focused.value ||
+    (signedIn.value ? activeView.value === "record" : recording.hasRetainedWork.value),
 );
 
 watch(signedIn, (value) => {
@@ -36,9 +40,11 @@ onMounted(() => void session.start());
 </script>
 
 <template>
-  <SessionPanel />
+  <SessionPanel v-if="!recording.focused.value" />
+  <UsageSummary v-if="signedIn && !recording.focused.value" />
+  <AllowanceStatus />
   <nav
-    v-if="signedIn"
+    v-if="signedIn && !recording.focused.value"
     class="private-navigation"
     data-testid="private-navigation"
     aria-label="Private workspace"
@@ -50,7 +56,7 @@ onMounted(() => void session.start());
     <div data-testid="recording-panel-host">
       <RecordingPanel />
     </div>
-    <div v-if="signedIn" data-testid="private-results">
+    <div v-if="signedIn && !recording.focused.value" data-testid="private-results">
       <ol class="transcript" data-testid="transcript"></ol>
       <RadarLogView
         :lines="recording.logView.value.lines"
@@ -61,7 +67,10 @@ onMounted(() => void session.start());
       />
     </div>
   </div>
-  <div v-if="signedIn && activeView === 'projects'" data-testid="projects-workspace">
+  <div
+    v-if="signedIn && !recording.focused.value && activeView === 'projects'"
+    data-testid="projects-workspace"
+  >
     <ProjectBrowser />
   </div>
 </template>

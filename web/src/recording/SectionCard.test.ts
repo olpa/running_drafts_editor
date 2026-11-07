@@ -25,6 +25,7 @@ function snapshot(overrides: Partial<SectionSnapshot> = {}): SectionSnapshot {
     closeProblem: "",
     canRetryClose: false,
     awaitingSeal: false,
+    capturedBytes: 0,
     ...overrides,
   };
 }

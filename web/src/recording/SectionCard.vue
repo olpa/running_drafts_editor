@@ -37,7 +37,9 @@ const completionClass = computed(() => {
       aria-live="polite"
       >{{ completionText }}</span
     >
-    <span v-if="section.problem" class="section-status error">{{ section.problem }}</span>
+    <span v-if="section.problem" class="section-status error" role="status">{{
+      section.problem
+    }}</span>
     <FrameDelay v-for="frame in section.overdueFrames" :key="frame.frameId" :frame="frame" />
     <button v-if="section.canUploadPending" type="button" @click="emit('uploadPending')">
       Upload pending audio

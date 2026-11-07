@@ -4,6 +4,9 @@ import type { AccountId } from "../session/gateway.ts";
 import type { CaptureAlerts } from "../alerts/capture-alerts.ts";
 import { createCaptureFeedback } from "./capture-feedback.ts";
 import type { Cues } from "./cues.ts";
+import type { AllowanceFeedback } from "../alerts/allowance-feedback.ts";
+import type { Usage } from "../usage/usage.ts";
+import type { UsageSnapshot } from "../usage/gateway.ts";
 import type { SectionEvent } from "./section-events.ts";
 import {
   createProject,
@@ -23,6 +26,9 @@ export interface ApplicationCaptureOptions {
   authorizeStart: () => boolean;
   /** Existing Project to extend instead of creating a new one. */
   projectId?: string;
+  usage?: Usage;
+  allowanceFeedback?: AllowanceFeedback;
+  onAccountSuspended?: () => void;
 }
 
 /** The text view of the diagnostic log. */
@@ -41,7 +47,14 @@ const IDLE_SNAPSHOT: RecordingSnapshot = {
   hasPendingWork: false,
   startProblem: "",
   sections: [],
+  capturedBytes: 0,
+  finalizingCapture: false,
 };
+
+export interface AllowanceWarningView {
+  readonly storageRemainingBytes: number | null;
+  readonly durationRemainingMs: number | null;
+}
 
 /**
  * Page-lifetime recording. It outlives every view, so retained audio is never lost by
@@ -58,12 +71,16 @@ export interface ApplicationCapture {
   readonly hasUnsecuredAudio: Readonly<Ref<boolean>>;
   /** The signed-in Account owns the recorder in memory. */
   readonly ownsCurrentSession: Readonly<Ref<boolean>>;
+  readonly focused: Readonly<Ref<boolean>>;
+  readonly allowanceWarnings: Readonly<Ref<AllowanceWarningView>>;
   setSessionAccount(accountId: AccountId | null): void;
   /** Stop when capturing; otherwise start if the Session and Account allow it. */
   toggle(): void;
   uploadPendingAudio(sectionId: string): void;
   retryClose(sectionId: string): void;
   clearLog(): void;
+  /** Confirmed explicit logout permanently releases all page-local recording work. */
+  discardAll(): void;
   /** Permanently finish the module. A temporary view removal must not call this. */
   dispose(): void;
 }
@@ -86,6 +103,60 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
   const ownsCurrentSession = computed(
     () => !!moduleAccountId.value && moduleAccountId.value === sessionAccountId.value,
   );
+  const focused = computed(
+    () => snapshot.value.starting || snapshot.value.capturing || snapshot.value.finalizingCapture,
+  );
+  const storageRemainingBytes = shallowRef<number | null>(null);
+  const durationRemainingMs = shallowRef<number | null>(null);
+  const allowanceWarnings = computed<AllowanceWarningView>(() => ({
+    storageRemainingBytes: storageRemainingBytes.value,
+    durationRemainingMs: durationRemainingMs.value,
+  }));
+  let lastUsageSnapshot: Readonly<UsageSnapshot> | null | undefined;
+
+  if (options.usage) {
+    watch(
+      options.usage.snapshot,
+      (usage) => {
+        if (usage === lastUsageSnapshot) return;
+        lastUsageSnapshot = usage;
+        if (!usage) {
+          storageRemainingBytes.value = null;
+          durationRemainingMs.value = null;
+          return;
+        }
+        storageRemainingBytes.value =
+          usage.audioStorage.usedBytes >= usage.audioStorage.warningAtBytes
+            ? Math.max(0, usage.audioStorage.limitBytes - usage.audioStorage.usedBytes)
+            : null;
+      },
+      { immediate: true, flush: "sync" },
+    );
+    watch(
+      snapshot,
+      (current, previous) => {
+        const usage = options.usage?.snapshot.value;
+        if (!usage) {
+          durationRemainingMs.value = null;
+          return;
+        }
+        const durationWarned =
+          current.capturing && current.elapsedMs >= usage.audioAssetDuration.warningAtMs;
+        if (durationWarned) {
+          if (durationRemainingMs.value === null && (previous?.capturing ?? false)) {
+            options.allowanceFeedback?.play("duration");
+          }
+          durationRemainingMs.value = Math.max(
+            0,
+            usage.audioAssetDuration.limitMs - current.elapsedMs,
+          );
+        } else {
+          durationRemainingMs.value = null;
+        }
+      },
+      { flush: "sync" },
+    );
+  }
 
   function publishLog(): void {
     logView.value = log.view();
@@ -101,6 +172,20 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
     const context = options.projectId ? { accountId, projectId: options.projectId } : { accountId };
     const created: Project = createProject(config, environment, context, {
       event(sectionId, event) {
+        if (event.type === "transportFrameCaptured") {
+          const usage = options.usage?.snapshot.value;
+          if (usage) {
+            const estimate = usage.audioStorage.usedBytes + event.totalBytes;
+            if (estimate >= usage.audioStorage.warningAtBytes) {
+              if (storageRemainingBytes.value === null && event.captureActive) {
+                options.allowanceFeedback?.play("storage");
+              }
+              storageRemainingBytes.value = Math.max(0, usage.audioStorage.limitBytes - estimate);
+            }
+          }
+        }
+        if (event.type === "allowanceRejected") void options.usage?.refresh();
+        if (event.type === "accountSuspended") options.onAccountSuspended?.();
         feedback(sectionId, event);
         options.onEvent?.(sectionId, event);
       },
@@ -150,6 +235,8 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
     hasRetainedWork,
     hasUnsecuredAudio,
     ownsCurrentSession,
+    focused,
+    allowanceWarnings,
     setSessionAccount(accountId) {
       sessionAccountId.value = accountId;
       const current = recorder.value;
@@ -180,15 +267,23 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
       }
       if (!options.authorizeStart() || !ownsCurrentSession.value) return;
       cues.prepare();
+      void options.usage?.refresh();
       void current?.start();
     },
     uploadPendingAudio(sectionId) {
-      if (ownsCurrentSession.value) recorder.value?.uploadPendingAudio(sectionId);
+      if (ownsCurrentSession.value) {
+        void options.usage?.refresh();
+        recorder.value?.uploadPendingAudio(sectionId);
+      }
     },
     retryClose(sectionId) {
       if (ownsCurrentSession.value) recorder.value?.retryClose(sectionId);
     },
     clearLog,
+    discardAll() {
+      resetRecorder();
+      clearLog();
+    },
     dispose() {
       resetRecorder();
     },

@@ -186,6 +186,17 @@ Section outcome. The four unattended-mode failure outcomes described below raise
 Capture alerts instead of playing local one-shot Problem cues. Completion is not
 merely a report that an Audio Asset reached a sealed state.
 
+Allowance warning is an additional semantic sound role. `ApplicationCapture`
+compares backend-defined storage and duration warning thresholds with semantic
+captured-frame events and monotonic Capture progress; the application-level
+feedback module owns its bounded playback and silence action.
+Each dimension may play independently and overlapping playback is acceptable.
+The warning stops automatically after three seconds, requires no
+acknowledgement, and does not enter the Capture-alert identity collection. For
+now it deliberately reuses the approved Problem sound definition while
+remaining a distinct semantic role so a later sound choice does not change
+allowance behavior.
+
 For a frame requested at `T1`:
 
 - Securing it by `T1 + secureDeadlineMs` while its Section is actively capturing
@@ -294,14 +305,17 @@ add production enable-sound, playback-retry, preference, rating, or persistent
 override controls. A late audio-failure callback from an earlier activation must
 not change a later activation's state.
 
-The production sound vocabulary is Capture-started, Healthy heartbeat, Problem,
-and Capture-completed. Problem is the only repeating role. The approved sounds
-are Triangle cadence for Healthy heartbeat, Morse Stop for Problem, and Four-note
-triangle cadence for Capture-completed, all at 100% relative volume; the
-Capture-started cue remains unchanged. Morse Stop preserves the selected
-Storybook definition and repeats with no added gap. The Storybook laboratory may
-replace sound and environmental adapters for deterministic exploration, but it
-uses the same production Capture-alert module, components, and application wiring.
+The production sound vocabulary is Capture-started, Healthy heartbeat,
+Allowance warning, Problem, and Capture-completed. Problem is the only
+acknowledgement-governed repeating role; Allowance warning is bounded to three
+seconds and temporarily reuses the Problem definition. The approved sounds are
+Triangle cadence for Healthy heartbeat, Morse Stop for Problem and Allowance
+warning, and Four-note triangle cadence for Capture-completed, all at 100%
+relative volume; the Capture-started cue remains unchanged. Morse Stop preserves
+the selected Storybook definition and repeats with no added gap. The Storybook
+laboratory may replace sound and environmental adapters for deterministic
+exploration, but it uses the same production Capture-alert module, components,
+and application wiring.
 
 ## Consequences
 

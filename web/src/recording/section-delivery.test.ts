@@ -60,6 +60,8 @@ function harness(options: { maxFrameBytes?: number } = {}) {
     interrupt: 0,
     stops: [] as string[],
     cues: [] as string[],
+    allowances: [] as string[],
+    suspended: 0,
   };
   const logs: string[] = [];
   const state = { completeFails: 0, completeResult: sealed("completed") };
@@ -89,6 +91,8 @@ function harness(options: { maxFrameBytes?: number } = {}) {
     onAcknowledged: () => calls.cues.push("health"),
     onDelayed: () => calls.cues.push("delayed"),
     requestCaptureStop: (reason) => calls.stops.push(reason),
+    onAllowanceRejected: (dimension) => calls.allowances.push(dimension),
+    onAccountSuspended: () => calls.suspended++,
   });
   disposables.push(delivery);
   return { delivery, sent, calls, logs, state };
@@ -176,6 +180,69 @@ describe("SectionDelivery", () => {
     assert.equal(delivery.view.value.pendingFrames, 1);
     assert.equal(delivery.view.value.canUploadPending, false);
     assert.equal(calls.interrupt, 0);
+  });
+
+  it("freezes an allowance rejection whole and permits attentive manual recovery", async () => {
+    const { delivery, sent, calls } = harness();
+    const original = frame(0);
+    delivery.accept(original);
+    sent[0]!.result.reject(
+      new ApiError("PUT", "/frames/0", 429, {
+        type: "https://example.test/problems/audio-storage-limit",
+        title: "Storage allowance exceeded",
+        status: 429,
+        detail: "The frame would exceed the effective allowance.",
+        instance: "/api/v1/audio-assets/asset/frames/0",
+        code: "audio_storage_limit_exceeded",
+        referenceId: "ref-storage",
+      }),
+    );
+    await settle();
+    assert.deepEqual(calls.stops, ["hard"]);
+    assert.deepEqual(calls.allowances, ["storage"]);
+    assert.equal(delivery.view.value.pendingFrames, 1);
+    assert.match(delivery.view.value.problem, /Type: https:\/\/example\.test/u);
+    assert.match(delivery.view.value.problem, /Status: 429/u);
+
+    delivery.captureStopping("hard");
+    delivery.captureEnded("hard");
+    assert.equal(delivery.view.value.canUploadPending, true);
+    delivery.requestUpload();
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1]!.frame, original);
+    sent[1]!.result.resolve(ack(0));
+    await settle();
+    assert.equal(calls.interrupt, 1);
+  });
+
+  it("terminally retains a remotely deleted target and a suspended Account", async () => {
+    const deleted = harness();
+    deleted.delivery.accept(frame(0));
+    deleted.sent[0]!.result.reject(
+      new ApiError("PUT", "/frames/0", 404, {
+        title: "Not found",
+        code: "not_found",
+        referenceId: "ref-missing",
+      }),
+    );
+    await settle();
+    deleted.delivery.captureStopping("hard");
+    deleted.delivery.captureEnded("hard");
+    assert.equal(deleted.delivery.view.value.canUploadPending, false);
+    assert.match(deleted.delivery.view.value.problem, /cannot be uploaded or sealed/u);
+
+    const suspended = harness();
+    suspended.delivery.accept(frame(0));
+    suspended.sent[0]!.result.reject(
+      new ApiError("PUT", "/frames/0", 403, {
+        title: "Account unavailable",
+        code: "account_suspended",
+      }),
+    );
+    await settle();
+    assert.equal(suspended.calls.suspended, 1);
+    assert.deepEqual(suspended.calls.stops, ["hard"]);
+    assert.match(suspended.delivery.view.value.problem, /Contact support/u);
   });
 
   it("freezes an interrupted Section until the user asks, then interrupts it", async () => {

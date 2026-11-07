@@ -1,15 +1,20 @@
 <script setup lang="ts">
 import CaptureAlerts from "../alerts/CaptureAlerts.vue";
+import AllowanceFeedback from "../alerts/AllowanceFeedback.vue";
 import MicrophoneAccessDialog from "../recording/MicrophoneAccessDialog.vue";
 import HealthPanel from "../health/HealthPanel.vue";
 import SeedApp from "./SeedApp.vue";
+import { useApplicationCapture } from "../recording/application-capture.ts";
+
+const recording = useApplicationCapture();
 </script>
 
 <template>
   <main class="app-shell">
     <CaptureAlerts />
+    <AllowanceFeedback />
     <MicrophoneAccessDialog />
-    <header class="topbar">
+    <header v-if="!recording.focused.value" class="topbar">
       <div>
         <h1>Running Drafts</h1>
         <p>Development tools</p>
@@ -18,7 +23,11 @@ import SeedApp from "./SeedApp.vue";
     </header>
 
     <div class="workspace">
-      <section class="workspace-pane health-surface" aria-labelledby="health-title">
+      <section
+        v-if="!recording.focused.value"
+        class="workspace-pane health-surface"
+        aria-labelledby="health-title"
+      >
         <header class="section-heading">
           <p class="eyebrow">Environment</p>
           <h2 id="health-title">Backend health</h2>
@@ -27,8 +36,12 @@ import SeedApp from "./SeedApp.vue";
         <HealthPanel />
       </section>
 
-      <section class="workspace-pane seed-surface" aria-labelledby="seed-title">
-        <header class="section-heading">
+      <section
+        class="workspace-pane seed-surface"
+        :class="{ 'focused-recording-surface': recording.focused.value }"
+        aria-labelledby="seed-title"
+      >
+        <header v-if="!recording.focused.value" class="section-heading">
           <p class="eyebrow">Browser seed</p>
           <h2 id="seed-title">Recording experiment</h2>
           <p>The existing microphone, delivery, and transcription test surface.</p>
@@ -88,6 +101,9 @@ import SeedApp from "./SeedApp.vue";
 }
 .health-surface {
   background: #f8fafc;
+}
+.focused-recording-surface {
+  grid-column: 1 / -1;
 }
 .section-heading {
   margin-bottom: 24px;

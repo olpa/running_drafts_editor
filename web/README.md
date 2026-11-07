@@ -178,15 +178,23 @@ against WCAG 2.2 AA contrast ratios.
 The page keeps one microphone stream and recorder open per Section. Stop waits
 for the final partial transport frame, then the Section completes only after all
 assigned frames are acknowledged. Production fixes the Transport frame interval
-at 5 seconds; Storybook owns interval experiments. The ten-minute recording limit,
-securing deadline, retry delays, and 2 MiB frame guard remain explicit configuration
-through `window.__SEED_CONFIG__`. The production securing deadline is 2000 ms,
+at 5 seconds; Storybook owns interval experiments. The securing deadline, retry
+delays, request timeout, and 2 MiB frame guard remain explicit configuration through
+`window.__SEED_CONFIG__`. The production securing deadline is 2000 ms,
 validated within 500–2000 ms. Timing is never read from `localStorage`. The securing
 budget starts when a frame is requested, before Blob production and HTTP setup. A
 late boundary shifts the next request; it does not create a short catch-up frame.
-A prominent green **Speak now** indicator and duration progress appear during
+A prominent green **Speak now** indicator and elapsed duration appear during
 microphone capture. They stop indicating capture as soon as capture stops,
 independently of pending uploads and backend work.
+
+The backend-reported effective allowance is authoritative. Client timing and
+captured byte counts provide advisory storage and per-Audio Asset duration
+warnings, but the browser neither prevents Start nor stops Capture at a locally
+estimated hard threshold. A backend allowance rejection stops Capture, retains
+the rejected and final partial frames exactly, and waits for manual delivery
+recovery. Account usage refreshes independently and never gates a recording
+action.
 
 Audio stays in browser memory until acknowledged. The sender retries the oldest
 pending transport frame after 3, 10, and 17 seconds from each preceding attempt's
@@ -202,9 +210,12 @@ attempts for that Section stop, while existing attempts may finish. Per-Section
 **Upload pending audio** actions retry retained bytes without restarting capture.
 A new recorder run can create and upload another Section concurrently. Leaving
 with captured or pending audio warns; reload recovery is not implemented.
-Any frame-upload HTTP `409` stops capture and permanently freezes delivery for
-that Section without sealing it. Exact pending audio and returned Problem
-Details remain visible for diagnosis, while another Section may start normally.
+Any frame-upload HTTP `409`, unsafe oversize response, or privacy-preserving
+`404` stops capture and permanently freezes delivery for that Section without
+sealing it. Exact pending audio and returned Problem Details remain visible for
+diagnosis, while another Section may start normally. Request-rate,
+upload-concurrency, database, target-filesystem, and network failures retain the
+fixed automatic retry behavior instead of showing allowance or Plan messaging.
 
 ### Sound and visible feedback
 

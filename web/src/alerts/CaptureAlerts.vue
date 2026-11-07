@@ -12,7 +12,7 @@ function message(alert: CaptureAlert): string {
     case "audio-asset-sealing-failed":
       return "Recording could not be completed.";
     case "unrequested-capture-stop":
-      return "Capture stopped. Up to 15 seconds of recent audio may not be saved.";
+      return "Capture stopped. Check the recording Section for retained audio and recovery details.";
   }
 }
 </script>

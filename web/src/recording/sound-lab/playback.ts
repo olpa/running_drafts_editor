@@ -123,7 +123,7 @@ export type ScenarioPlayback = ReturnType<typeof createScenarioPlayback>;
 function stepsFor(scenario: LabScenario, name: ScenarioName): { duration: number; steps: Step[] } {
   const interval = scenario.config.frameIntervalMs;
   const deadline = scenario.config.secureDeadlineMs;
-  const limit = scenario.config.maxRecordingMs;
+  const limit = scenario.scenarioLimitMs;
   const shortCapture = Math.min(2000, interval / 2);
   const steps: Step[] = [];
   const action = (at: number, label: string, run: Step["run"]) => steps.push({ at, label, run });
@@ -184,6 +184,11 @@ function stepsFor(scenario: LabScenario, name: ScenarioName): { duration: number
       duration = interval + deadline + 3500;
       break;
     case "coexist":
+      action(
+        limit + 100,
+        "Retry retained audio after simulated allowance recovery",
+        scenario.recover,
+      );
       action(
         limit + 500,
         "Backend confirms sealing while the Capture alert remains active",
