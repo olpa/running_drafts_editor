@@ -6,7 +6,8 @@ import type { TransportFrame } from "./capture.ts";
 import { FrameDelivery } from "./delivery.ts";
 import type { RecordingGateway } from "./gateway.ts";
 
-export type StopReason = "user" | "duration" | "backlog" | "capture" | "oversize" | "conflict";
+export type StopReason =
+  "user" | "backlog" | "capture" | "oversize" | "conflict" | "hard" | "authentication";
 export type CompletionStatus = "pending" | "failed" | "succeeded";
 
 /** Pending frames at which capture stops so that audio cannot pile up behind a failing upload. */
@@ -19,7 +20,13 @@ export const BACKLOG_LIMIT = 2;
  * - `requested`: delivery was asked for, or there is nothing left to send.
  * - `blocked-*`: terminal; the bytes stay in this page.
  */
-type RecoveryMode = "automatic" | "waiting" | "requested" | "blocked-oversize" | "blocked-conflict";
+type RecoveryMode =
+  | "automatic"
+  | "waiting"
+  | "requested"
+  | "blocked-oversize"
+  | "blocked-conflict"
+  | "blocked-target";
 type CapturePhase = "running" | "stopping" | "ended";
 type CloseCommand =
   { readonly kind: "complete"; readonly frameCount: number } | { readonly kind: "interrupt" };
@@ -63,7 +70,9 @@ export interface SectionDeliveryOptions {
   canSeal?: () => boolean;
   onDelayed: () => void;
   /** Delivery cannot continue safely, so capture should stop. */
-  requestCaptureStop: (reason: "oversize" | "conflict") => void;
+  requestCaptureStop: (reason: "oversize" | "conflict" | "hard") => void;
+  onAllowanceRejected?: (dimension: "storage" | "duration") => void;
+  onAccountSuspended?: () => void;
 }
 
 /**
@@ -132,7 +141,11 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
   });
 
   function blocked(): boolean {
-    return state.recovery === "blocked-oversize" || state.recovery === "blocked-conflict";
+    return (
+      state.recovery === "blocked-oversize" ||
+      state.recovery === "blocked-conflict" ||
+      state.recovery === "blocked-target"
+    );
   }
 
   function interrupted(): boolean {
@@ -140,16 +153,64 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
   }
 
   function handleFrameFailure(error: unknown): void {
-    if (
-      !(error instanceof ApiError) ||
-      error.status !== 409 ||
-      state.recovery === "blocked-conflict"
-    ) {
+    if (!(error instanceof ApiError)) return;
+    const code = error.problem?.code;
+    if (code === "audio_storage_limit_exceeded" || code === "audio_asset_duration_limit_exceeded") {
+      frames.freeze();
+      state.recovery = "waiting";
+      const dimension = code === "audio_storage_limit_exceeded" ? "storage" : "duration";
+      state.problem = problemDescription(
+        `Capture stopped because the ${dimension} allowance rejected this audio. The exact pending audio remains on this page.`,
+        error.problem,
+      );
+      options.log(
+        `allowance stop HTTP ${error.status} code=${code}` +
+          ` referenceId=${error.problem?.referenceId ?? "none"}`,
+      );
+      options.onAllowanceRejected?.(dimension);
+      options.requestCaptureStop("hard");
       return;
     }
+    if (code === "account_suspended") {
+      frames.terminate();
+      state.recovery = "blocked-target";
+      state.problem = [
+        "Audio delivery stopped because this Account is unavailable. Contact support for help. Pending audio remains on this page for the original Account.",
+        error.problem?.referenceId ? `Reference ID: ${error.problem.referenceId}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      options.onAccountSuspended?.();
+      options.requestCaptureStop("hard");
+      return;
+    }
+    if (error.status === 404) {
+      frames.terminate();
+      state.recovery = "blocked-target";
+      state.problem = problemDescription(
+        "Audio delivery stopped because its original recording is no longer available. Pending audio remains on this page but cannot be uploaded or sealed.",
+        error.problem,
+      );
+      options.requestCaptureStop("hard");
+      return;
+    }
+    if (error.status === 413 || code === "frame_too_large") {
+      frames.terminate();
+      state.recovery = "blocked-oversize";
+      state.problem = problemDescription(
+        "Capture stopped because the backend rejected an audio frame as too large. Pending audio remains on this page but cannot be retried safely.",
+        error.problem,
+      );
+      options.requestCaptureStop("hard");
+      return;
+    }
+    if (error.status !== 409 || state.recovery === "blocked-conflict") return;
     frames.terminate();
     state.recovery = "blocked-conflict";
-    state.problem = conflictProblem(error.problem);
+    state.problem = problemDescription(
+      "Capture stopped because audio delivery conflicted with stored data. Audio remains in this page.",
+      error.problem,
+    );
     options.log(
       `frame conflict HTTP 409 code=${error.problem?.code ?? "none"}` +
         ` referenceId=${error.problem?.referenceId ?? "none"}`,
@@ -293,13 +354,15 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
       state.phase = "stopping";
       state.reason = reason;
       if (!isInterruptionReason(reason)) return;
-      if (!blocked()) state.recovery = "waiting";
+      if (!blocked()) state.recovery = reason === "authentication" ? "requested" : "waiting";
       state.problem ||=
         reason === "backlog"
           ? "Capture was interrupted because audio could not be uploaded."
           : reason === "oversize"
             ? OVERSIZE_PROBLEM
-            : "Capture was interrupted because the microphone became unavailable.";
+            : reason === "authentication"
+              ? "Capture stopped because the Application Session ended. Pending audio remains on this page for the original Account."
+              : "Capture was interrupted because the microphone became unavailable.";
       frames.freeze();
     },
     captureEnded(reason) {
@@ -361,7 +424,12 @@ const OVERSIZE_PROBLEM =
 
 export function isInterruptionReason(reason: StopReason): boolean {
   return (
-    reason === "backlog" || reason === "capture" || reason === "oversize" || reason === "conflict"
+    reason === "backlog" ||
+    reason === "capture" ||
+    reason === "oversize" ||
+    reason === "conflict" ||
+    reason === "hard" ||
+    reason === "authentication"
   );
 }
 
@@ -369,15 +437,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function conflictProblem(problem: Readonly<ProblemDetails> | null): string {
+function problemDescription(prefix: string, problem: Readonly<ProblemDetails> | null): string {
   const details = [
+    problem?.type ? `Type: ${problem.type}` : "",
     problem?.title ? `Title: ${problem.title}` : "",
+    problem?.status !== undefined ? `Status: ${problem.status}` : "",
     problem?.detail ? `Detail: ${problem.detail}` : "",
+    problem?.instance ? `Instance: ${problem.instance}` : "",
     problem?.code ? `Code: ${problem.code}` : "",
     problem?.referenceId ? `Reference ID: ${problem.referenceId}` : "",
   ].filter(Boolean);
-  return [
-    "Capture stopped because audio delivery conflicted with stored data. Audio remains in this page.",
-    ...details,
-  ].join(" ");
+  return [prefix, ...details].join(" ");
 }

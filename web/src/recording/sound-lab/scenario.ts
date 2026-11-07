@@ -9,6 +9,7 @@ import { DEFAULT_CONFIG } from "../../shared/config.ts";
 import { ManualScheduler, settle } from "../../test-support/manual-scheduler.ts";
 import type { Cues } from "../cues.ts";
 import type { CaptureAlerts } from "../../alerts/capture-alerts.ts";
+import { ApiError } from "../../shared/http.ts";
 
 export const scenarios = {
   palette:
@@ -26,17 +27,17 @@ export const scenarios = {
   final:
     "User Stop is followed by an overdue final frame, recovery, and sealing. Securing the final frame resolves its identified Capture alert without a Healthy heartbeat.",
   duration:
-    "Capture reaches its duration limit automatically. Its Capture alert repeats Problem until you acknowledge it.",
+    "The simulated backend rejects a frame at the duration allowance. Production stops Capture, retains the frame, and repeats Problem until you acknowledge the Capture alert.",
   failure:
     "The recorder fails after one frame interval plus 500 simulated ms. Inspect its Section causes, global Capture alerts, and arranged delivery recovery.",
   coexist:
-    "Capture reaches the duration limit. The simulated backend then confirms sealing while the unrequested-stop Capture alert stays active and suppresses Completion.",
+    "A backend duration rejection stops Capture. The simulated backend then confirms sealing while the unrequested-stop Capture alert stays active and suppresses Completion.",
   older:
     "Section 1 stops, Section 2 starts, and the older Section seals during newer Capture. The sequence then stops and seals the newer Section.",
   repeated:
-    "Two successive Sections reach their duration limits. Two identified Capture alerts share one Problem loop; acknowledgement stays yours.",
+    "Two successive Sections receive backend duration rejections. Two identified Capture alerts share one Problem loop; acknowledgement stays yours.",
   unavailable:
-    "Sound failure is simulated. Capture reaches its duration limit automatically; the visible Capture alert reports unavailable sound and remains usable.",
+    "Sound failure is simulated. A backend duration rejection stops Capture; the visible Capture alert reports unavailable sound and remains usable.",
 } as const;
 export type ScenarioName = keyof typeof scenarios;
 
@@ -74,19 +75,18 @@ export function createLabScenario(options: {
       };
     },
   };
+  const scenarioLimitMs = 2 * options.intervalMs;
   const config = {
     ...DEFAULT_CONFIG,
     frameIntervalMs: options.intervalMs,
     secureDeadlineMs: options.deadlineMs,
-    maxRecordingMs: ["duration", "coexist", "repeated", "unavailable"].includes(name)
-      ? 2 * options.intervalMs + 500
-      : DEFAULT_CONFIG.maxRecordingMs,
   };
   const access = createMicrophoneAccess();
   const microphones: SimulatedMicrophone[] = [];
   const assets = new Map<string, { frames: number; duration: number }>();
   const frames = new Set<Pending>();
   const seals = new Set<Pending>();
+  const allowanceRejectedAssets = new Set<string>();
   let holdFrames = name === "single" || name === "two" || name === "final";
   let holdSeals = [
     "palette",
@@ -132,6 +132,21 @@ export function createLabScenario(options: {
       if (!asset) return Promise.reject(new Error(`Unexpected Audio Asset ${id}`));
       asset.frames = Math.max(asset.frames, frame.seq + 1);
       asset.duration = Math.max(asset.duration, frame.endMs);
+      if (
+        ["duration", "coexist", "repeated", "unavailable"].includes(name) &&
+        frame.seq === 1 &&
+        !allowanceRejectedAssets.has(id)
+      ) {
+        allowanceRejectedAssets.add(id);
+        return Promise.reject(
+          new ApiError("PUT", `/audio-assets/${id}/frames/${frame.seq}`, 429, {
+            title: "Recording duration allowance exceeded",
+            detail: "The simulated frame would exceed this Audio Asset's duration allowance.",
+            code: "audio_asset_duration_limit_exceeded",
+            referenceId: `storybook-${id}`,
+          }),
+        );
+      }
       return new Promise<FrameAck>((resolve, reject) => {
         const pending: Pending = {
           finish() {
@@ -244,6 +259,7 @@ export function createLabScenario(options: {
   return {
     app,
     config,
+    scenarioLimitMs,
     manual,
     scheduler,
     advance,

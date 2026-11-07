@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, useId } from "vue";
 import { formatDateTime } from "../shared/format.ts";
+import UsageSummary from "../usage/UsageSummary.vue";
 import { useSession } from "./session.ts";
 
 const session = useSession();
@@ -48,6 +49,7 @@ const verifiedEmail = computed(() => {
         </dd>
       </div>
     </dl>
+    <UsageSummary />
     <button type="button" @click="session.logout()">Log out</button>
   </section>
 </template>

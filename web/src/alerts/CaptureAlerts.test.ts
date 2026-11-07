@@ -29,7 +29,7 @@ it("shows active Capture problems and acknowledges all of them", async () => {
 
   expect(wrapper.get("[role=alert]").text()).toContain("Saving audio is delayed by 2 seconds.");
   expect(wrapper.get("[role=alert]").text()).toContain(
-    "Capture stopped. Up to 15 seconds of recent audio may not be saved.",
+    "Capture stopped. Check the recording Section for retained audio and recovery details.",
   );
   expect(wrapper.text()).toContain("Problem sound is unavailable.");
   expect(wrapper.get("button").text()).toBe("Acknowledge");

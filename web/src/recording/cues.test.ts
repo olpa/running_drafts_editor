@@ -72,21 +72,26 @@ describe("production sound feedback", () => {
     player.play("capture-completed");
     const unavailable = vi.fn();
     const stop = player.loopProblem(unavailable);
+    const stopAllowance = player.loopAllowanceWarning(unavailable);
 
     expect(played).toEqual([
       "capture-started",
       "healthy-heartbeat",
       "capture-completed",
       "problem",
+      "allowance-warning",
     ]);
-    expect(context.sources).toHaveLength(4);
+    expect(context.sources).toHaveLength(5);
     expect(context.sources.slice(0, 3).every((source) => !source.loop)).toBe(true);
     expect(context.sources[3]!.loop).toBe(true);
     expect(context.sources[3]!.buffer?.length).toBe(9440);
+    expect(context.sources[4]!.loop).toBe(true);
+    expect(context.sources[4]!.buffer?.length).toBe(9440);
     expect(unavailable).not.toHaveBeenCalled();
 
     stop();
     stop();
+    stopAllowance();
     expect(context.sources[3]!.stop).toHaveBeenCalledOnce();
     player.dispose();
   });

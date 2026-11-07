@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { formatClock } from "../shared/format.ts";
-import { useConfig } from "../shared/config.ts";
 import SectionCard from "./SectionCard.vue";
 import { useApplicationCapture } from "./application-capture.ts";
 
 const recording = useApplicationCapture();
-const config = useConfig();
 
 const snapshot = recording.snapshot;
 const idle = computed(() => !recording.hasRecorder.value);
@@ -70,17 +68,6 @@ const elapsed = computed(() => (idle.value ? 0 : snapshot.value.elapsedMs));
     >
       <span class="capture-dot" aria-hidden="true"></span>
       <span data-testid="capture-message">{{ message }}</span>
-    </div>
-    <div v-if="snapshot.capturing" class="capture-progress" data-testid="capture-progress">
-      <span data-testid="capture-time" aria-live="off"
-        >{{ formatClock(snapshot.elapsedMs) }} / {{ formatClock(config.maxRecordingMs) }}</span
-      >
-      <progress
-        data-testid="capture-duration"
-        aria-label="Capture duration"
-        :max="config.maxRecordingMs"
-        :value="Math.min(snapshot.elapsedMs, config.maxRecordingMs)"
-      ></progress>
     </div>
     <p
       class="start-problem"
@@ -166,19 +153,6 @@ const elapsed = computed(() => (idle.value ? 0 : snapshot.value.elapsedMs));
   height: 0.75rem;
   border-radius: 50%;
   background: currentcolor;
-}
-.capture-progress {
-  max-width: 24rem;
-  margin-top: 0.75rem;
-  font-variant-numeric: tabular-nums;
-}
-.capture-progress span {
-  display: block;
-  text-align: right;
-}
-.capture-progress progress {
-  width: 100%;
-  accent-color: var(--success);
 }
 .start-problem {
   margin-top: 0.75rem;

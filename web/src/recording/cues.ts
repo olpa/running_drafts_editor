@@ -7,6 +7,7 @@ import {
 } from "./sound-definitions.ts";
 
 export type Cue = Exclude<SoundRole, "problem">;
+export type FeedbackRole = SoundRole | "allowance-warning";
 
 /** WebAudio feedback; `onPlayed` records semantic roles rather than sound samples. */
 export class CuePlayer implements Cues {
@@ -15,7 +16,7 @@ export class CuePlayer implements Cues {
   private count = 0;
 
   constructor(
-    private readonly onPlayed: (role: SoundRole, count: number) => void = () => undefined,
+    private readonly onPlayed: (role: FeedbackRole, count: number) => void = () => undefined,
   ) {}
 
   /** Prepare during a user gesture. Audio failure must not prevent Capture. */
@@ -35,6 +36,15 @@ export class CuePlayer implements Cues {
 
   /** A WebAudio loop keeps playing without JavaScript timers or visibility checks. */
   loopProblem(onUnavailable: () => void): () => void {
+    return this.loop("problem", onUnavailable);
+  }
+
+  /** The allowance role deliberately reuses the Problem waveform, not its semantics. */
+  loopAllowanceWarning(onUnavailable: () => void): () => void {
+    return this.loop("allowance-warning", onUnavailable);
+  }
+
+  private loop(role: "problem" | "allowance-warning", onUnavailable: () => void): () => void {
     const context = this.context;
     if (!context || context.state !== "running") {
       onUnavailable();
@@ -46,7 +56,7 @@ export class CuePlayer implements Cues {
       if (!stopped && context.state !== "running") onUnavailable();
     };
     context.addEventListener("statechange", stateChanged);
-    this.played("problem");
+    this.played(role);
     return () => {
       if (stopped) return;
       stopped = true;
@@ -66,7 +76,7 @@ export class CuePlayer implements Cues {
     if (context) void context.close().catch(() => {});
   }
 
-  private played(role: SoundRole): void {
+  private played(role: FeedbackRole): void {
     this.count++;
     this.onPlayed(role, this.count);
   }
@@ -109,5 +119,6 @@ export class CuePlayer implements Cues {
 export interface Cues extends ProblemSound {
   prepare(): void;
   play(cue: Cue): void;
+  loopAllowanceWarning?(onUnavailable: () => void): () => void;
   dispose(): void;
 }

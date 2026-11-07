@@ -61,7 +61,18 @@ export interface Session {
   authorizeRecordingStart(): boolean;
 }
 
-export function createSession(gateway: SessionGateway, location: SessionLocation): Session {
+export interface SessionOptions {
+  /** Explicit logout may discard page-local private work. */
+  confirmExplicitLogout?: () => boolean;
+  /** Runs immediately after explicit logout is confirmed, before the request. */
+  onExplicitLogout?: () => void;
+}
+
+export function createSession(
+  gateway: SessionGateway,
+  location: SessionLocation,
+  options: SessionOptions = {},
+): Session {
   const current = shallowRef<SessionState>({ status: "loading" });
   let requestId = 0;
 
@@ -115,6 +126,23 @@ export function createSession(gateway: SessionGateway, location: SessionLocation
     current.value = signedOut(message);
   }
 
+  async function endSession(successMessage: string, explicit: boolean): Promise<void> {
+    if (explicit && options.confirmExplicitLogout?.() === false) return;
+    if (explicit) options.onExplicitLogout?.();
+    const id = ++requestId;
+    current.value = signedOut("Signing out…", { loginAllowed: false });
+    try {
+      await gateway.logout();
+      if (id === requestId) current.value = signedOut(successMessage);
+    } catch {
+      if (id !== requestId) return;
+      current.value = signedOut("Private data was hidden, but server logout was not confirmed.", {
+        logoutUnconfirmed: true,
+        loginAllowed: false,
+      });
+    }
+  }
+
   const session: Session = {
     state: computed(() => current.value),
     providers: AUTH_PROVIDERS,
@@ -127,20 +155,7 @@ export function createSession(gateway: SessionGateway, location: SessionLocation
     bootstrap,
     authenticationExpired: () => requireLogin("Your session expired. Sign in again to continue."),
     requireLogin,
-    async logout(successMessage = "Signed out.") {
-      const id = ++requestId;
-      current.value = signedOut("Signing out…", { loginAllowed: false });
-      try {
-        await gateway.logout();
-        if (id === requestId) current.value = signedOut(successMessage);
-      } catch {
-        if (id !== requestId) return;
-        current.value = signedOut("Private data was hidden, but server logout was not confirmed.", {
-          logoutUnconfirmed: true,
-          loginAllowed: false,
-        });
-      }
-    },
+    logout: (successMessage = "Signed out.") => endSession(successMessage, true),
     login(providerKey) {
       location.navigate(gateway.loginUrl(providerKey, location.current().path));
     },
@@ -148,7 +163,7 @@ export function createSession(gateway: SessionGateway, location: SessionLocation
       const state = current.value;
       if (state.status !== "signedIn") return false;
       if (sessionAllowsRecording(state.session.sessionExpiresAt)) return true;
-      void session.logout("Sign in again before recording. Your previous session ended safely.");
+      requireLogin("Sign in again before recording. Your pending audio remains on this page.");
       return false;
     },
   };

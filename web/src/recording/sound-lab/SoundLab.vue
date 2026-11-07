@@ -415,16 +415,14 @@ const overdueFrameActive = computed(() =>
             Advance three frame intervals
           </button>
           <button
-            v-if="scenario.config.maxRecordingMs < 600000"
+            v-if="['duration', 'coexist', 'repeated', 'unavailable'].includes(scenarioName)"
             type="button"
             :disabled="busy"
             @click="
-              advance(
-                Math.max(0, scenario.config.maxRecordingMs - scenario.app.snapshot.value.elapsedMs),
-              )
+              advance(Math.max(0, scenario.scenarioLimitMs - scenario.app.snapshot.value.elapsedMs))
             "
           >
-            Advance to duration limit
+            Advance to backend duration rejection
           </button>
         </template>
         <button

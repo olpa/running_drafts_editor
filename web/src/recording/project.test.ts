@@ -8,8 +8,12 @@ import type { CaptureOptions, MicrophoneCapture, TransportFrame } from "./captur
 import type { FrameAck, RecordingGateway } from "./gateway.ts";
 import { createCaptureFeedback } from "./capture-feedback.ts";
 import { createProject } from "./project.ts";
+import type { SectionEvent } from "./section-events.ts";
 
-type RecordingEvent = { type: "cue"; cue: string } | { type: "log"; message: string };
+type RecordingEvent =
+  | { type: "cue"; cue: string }
+  | { type: "log"; message: string }
+  | { type: "event"; event: SectionEvent };
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -178,7 +182,6 @@ function harness(
   options: {
     projectId?: string;
     maxFrameBytes?: number;
-    maxRecordingMs?: number;
     open?: (capture: FakeCapture) => Promise<MicrophoneCapture>;
   } = {},
 ) {
@@ -242,13 +245,15 @@ function harness(
   const controller = createProject(
     {
       ...DEFAULT_CONFIG,
-      maxRecordingMs: options.maxRecordingMs ?? 120_000,
       maxFrameBytes: options.maxFrameBytes ?? DEFAULT_CONFIG.maxFrameBytes,
     },
     dependencies,
     context,
     {
-      event: feedback,
+      event(sectionId, event) {
+        events.push({ type: "event", event });
+        feedback(sectionId, event);
+      },
       log: (message) => events.push({ type: "log", message }),
     },
   );
@@ -340,21 +345,6 @@ it("failed graceful finalization interrupts the Section instead of completing it
   );
   assert.equal(controller.snapshot.value.sections[0]!.completion, null);
   assert.equal(cues().filter((cue) => cue === "problem").length, 1);
-});
-
-it("duration stop raises a Capture alert and sealing does not claim clean completion", async () => {
-  const { controller, backend, captures, cues } = harness({ maxRecordingMs: 500 });
-  await controller.start();
-  vi.advanceTimersByTime(500);
-  assert.equal(captures[0]!.stops, 1);
-  captures[0]!.finalize(500);
-  await settle();
-  backend.resolveRequest(0);
-  await settle();
-  assert.deepEqual(backend.completes, [{ assetId: "asset-1", frameCount: 1 }]);
-  assert.equal(cues().filter((cue) => cue === "capture-completed").length, 0);
-  assert.equal(cues().filter((cue) => cue === "problem").length, 1);
-  assert.equal(controller.snapshot.value.sections[0]!.problem, "");
 });
 
 it("a normally completed zero-frame Section succeeds from the backend result", async () => {
@@ -617,6 +607,68 @@ it("frame conflict terminally retains the Section and permits an independent new
     "the new Section has an independent sequence",
   );
   assert.equal(controller.snapshot.value.sections[0]!.pendingFrames, 2);
+});
+
+it("an allowance rejection stops Capture and retains the rejected and final frames for exact recovery", async () => {
+  const { controller, backend, captures, events } = harness();
+  await controller.start();
+  captures[0]!.boundary(1_250, 13);
+  const rejected = backend.requests[0]!.frame;
+  backend.requests[0]!.result.reject(
+    new ApiError("PUT", "/frames/0", 429, {
+      title: "Storage allowance exceeded",
+      detail: "The candidate would exceed the effective storage allowance.",
+      code: "audio_storage_limit_exceeded",
+      referenceId: "allowance_REF-42",
+    }),
+  );
+  await settle();
+  assert.equal(captures[0]!.stops, 1);
+  captures[0]!.finalize(750, 7);
+  await settle();
+
+  const stopped = controller.snapshot.value.sections[0]!;
+  assert.equal(stopped.pendingFrames, 2);
+  assert.equal(stopped.pendingMs, 2_000);
+  assert.equal(stopped.canUploadPending, true);
+  assert.equal(controller.snapshot.value.canStart, true);
+  assert.match(stopped.problem, /Storage allowance exceeded/u);
+  assert.ok(
+    events.some((event) => event.type === "event" && event.event.type === "allowanceRejected"),
+  );
+  assert.ok(
+    events.some(
+      (event) => event.type === "event" && event.event.type === "unrequestedCaptureStopped",
+    ),
+  );
+
+  controller.uploadPendingAudio(stopped.sectionId);
+  assert.equal(backend.requests.length, 2);
+  assert.equal(backend.requests[1]!.frame, rejected);
+  backend.requests[1]!.result.reject(
+    new ApiError("PUT", "/frames/0", 429, {
+      title: "Duration allowance exceeded",
+      code: "audio_asset_duration_limit_exceeded",
+    }),
+  );
+  await settle();
+  assert.equal(
+    events.filter(
+      (event) => event.type === "event" && event.event.type === "unrequestedCaptureStopped",
+    ).length,
+    1,
+    "an attentive recovery rejection does not raise another global stop alert",
+  );
+  controller.uploadPendingAudio(stopped.sectionId);
+  assert.equal(backend.requests.length, 3);
+  assert.equal(backend.requests[2]!.frame, rejected);
+  backend.resolveRequest(2);
+  await settle();
+  assert.equal(backend.requests.length, 4);
+  assert.equal(backend.requests[3]!.frame.seq, 1);
+  backend.resolveRequest(3);
+  await settle();
+  assert.deepEqual(backend.interrupts, ["asset-1"]);
 });
 
 it("same-Account restoration keeps backlog recovery user initiated", async () => {

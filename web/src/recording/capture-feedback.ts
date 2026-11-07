@@ -62,6 +62,10 @@ export function createCaptureFeedback(
         completionBlocked.add(sectionId);
         raise({ kind: "unrequested-capture-stop", sectionId });
         break;
+      case "allowanceRejected":
+      case "accountSuspended":
+      case "transportFrameCaptured":
+        break;
     }
   };
 }

@@ -6,8 +6,6 @@ export interface SeedConfig {
   frameIntervalMs: number;
   /** End-to-end securing budget after requesting a Transport frame. */
   secureDeadlineMs: number;
-  /** Automatic-stop limit. */
-  maxRecordingMs: number;
   retryFirstMs: number;
   retrySecondMs: number;
   retryThirdMs: number;
@@ -30,7 +28,6 @@ declare global {
 export const DEFAULT_CONFIG: Readonly<SeedConfig> = {
   frameIntervalMs: 5_000,
   secureDeadlineMs: 2_000,
-  maxRecordingMs: 10 * 60_000,
   retryFirstMs: 3_000,
   retrySecondMs: 10_000,
   retryThirdMs: 17_000,

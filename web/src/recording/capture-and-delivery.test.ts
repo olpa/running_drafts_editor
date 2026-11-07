@@ -87,9 +87,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
-function harness(
-  config: { frameIntervalMs?: number; secureDeadlineMs?: number; maxRecordingMs?: number } = {},
-) {
+function harness(config: { frameIntervalMs?: number; secureDeadlineMs?: number } = {}) {
   const scheduler = new ManualScheduler();
   const access = createMicrophoneAccess();
   const microphones: Microphone[] = [];
@@ -306,23 +304,6 @@ describe("CaptureAndDelivery", () => {
     expect(h.microphones[0]!.requests).toBe(2);
     expect(h.events.filter((event) => event.type === "unrequestedCaptureStopped")).toHaveLength(1);
   });
-  it("resolves a final-frame alert without claiming Completion while the stop alert remains", async () => {
-    const h = harness({ maxRecordingMs: 500 });
-    const workflow = await h.start();
-    await h.scheduler.advanceBy(2500);
-    expect(h.events.map((e) => e.type)).toEqual([
-      "captureStarted",
-      "unrequestedCaptureStopped",
-      "transportFrameOverdue",
-    ]);
-    expect(workflow.view.value.overdueFrames).toHaveLength(1);
-    await h.secure(0);
-    expect(h.sounds).toEqual(["capture-started", "problem"]);
-    expect(workflow.view.value.overdueFrames).toEqual([]);
-    expect(h.alerts.alerts.value).toEqual([
-      { kind: "unrequested-capture-stop", sectionId: "section-1" },
-    ]);
-  });
   it("user stop is silent; its final frame has a deadline and no heartbeat", async () => {
     const h = harness({ secureDeadlineMs: 500 });
     const workflow = await h.start();
@@ -425,7 +406,7 @@ describe("CaptureAndDelivery", () => {
     expect(h.scheduler.pendingCount).toBe(0);
     await h.secure(0);
     await h.scheduler.advanceBy(60_000);
-    expect(h.events.map((e) => e.type)).toEqual(["captureStarted"]);
+    expect(h.events.map((e) => e.type)).toEqual(["captureStarted", "transportFrameCaptured"]);
     expect(h.microphones[0]!.released).toBe(true);
   });
 });

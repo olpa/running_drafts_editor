@@ -4,6 +4,11 @@ import {
   type CaptureAlerts,
 } from "../alerts/capture-alerts.ts";
 import {
+  allowanceFeedbackKey,
+  createAllowanceFeedback,
+  type AllowanceFeedback,
+} from "../alerts/allowance-feedback.ts";
+import {
   createMicrophoneAccess,
   microphoneAccessKey,
   type MicrophoneAccess,
@@ -32,6 +37,8 @@ import {
 } from "../session/session.ts";
 import { configKey, loadConfig, type SeedConfig } from "../shared/config.ts";
 import { createApiRequester } from "../shared/http.ts";
+import { createUsageGateway, type UsageGateway } from "../usage/gateway.ts";
+import { createUsage, usageKey, type Usage } from "../usage/usage.ts";
 import AppShell from "./AppShell.vue";
 
 /** Replaceable external adapters; every one defaults to its production implementation. */
@@ -45,6 +52,8 @@ export interface ApplicationAdapters {
   environment?: Partial<Omit<RecordingEnvironment, "gateway">>;
   cues?: Cues;
   microphoneAccess?: MicrophoneAccess;
+  usageGateway?: UsageGateway;
+  confirmDiscardPending?: () => boolean;
 }
 
 export interface Application {
@@ -54,6 +63,8 @@ export interface Application {
   readonly projects: Projects;
   readonly alerts: CaptureAlerts;
   readonly microphoneAccess: MicrophoneAccess;
+  readonly usage: Usage;
+  readonly allowanceFeedback: AllowanceFeedback;
 }
 
 /** The composition root: wires adapters into modules and provides them to components. */
@@ -62,11 +73,31 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
   const session = createSession(
     adapters.sessionGateway ?? createSessionGateway(),
     adapters.location ?? browserLocation(),
+    {
+      confirmExplicitLogout: () =>
+        !recording?.hasRetainedWork.value ||
+        (
+          adapters.confirmDiscardPending ??
+          (() =>
+            window.confirm(
+              "Logging out will permanently discard pending audio on this page. Log out?",
+            ))
+        )(),
+      onExplicitLogout: () => {
+        recording?.discardAll();
+        alerts?.acknowledgeAll();
+        allowanceFeedback?.silence();
+        usage?.setAccount(null);
+        projects?.clear();
+      },
+    },
   );
   const api = createApiRequester({
     onAuthenticationExpired: () => session.authenticationExpired(),
   });
   const cues = adapters.cues ?? new CuePlayer();
+  const usage = createUsage(adapters.usageGateway ?? createUsageGateway(api));
+  const allowanceFeedback = createAllowanceFeedback(cues, adapters.environment?.scheduler);
   const alerts = createCaptureAlerts(cues);
   const microphoneAccess = adapters.microphoneAccess ?? createMicrophoneAccess();
   const recording = createApplicationCapture({
@@ -81,6 +112,10 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
     cues,
     alerts,
     authorizeStart: () => session.authorizeRecordingStart(),
+    usage,
+    allowanceFeedback,
+    onAccountSuspended: () =>
+      session.requireLogin("Your Account is unavailable. Contact support for help."),
   });
   const projects = createProjects(adapters.projectsGateway ?? createProjectsGateway(api));
   const health = createHealth(adapters.healthGateway ?? createHealthGateway());
@@ -92,10 +127,12 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
       if (state.status === "loading") return;
       if (state.status === "signedIn") {
         api.markAuthenticationUsable();
+        usage.setAccount(state.session.account.id);
         recording.setSessionAccount(state.session.account.id);
         return;
       }
       recording.setSessionAccount(null);
+      usage.setAccount(null);
       projects.clear();
       recording.clearLog();
     },
@@ -108,13 +145,26 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
     alerts.dispose();
     microphoneAccess.dispose();
     cues.dispose();
+    usage.dispose();
+    allowanceFeedback.dispose();
   });
   app.provide(captureAlertsKey, alerts);
+  app.provide(allowanceFeedbackKey, allowanceFeedback);
   app.provide(microphoneAccessKey, microphoneAccess);
   app.provide(configKey, config);
   app.provide(sessionKey, session);
   app.provide(applicationCaptureKey, recording);
   app.provide(projectsKey, projects);
+  app.provide(usageKey, usage);
   app.provide(healthKey, health);
-  return { app, session, recording, projects, alerts, microphoneAccess };
+  return {
+    app,
+    session,
+    recording,
+    projects,
+    alerts,
+    microphoneAccess,
+    usage,
+    allowanceFeedback,
+  };
 }
