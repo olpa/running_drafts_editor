@@ -14,7 +14,9 @@ export interface SoundDefinition {
   readonly id: string;
   readonly name: string;
   readonly role: SoundRole;
-  readonly notes: readonly SoundNote[];
+  readonly notes?: readonly SoundNote[];
+  /** Optional bundled source used by review tooling through the production player. */
+  readonly asset?: string;
   readonly duration?: number;
   /** Preserve the original production envelope and amplitude exactly. */
   readonly fixed?: boolean;
@@ -86,6 +88,7 @@ export function synthesizeSound(
   pitch = 0,
   stretch = 1,
 ): Float32Array {
+  if (!value.notes?.length) throw new Error(`Sound ${value.id} has no synthesis definition.`);
   const ratio = value.fixed ? 1 : 2 ** (bounded(pitch, -12, 12) / 12);
   const scale = value.fixed ? 1 : bounded(stretch, 0.5, 2);
   const duration =

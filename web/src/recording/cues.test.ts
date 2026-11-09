@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CuePlayer } from "./cues.ts";
+import { CuePlayer, productionSoundAssignments } from "./cues.ts";
 import { productionSounds, synthesizeSound } from "./sound-definitions.ts";
 
 class Buffer {
@@ -59,14 +59,14 @@ describe("production sound feedback", () => {
     }
   });
 
-  it("plays independent one-shot cues and one gap-free Problem loop", () => {
+  it("plays independent one-shot cues and one gap-free Problem loop", async () => {
     const context = new Audio();
     vi.stubGlobal("AudioContext", function () {
       return context;
     });
     const played: string[] = [];
     const player = new CuePlayer((role) => played.push(role));
-    player.prepare();
+    await player.prepare();
     player.play("capture-started");
     player.play("healthy-heartbeat");
     player.play("capture-completed");
@@ -96,7 +96,24 @@ describe("production sound feedback", () => {
     player.dispose();
   });
 
-  it("reports unavailable Problem audio and ignores late state changes after stop", () => {
+  it("accepts an independent definition for every semantic meaning", async () => {
+    const context = new Audio();
+    vi.stubGlobal("AudioContext", function () {
+      return context;
+    });
+    const player = new CuePlayer(() => {}, {
+      ...productionSoundAssignments,
+      "allowance-warning": productionSounds["capture-started"],
+    });
+    await player.prepare();
+    player.loopProblem(() => {});
+    player.loopAllowanceWarning(() => {});
+    expect(context.sources[0]!.buffer?.length).toBe(9440);
+    expect(context.sources[1]!.buffer?.length).toBe(1200);
+    player.dispose();
+  });
+
+  it("reports unavailable Problem audio and ignores late state changes after stop", async () => {
     const unavailable = vi.fn();
     new CuePlayer().loopProblem(unavailable)();
     expect(unavailable).toHaveBeenCalledOnce();
@@ -106,7 +123,7 @@ describe("production sound feedback", () => {
       return context;
     });
     const player = new CuePlayer();
-    player.prepare();
+    await player.prepare();
     const stop = player.loopProblem(unavailable);
     context.state = "suspended";
     context.dispatchEvent(new Event("statechange"));
