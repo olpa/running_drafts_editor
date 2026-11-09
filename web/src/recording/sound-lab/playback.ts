@@ -1,126 +1,91 @@
 import { readonly, shallowRef } from "vue";
-import { browserScheduler, type Scheduler } from "../frame-timing.ts";
 import { settle } from "../../test-support/manual-scheduler.ts";
-import type { LabScenario, ScenarioName } from "./scenario.ts";
+import type { LabScenario, ScenarioKind } from "./scenario.ts";
 
-type Status = "ready" | "playing" | "paused" | "finished";
+type Status = "ready" | "playing" | "finished";
 interface Step {
   at: number;
   label: string;
   run(): void | Promise<void>;
 }
 
-/** A reviewer-initiated performance of real product actions over the injected simulation clock. */
+/** One explicit arranged performance over injected time. */
 export function createScenarioPlayback(
   scenario: LabScenario,
-  name: ScenarioName,
-  speed: () => number,
+  name: ScenarioKind,
   log: (message: string) => void,
-  onError: (error: unknown) => void,
-  wallClock: Scheduler = browserScheduler,
 ) {
   const status = shallowRef<Status>("ready");
   const positionMs = shallowRef(0);
-  const pending = new Set<() => void>();
-  let cancelTick: (() => void) | null = null;
-  let lastWall = 0;
-  let startedAt = 0;
-  let duration = 0;
   let disposed = false;
-  let generation = 0;
-  function pause(): void {
-    if (status.value !== "playing") return;
-    status.value = "paused";
-    generation++;
-    cancelTick?.();
-    cancelTick = null;
-    log("Scenario paused; repeating sounds retain real audio time until Acknowledge.");
-  }
-  function scheduleTick(): void {
-    const current = generation;
-    cancelTick = wallClock.schedule(40, () => {
-      cancelTick = null;
-      if (disposed || status.value !== "playing" || current !== generation) return;
-      const now = wallClock.now();
-      const delta = Math.min(Math.max(0, now - lastWall) * speed(), duration - positionMs.value);
-      lastWall = now;
-      void scenario
-        .advance(delta, true)
-        .then(() => {
-          if (disposed) return;
-          positionMs.value = scenario.scheduler.now() - startedAt;
-          if (status.value === "playing" && current === generation) scheduleTick();
-        })
-        .catch((error) => {
-          pause();
-          onError(error);
-        });
+  let failure: unknown = null;
+  let cancelWait: (() => void) | null = null;
+
+  function waitReviewTime(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = globalThis.setTimeout(() => {
+        cancelWait = null;
+        resolve();
+      }, ms);
+      cancelWait = () => {
+        globalThis.clearTimeout(timer);
+        cancelWait = null;
+        resolve();
+      };
     });
   }
   async function play(): Promise<void> {
-    if (disposed || status.value === "playing" || status.value === "finished") return;
-    if (!scenario.manual)
-      throw new Error("Scenario playback requires the injected simulation clock.");
-    const fresh = status.value === "ready";
+    if (disposed || status.value !== "ready") return;
+    if (!scenario.manual) throw new Error("Scenario playback requires injected time.");
     status.value = "playing";
-    generation++;
-    if (fresh) {
-      if (!scenario.app.snapshot.value.capturing) scenario.app.toggle();
-      await settle();
-      if (disposed || status.value !== "playing") return;
-      if (!scenario.app.snapshot.value.capturing) {
-        pause();
-        throw new Error("Simulated Capture did not start.");
-      }
-      startedAt = scenario.scheduler.now();
-      const plan = stepsFor(scenario, name);
-      duration = plan.duration;
-      for (const step of plan.steps) {
-        const cancel = scenario.scheduler.schedule(step.at, () => {
-          pending.delete(cancel);
-          if (disposed) return;
-          log(`Scenario action: ${step.label}`);
-          void Promise.resolve(step.run()).catch((error) => {
-            pause();
-            onError(error);
-          });
+    log("scenario playback started");
+    await settle();
+    if (!scenario.app.snapshot.value.capturing) scenario.app.toggle();
+    await settle();
+    if (!scenario.app.snapshot.value.capturing) throw new Error("Simulated Capture did not start.");
+    const plan = stepsFor(scenario, name);
+    for (const step of plan.steps) {
+      scenario.scheduler.schedule(step.at, () => {
+        if (disposed) return;
+        log(`arranged action: ${step.label}`);
+        void Promise.resolve(step.run()).catch((error) => {
+          failure = error;
         });
-        pending.add(cancel);
-      }
-      const cancel = scenario.scheduler.schedule(duration, () => {
-        pending.delete(cancel);
-        status.value = "finished";
-        cancelTick?.();
-        cancelTick = null;
-        log("Scenario finished. Its clock is paused; active alerts still require Acknowledge.");
       });
-      pending.add(cancel);
     }
-    if (disposed || status.value !== "playing") return;
-    lastWall = wallClock.now();
-    log(
-      `Scenario playback ${fresh ? "started" : "resumed"} at ${speed()}×. Actions run automatically.`,
-    );
-    scheduleTick();
+    const visibleTail = Math.min(plan.duration, 2 * scenario.config.frameIntervalMs);
+    const fastForward = plan.duration - visibleTail;
+    if (fastForward > 0) {
+      await scenario.advance(fastForward, true);
+      positionMs.value = fastForward;
+      log(`fast-forwarded to final ${visibleTail / 1000} simulated seconds`);
+    }
+    while (!disposed && positionMs.value < plan.duration) {
+      const delta = Math.min(scenario.config.frameIntervalMs, plan.duration - positionMs.value);
+      await waitReviewTime(delta / 2);
+      if (disposed) return;
+      await scenario.advance(delta, true);
+      positionMs.value += delta;
+    }
+    if (failure) throw failure;
+    if (!disposed) {
+      status.value = "finished";
+      log("scenario playback finished");
+    }
   }
   return {
     status: readonly(status),
     positionMs: readonly(positionMs),
     play,
-    pause,
     dispose() {
       disposed = true;
-      generation++;
-      cancelTick?.();
-      cancelTick = null;
-      for (const cancel of pending) cancel();
-      pending.clear();
+      cancelWait?.();
     },
   };
 }
 export type ScenarioPlayback = ReturnType<typeof createScenarioPlayback>;
 
-function stepsFor(scenario: LabScenario, name: ScenarioName): { duration: number; steps: Step[] } {
+function stepsFor(scenario: LabScenario, name: ScenarioKind): { duration: number; steps: Step[] } {
   const interval = scenario.config.frameIntervalMs;
   const deadline = scenario.config.secureDeadlineMs;
   const limit = scenario.scenarioLimitMs;
@@ -133,84 +98,69 @@ function stepsFor(scenario: LabScenario, name: ScenarioName): { duration: number
   const start = () => {
     if (!scenario.app.snapshot.value.capturing) scenario.app.toggle();
   };
-  let duration: number;
+  let duration = 0;
   switch (name) {
-    case "palette":
     case "healthy":
-    case "accelerated":
-      action(3 * interval + 300, "Stop after three secured frames", stop);
-      action(3 * interval + 2200, "Confirm sealing after cue spacing", scenario.confirmSealing);
-      duration = 3 * interval + 4000;
+      action(3 * interval + 300, "user Stop after three secured frames", stop);
+      action(3 * interval + 2200, "backend confirms sealing", scenario.confirmSealing);
+      duration = 3 * interval + 3000;
       break;
-    case "single":
-      {
-        const recoveryAt = Math.min(interval + deadline + 5000, 2 * interval - 200);
-        action(recoveryAt, "Secure the overdue frame", scenario.recover);
-        action(recoveryAt + 100, "Stop after the overdue frame recovers", stop);
-        action(recoveryAt + 2100, "Confirm sealing after cue spacing", scenario.confirmSealing);
-        duration = recoveryAt + 4100;
-      }
+    case "short":
+      action(shortCapture, "user Stop", stop);
+      action(shortCapture + 600, "backend confirms sealing", scenario.confirmSealing);
+      duration = shortCapture + 1200;
       break;
+    case "single": {
+      const recovered = Math.min(interval + deadline + 1000, 2 * interval - 200);
+      action(recovered, "secure overdue frame", scenario.recover);
+      action(recovered + 100, "user Stop", stop);
+      action(recovered + 800, "backend confirms sealing", scenario.confirmSealing);
+      duration = recovered + 1200;
+      break;
+    }
     case "two":
-      action(2 * interval + deadline + 2000, "Recover the two delayed frames", scenario.recover);
-      duration = 2 * interval + deadline + 4000;
+      action(2 * interval + deadline + 100, "recover retained frames", scenario.recover);
+      duration = 2 * interval + deadline + 600;
       break;
     case "burst":
-      action(2 * interval + 500, "Stop after the recovery burst", stop);
-      action(2 * interval + 2100, "Confirm sealing after cue spacing", scenario.confirmSealing);
-      duration = 2 * interval + 4100;
-      break;
-    case "stop":
-      action(shortCapture, "User Stop", stop);
-      action(shortCapture + 600, "Backend confirms sealing", scenario.confirmSealing);
-      duration = shortCapture + 2400;
+      action(2 * interval + 500, "user Stop after recovery burst", stop);
+      action(2 * interval + 900, "backend confirms sealing", scenario.confirmSealing);
+      duration = 2 * interval + 1300;
       break;
     case "final":
-      action(shortCapture, "User Stop; final frame is held", stop);
-      action(shortCapture + deadline + 1200, "Recover final-frame delivery", scenario.recover);
-      action(shortCapture + deadline + 1500, "Backend confirms sealing", scenario.confirmSealing);
-      duration = shortCapture + deadline + 3500;
-      break;
-    case "duration":
-    case "unavailable":
-      duration = limit + 2000;
+      action(shortCapture, "user Stop; final frame remains delayed", stop);
+      action(shortCapture + deadline + 100, "recover final frame", scenario.recover);
+      action(shortCapture + deadline + 400, "backend confirms sealing", scenario.confirmSealing);
+      duration = shortCapture + deadline + 800;
       break;
     case "failure":
-      action(
-        interval + deadline + 1500,
-        "Recover retained audio after recorder failure",
-        scenario.recover,
-      );
-      duration = interval + deadline + 3500;
+      action(interval + deadline + 600, "recover after recorder failure", scenario.recover);
+      duration = interval + deadline + 1200;
       break;
-    case "coexist":
-      action(
-        limit + 100,
-        "Retry retained audio after simulated allowance recovery",
-        scenario.recover,
-      );
-      action(
-        limit + 500,
-        "Backend confirms sealing while the Capture alert remains active",
-        scenario.confirmSealing,
-      );
-      duration = limit + 2500;
+    case "finalization":
+      action(shortCapture - 1, "arrange Capture finalization failure", scenario.failFinalization);
+      action(shortCapture, "user Stop", stop);
+      duration = shortCapture + 400;
       break;
-    case "older":
-      action(shortCapture, "Stop the older Section", stop);
-      action(shortCapture + 600, "Start a newer Section", start);
-      action(
-        shortCapture + 1200,
-        "Seal the older Section during newer Capture",
-        scenario.confirmSealing,
-      );
-      action(shortCapture + 2400, "Stop the newer Section", stop);
-      duration = shortCapture + 4400;
+    case "sealing":
+      action(shortCapture - 1, "arrange Audio Asset sealing failure", scenario.failNextSeal);
+      action(shortCapture, "user Stop", stop);
+      duration = shortCapture + 800;
       break;
     case "repeated":
-      action(limit + 500, "Start another Section without acknowledging Capture alerts", start);
-      duration = 2 * limit + 2500;
+      action(interval + 900, "start a second Section", start);
+      duration = 2 * interval + 1600;
+      break;
+    case "duration":
+      duration = limit + 400;
+      break;
+    case "older":
+      action(shortCapture, "Stop older Section", stop);
+      action(shortCapture + 600, "start newer Section", start);
+      action(shortCapture + 1200, "seal older Section", scenario.confirmSealing);
+      action(shortCapture + 2400, "Stop newer Section", stop);
+      duration = shortCapture + 3200;
       break;
   }
-  return { steps, duration };
+  return { duration, steps };
 }

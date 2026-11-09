@@ -1,5 +1,6 @@
 import type { ProblemSound } from "../alerts/capture-alerts.ts";
 import {
+  normalizeSound,
   productionSounds,
   synthesizeSound,
   type SoundDefinition,
@@ -8,29 +9,46 @@ import {
 
 export type Cue = Exclude<SoundRole, "problem">;
 export type FeedbackRole = SoundRole | "allowance-warning";
+export type SoundAssignments = Readonly<Record<FeedbackRole, SoundDefinition>>;
 
-/** WebAudio feedback; `onPlayed` records semantic roles rather than sound samples. */
+export const productionSoundAssignments: SoundAssignments = {
+  ...productionSounds,
+  "allowance-warning": productionSounds.problem,
+};
+
+/** WebAudio feedback; `onEvent` records semantic roles rather than sound samples. */
 export class CuePlayer implements Cues {
   private context: AudioContext | null = null;
   private readonly sources = new Set<AudioBufferSourceNode>();
   private count = 0;
+  private readonly decoded = new Map<string, AudioBuffer>();
 
   constructor(
-    private readonly onPlayed: (role: FeedbackRole, count: number) => void = () => undefined,
+    private readonly onEvent: (
+      role: FeedbackRole,
+      phase: "started" | "stopped",
+      count: number,
+    ) => void = () => undefined,
+    private readonly definitions: SoundAssignments = productionSoundAssignments,
   ) {}
 
   /** Prepare during a user gesture. Audio failure must not prevent Capture. */
-  prepare(): void {
+  async prepare(): Promise<void> {
     try {
       this.context ??= new AudioContext();
-      void this.context.resume().catch(() => {});
+      await this.context.resume();
+      await Promise.all(
+        [...new Set(Object.values(this.definitions))]
+          .filter((definition) => definition.asset)
+          .map((definition) => this.loadAsset(definition)),
+      );
     } catch {
       // The visible equivalents remain available when audio is unavailable.
     }
   }
 
   play(cue: Cue): void {
-    if (this.context) this.start(productionSounds[cue], false);
+    if (this.context) this.start(this.definitions[cue], false, cue);
     this.played(cue);
   }
 
@@ -50,7 +68,7 @@ export class CuePlayer implements Cues {
       onUnavailable();
       return () => {};
     }
-    const stop = this.start(productionSounds.problem, true);
+    const stop = this.start(this.definitions[role], true, role);
     let stopped = false;
     const stateChanged = () => {
       if (!stopped && context.state !== "running") onUnavailable();
@@ -78,14 +96,17 @@ export class CuePlayer implements Cues {
 
   private played(role: FeedbackRole): void {
     this.count++;
-    this.onPlayed(role, this.count);
+    this.onEvent(role, "started", this.count);
   }
 
-  private start(value: SoundDefinition, loop: boolean): () => void {
+  private start(value: SoundDefinition, loop: boolean, role: FeedbackRole): () => void {
     const context = this.context!;
-    const samples = synthesizeSound(value, context.sampleRate);
-    const buffer = context.createBuffer(1, samples.length, context.sampleRate);
-    buffer.copyToChannel(Float32Array.from(samples), 0);
+    let buffer = this.decoded.get(value.id);
+    if (!buffer) {
+      const samples = synthesizeSound(value, context.sampleRate);
+      buffer = context.createBuffer(1, samples.length, context.sampleRate);
+      buffer.copyToChannel(Float32Array.from(samples), 0);
+    }
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.loop = loop;
@@ -97,6 +118,7 @@ export class CuePlayer implements Cues {
       cleaned = true;
       this.sources.delete(source);
       source.disconnect();
+      this.onEvent(role, "stopped", this.count);
     };
     source.addEventListener("ended", clean, { once: true });
     try {
@@ -113,11 +135,29 @@ export class CuePlayer implements Cues {
       clean();
     };
   }
+
+  private async loadAsset(value: SoundDefinition): Promise<void> {
+    if (!value.asset || this.decoded.has(value.id)) return;
+    const response = await fetch(value.asset);
+    if (!response.ok) throw new Error(`Could not load bundled sound ${value.id}.`);
+    const decoded = await this.context!.decodeAudioData(await response.arrayBuffer());
+    const samples = new Float32Array(decoded.length);
+    for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
+      const input = decoded.getChannelData(channel);
+      for (let index = 0; index < samples.length; index++) {
+        samples[index] = samples[index]! + input[index]! / decoded.numberOfChannels;
+      }
+    }
+    const normalized = normalizeSound(samples);
+    const buffer = this.context!.createBuffer(1, normalized.length, decoded.sampleRate);
+    buffer.copyToChannel(Float32Array.from(normalized), 0);
+    this.decoded.set(value.id, buffer);
+  }
 }
 
 /** What production Capture feedback needs from sound playback. */
 export interface Cues extends ProblemSound {
-  prepare(): void;
+  prepare(): void | Promise<void>;
   play(cue: Cue): void;
   loopAllowanceWarning?(onUnavailable: () => void): () => void;
   dispose(): void;

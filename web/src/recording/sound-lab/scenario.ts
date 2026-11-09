@@ -1,5 +1,7 @@
 import { createApplicationCapture } from "../application-capture.ts";
-import type { AccountId } from "../../session/gateway.ts";
+import type { AccountId, CurrentSession, SessionGateway } from "../../session/gateway.ts";
+import { AUTH_PROVIDERS } from "../../session/providers.ts";
+import { createSession } from "../../session/session.ts";
 import { createMicrophoneAccess } from "../microphone-access.ts";
 import { browserScheduler, transportFrameTiming, type Scheduler } from "../frame-timing.ts";
 import type { CaptureOptions, MicrophoneCapture, TransportFrame } from "../capture.ts";
@@ -11,35 +13,19 @@ import type { Cues } from "../cues.ts";
 import type { CaptureAlerts } from "../../alerts/capture-alerts.ts";
 import { ApiError } from "../../shared/http.ts";
 
-export const scenarios = {
-  palette:
-    "Audition candidates directly. Choose automatic review to play a healthy Capture sequence.",
-  healthy:
-    "Listen to three secured frames at the production cadence, followed by user Stop and sealing. The workbench leaves at least two seconds between the last heartbeat and Completion.",
-  accelerated:
-    "The healthy Capture sequence plays at 5× speed by default. The simulated clock increases automatically; audio keeps its normal duration.",
-  single:
-    "The first frame misses its securing deadline and keeps sounding Problem. Automatic playback recovers before the next frame boundary, then leaves at least two seconds between its recovery heartbeat and Completion.",
-  two: "Two frames become overdue. Production backlog protection stops Capture and raises Capture alerts. Both delay lines remain visible before arranged recovery; acknowledgement stays yours.",
-  burst:
-    "The first frame recovers just before the second frame request. Their healthy cues arrive 40 simulated ms apart and overlap without a sound queue; Completion follows at least two seconds later.",
-  stop: "A short Capture ends through user Stop. Final audio secures, then the simulated backend confirms sealing and completion sounds.",
-  final:
-    "User Stop is followed by an overdue final frame, recovery, and sealing. Securing the final frame resolves its identified Capture alert without a Healthy heartbeat.",
-  duration:
-    "The simulated backend rejects a frame at the duration allowance. Production stops Capture, retains the frame, and repeats Problem until you acknowledge the Capture alert.",
-  failure:
-    "The recorder fails after one frame interval plus 500 simulated ms. Inspect its Section causes, global Capture alerts, and arranged delivery recovery.",
-  coexist:
-    "A backend duration rejection stops Capture. The simulated backend then confirms sealing while the unrequested-stop Capture alert stays active and suppresses Completion.",
-  older:
-    "Section 1 stops, Section 2 starts, and the older Section seals during newer Capture. The sequence then stops and seals the newer Section.",
-  repeated:
-    "Two successive Sections receive backend duration rejections. Two identified Capture alerts share one Problem loop; acknowledgement stays yours.",
-  unavailable:
-    "Sound failure is simulated. A backend duration rejection stops Capture; the visible Capture alert reports unavailable sound and remains usable.",
-} as const;
-export type ScenarioName = keyof typeof scenarios;
+export type ScenarioKind =
+  | "healthy"
+  | "short"
+  | "older"
+  | "single"
+  | "two"
+  | "burst"
+  | "final"
+  | "failure"
+  | "finalization"
+  | "sealing"
+  | "repeated"
+  | "duration";
 
 interface Pending {
   finish(): void;
@@ -48,7 +34,7 @@ interface Pending {
 
 /** Fail-closed environmental adapters; no HTTP client or browser recorder is constructed. */
 export function createLabScenario(options: {
-  name: ScenarioName;
+  name: ScenarioKind;
   manual: boolean;
   intervalMs: number;
   deadlineMs: number;
@@ -82,23 +68,46 @@ export function createLabScenario(options: {
     secureDeadlineMs: options.deadlineMs,
   };
   const access = createMicrophoneAccess();
+  const accountId = "5728cdd2-909d-4207-8303-c04b270c308f" as AccountId;
+  const currentSession: CurrentSession = {
+    account: { id: accountId },
+    provider: AUTH_PROVIDERS[0]!,
+    profile: {
+      email: "reviewer@example.test",
+      emailVerified: true,
+      displayName: "Storybook reviewer",
+      givenName: null,
+      familyName: null,
+      pictureUrl: null,
+      locale: null,
+    },
+    sessionExpiresAt: "2099-01-01T00:00:00Z",
+  };
+  const sessionGateway: SessionGateway = {
+    async current() {
+      log("Session gateway: current signed-in session");
+      return currentSession;
+    },
+    async logout() {
+      return unexpected("Session logout");
+    },
+    loginUrl() {
+      return unexpected("Session login URL");
+    },
+  };
+  const session = createSession(sessionGateway, {
+    current: () => ({ path: "/", search: "", href: "https://storybook.invalid/" }),
+    navigate: () => unexpected("Session navigation"),
+    replace: () => unexpected("Session address replacement"),
+  });
+  void session.bootstrap();
   const microphones: SimulatedMicrophone[] = [];
   const assets = new Map<string, { frames: number; duration: number }>();
   const frames = new Set<Pending>();
   const seals = new Set<Pending>();
   const allowanceRejectedAssets = new Set<string>();
   let holdFrames = name === "single" || name === "two" || name === "final";
-  let holdSeals = [
-    "palette",
-    "healthy",
-    "accelerated",
-    "single",
-    "burst",
-    "stop",
-    "final",
-    "coexist",
-    "older",
-  ].includes(name);
+  let holdSeals = ["healthy", "single", "burst", "short", "final", "older"].includes(name);
   let finalizationFailure = false;
   let sealingFailures = 0;
   let disposed = false;
@@ -110,8 +119,10 @@ export function createLabScenario(options: {
   }
   const gateway: RecordingGateway = {
     async createProject() {
+      log("Recording gateway: create Project request");
+      log("Recording gateway: create Project outcome simulated Project");
       return {
-        id: "sound-lab",
+        id: "scenario-workbench",
         title: "Simulated Capture",
         createdAt: "2026-01-01",
         updatedAt: "2026-01-01",
@@ -121,23 +132,23 @@ export function createLabScenario(options: {
       return unexpected("getProject");
     },
     async createSection(projectId) {
-      if (projectId !== "sound-lab") return unexpected(`createSection ${projectId}`);
+      log(`Recording gateway: create Section request for ${projectId}`);
+      if (projectId !== "scenario-workbench") return unexpected(`createSection ${projectId}`);
       const position = currentPosition++;
       const id = `asset-${position + 1}`;
       assets.set(id, { frames: 0, duration: 0 });
+      log(`Recording gateway: create Section outcome section-${position + 1} / ${id}`);
       return { sectionId: `section-${position + 1}`, audioAssetId: id, position };
     },
     putFrame(id, frame, signal) {
+      log(`Recording gateway: put frame ${id} f${frame.seq} request`);
       const asset = assets.get(id);
       if (!asset) return Promise.reject(new Error(`Unexpected Audio Asset ${id}`));
       asset.frames = Math.max(asset.frames, frame.seq + 1);
       asset.duration = Math.max(asset.duration, frame.endMs);
-      if (
-        ["duration", "coexist", "repeated", "unavailable"].includes(name) &&
-        frame.seq === 1 &&
-        !allowanceRejectedAssets.has(id)
-      ) {
+      if (name === "duration" && frame.seq === 1 && !allowanceRejectedAssets.has(id)) {
         allowanceRejectedAssets.add(id);
+        log(`Recording gateway: put frame ${id} f${frame.seq} outcome duration rejection`);
         return Promise.reject(
           new ApiError("PUT", `/audio-assets/${id}/frames/${frame.seq}`, 429, {
             title: "Recording duration allowance exceeded",
@@ -158,6 +169,7 @@ export function createLabScenario(options: {
               sha256: "a".repeat(64),
               nextExpectedSequence: frame.seq + 1,
             });
+            log(`Recording gateway: put frame ${id} f${frame.seq} outcome secured`);
           },
           cancel() {
             if (!frames.delete(pending)) return;
@@ -181,10 +193,12 @@ export function createLabScenario(options: {
     interrupt: (id) => seal(id, "interrupted"),
   };
   async function seal(id: string, reason: "completed" | "interrupted"): Promise<AudioAssetSummary> {
+    log(`Recording gateway: ${reason} ${id} request`);
     const asset = assets.get(id);
     if (!asset) return unexpected(`seal ${id}`);
     if (sealingFailures > 0) {
       sealingFailures--;
+      log(`Recording gateway: ${reason} ${id} outcome failure`);
       throw new Error("Simulated Audio Asset sealing failure.");
     }
     if (holdSeals)
@@ -202,7 +216,7 @@ export function createLabScenario(options: {
         seals.add(pending);
         log(`Sealing ${id} waits for simulated confirmation.`);
       });
-    return {
+    const summary = {
       id,
       mediaType: "audio/webm;codecs=opus",
       isSealed: true,
@@ -212,12 +226,14 @@ export function createLabScenario(options: {
       observedDurationMs: asset.duration,
       storedBytes: asset.frames * 3,
     };
+    log(`Recording gateway: ${reason} ${id} outcome sealed`);
+    return summary;
   }
   const app = createApplicationCapture({
     config,
     cues: options.cues,
     alerts: options.alerts,
-    authorizeStart: () => true,
+    authorizeStart: () => session.authorizeRecordingStart(),
     environment: {
       gateway,
       scheduler,
@@ -226,6 +242,7 @@ export function createLabScenario(options: {
       uuid: () => `lab-${++sequence}`,
       wallClock: () => new Date("2026-01-01T12:00:00Z"),
       async openCapture(captureOptions) {
+        log("Microphone adapter: open Capture request");
         if (disposed) return unexpected("openCapture after disposal");
         const microphone = new SimulatedMicrophone(
           scheduler,
@@ -238,7 +255,8 @@ export function createLabScenario(options: {
           name !== "two",
         );
         microphones.push(microphone);
-        if (name === "failure")
+        log("Microphone adapter: open Capture outcome simulated microphone");
+        if (name === "failure" || name === "repeated")
           microphone.onStart = () => {
             scheduler.schedule(options.intervalMs + 500, () => microphone.fail());
           };
@@ -249,7 +267,7 @@ export function createLabScenario(options: {
       log(`event: ${event.type}${"frameId" in event ? ` f${event.frameId}` : ""}`);
     },
   });
-  app.setSessionAccount("5728cdd2-909d-4207-8303-c04b270c308f" as AccountId);
+  app.setSessionAccount(accountId);
   async function advance(ms: number, quiet = false): Promise<void> {
     if (!manual || disposed) return;
     if (!quiet) log(`Advance simulated clock by ${ms} ms`);
@@ -258,6 +276,8 @@ export function createLabScenario(options: {
   }
   return {
     app,
+    session,
+    alerts: options.alerts,
     config,
     scenarioLimitMs,
     manual,

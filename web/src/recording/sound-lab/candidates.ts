@@ -14,7 +14,7 @@ export const roleNames: Record<Role, string> = {
 };
 
 export type Note = SoundNote;
-export interface Candidate {
+export interface Candidate extends SoundDefinition {
   id: string;
   name: string;
   role: Role;
@@ -102,6 +102,7 @@ function asset(role: Role, file: string, name: string, family: string): Candidat
 
 /** Add one definition here and optionally refer to its stable ID in a palette below. */
 export const candidates: readonly Candidate[] = [
+  promoted(productionSounds["capture-started"], "healthy-heartbeat", "Capture start"),
   fixed(
     "healthy-heartbeat",
     "short-rising-tone",
@@ -230,77 +231,6 @@ export const candidates: readonly Candidate[] = [
   asset("problem", "error_004", "Kenney error beacon", "Electronic warning"),
 ];
 
-export interface Palette {
-  id: string;
-  name: string;
-  choices: Record<Role, string>;
-  levels: Record<Role, number>;
-  problemGap: number;
-}
-export const productionPalette: Palette = {
-  id: "production",
-  name: "Production",
-  choices: {
-    "healthy-heartbeat": "triangle-cadence",
-    problem: "morse-stop",
-    "capture-completed": "four-note-triangle-cadence",
-  },
-  levels: { "healthy-heartbeat": 1, problem: 1, "capture-completed": 1 },
-  problemGap: 0,
-};
-export const fixedStart = productionSounds["capture-started"];
-const levels: Record<Role, number> = {
-  "healthy-heartbeat": 0.55,
-  problem: 1,
-  "capture-completed": 0.75,
-};
-export const palettes: readonly Palette[] = [
-  productionPalette,
-  {
-    id: "soft",
-    name: "Soft and tactile",
-    choices: {
-      "healthy-heartbeat": "felt-pulse",
-      problem: "alternating-call",
-      "capture-completed": "wood-cadence",
-    },
-    levels,
-    problemGap: 0.35,
-  },
-  {
-    id: "glass",
-    name: "Glass and bells",
-    choices: {
-      "healthy-heartbeat": "glass-drop",
-      problem: "urgent-bell",
-      "capture-completed": "closing-bell",
-    },
-    levels,
-    problemGap: 0.5,
-  },
-  {
-    id: "minimal",
-    name: "Minimal signals",
-    choices: {
-      "healthy-heartbeat": "breath-tick",
-      problem: "siren-sweep",
-      "capture-completed": "settled-chord",
-    },
-    levels,
-    problemGap: 0,
-  },
-  {
-    id: "kenney",
-    name: "Kenney interface",
-    choices: {
-      "healthy-heartbeat": "kenney-pluck_001",
-      problem: "kenney-error_004",
-      "capture-completed": "kenney-confirmation_001",
-    },
-    levels,
-    problemGap: 0.5,
-  },
-];
 export function candidate(id: string): Candidate {
   const found = candidates.find((value) => value.id === id);
   if (!found) throw new Error(`Unknown sound candidate: ${id}`);
