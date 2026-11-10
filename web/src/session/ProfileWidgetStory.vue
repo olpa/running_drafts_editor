@@ -20,13 +20,19 @@ import {
   type StorySessionInput,
 } from "./story-gateway.ts";
 import { createSession, sessionKey, type Session, type SessionState } from "./session.ts";
+import type { UsageSnapshot } from "../usage/gateway.ts";
+import { createUsage, usageKey, type Usage } from "../usage/usage.ts";
 
 const props = defineProps<StorySessionInput>();
 
 const SessionProvider = defineComponent({
-  props: { session: { type: Object as PropType<Session>, required: true } },
+  props: {
+    session: { type: Object as PropType<Session>, required: true },
+    usage: { type: Object as PropType<Usage>, required: true },
+  },
   setup(providerProps) {
     provide(sessionKey, providerProps.session);
+    provide(usageKey, providerProps.usage);
     return () => h(ProfileWidget);
   },
 });
@@ -34,7 +40,19 @@ const SessionProvider = defineComponent({
 interface Scenario {
   id: number;
   session: Session;
+  usage: Usage;
 }
+
+const SIGNED_IN_USAGE: UsageSnapshot = {
+  plan: "free",
+  audioStorage: {
+    usedBytes: 32 * 1024 * 1024,
+    grantedBytes: 0,
+    warningAtBytes: 107_374_182,
+    limitBytes: 134_217_728,
+  },
+  audioAssetDuration: { grantedMs: 0, warningAtMs: 2_880_000, limitMs: 3_600_000 },
+};
 
 const scenario = shallowRef<Scenario | null>(null);
 const configurationError = shallowRef("");
@@ -73,8 +91,11 @@ function rebuild(): void {
   write(id, "scenario setup");
   stopStateWatch?.();
   stopStateWatch = null;
+  scenario.value?.usage.dispose();
+  scenario.value = null;
   configurationError.value = "";
 
+  let nextUsage: Usage | null = null;
   try {
     const activity = (entry: string) => write(id, entry);
     const gateway = createStorySessionGateway(
@@ -89,11 +110,20 @@ function rebuild(): void {
       activity,
     );
     const session = createSession(gateway, createStorySessionLocation(activity));
-    scenario.value = { id, session };
+    const usage = createUsage({
+      async current() {
+        activity("usage current sent");
+        activity("usage current ok");
+        return SIGNED_IN_USAGE;
+      },
+    });
+    nextUsage = usage;
+    scenario.value = { id, session, usage };
     let lastStateEntry = "";
     stopStateWatch = watch(
       session.state,
       (value) => {
+        usage.setAccount(value.status === "signedIn" ? value.session.account.id : null);
         const entry = describeState(value);
         if (entry === lastStateEntry) return;
         lastStateEntry = entry;
@@ -103,6 +133,7 @@ function rebuild(): void {
     );
     void session.bootstrap();
   } catch (error) {
+    nextUsage?.dispose();
     scenario.value = null;
     configurationError.value = error instanceof Error ? error.message : "Invalid story setup.";
     write(id, `ERR ${configurationError.value}`);
@@ -133,12 +164,18 @@ onMounted(rebuild);
 onBeforeUnmount(() => {
   if (rebuildTimer !== null) globalThis.clearTimeout(rebuildTimer);
   stopStateWatch?.();
+  scenario.value?.usage.dispose();
 });
 </script>
 
 <template>
   <div class="profile-story">
-    <SessionProvider v-if="scenario" :key="scenario.id" :session="scenario.session" />
+    <SessionProvider
+      v-if="scenario"
+      :key="scenario.id"
+      :session="scenario.session"
+      :usage="scenario.usage"
+    />
     <p v-else-if="configurationError" class="story-error" role="alert">
       {{ configurationError }}
     </p>

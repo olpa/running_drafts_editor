@@ -42,7 +42,7 @@ onMounted(() => void session.start());
 <template>
   <SessionPanel v-if="!recording.focused.value" />
   <UsageSummary v-if="signedIn && !recording.focused.value" />
-  <AllowanceStatus />
+  <AllowanceStatus v-else />
   <nav
     v-if="signedIn && !recording.focused.value"
     class="private-navigation"

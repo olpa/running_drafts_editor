@@ -38,4 +38,30 @@ describe("UsageSummary", () => {
     expect(wrapper.text()).toContain("4 hours");
     expect(await axe(wrapper.element as HTMLElement)).toHaveNoViolations();
   });
+
+  it("omits zero-valued grants", () => {
+    const usage: Usage = {
+      snapshot: computed(() => ({
+        plan: "free" as const,
+        audioStorage: {
+          usedBytes: 0,
+          grantedBytes: 0,
+          warningAtBytes: 100,
+          limitBytes: 125,
+        },
+        audioAssetDuration: { grantedMs: 0, warningAtMs: 1_000, limitMs: 2_000 },
+      })),
+      status: computed(() => "ready" as const),
+      problem: computed(() => ""),
+      setAccount() {},
+      async refresh() {},
+      dispose() {},
+    };
+    const wrapper = mount(UsageSummary, {
+      global: { provide: { [usageKey as symbol]: usage } },
+    });
+
+    expect(wrapper.text()).not.toContain("Storage grants");
+    expect(wrapper.text()).not.toContain("Duration grants");
+  });
 });
