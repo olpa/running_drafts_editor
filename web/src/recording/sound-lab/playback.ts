@@ -88,7 +88,6 @@ export type ScenarioPlayback = ReturnType<typeof createScenarioPlayback>;
 function stepsFor(scenario: LabScenario, name: ScenarioKind): { duration: number; steps: Step[] } {
   const interval = scenario.config.frameIntervalMs;
   const deadline = scenario.config.secureDeadlineMs;
-  const limit = scenario.scenarioLimitMs;
   const shortCapture = Math.min(2000, interval / 2);
   const steps: Step[] = [];
   const action = (at: number, label: string, run: Step["run"]) => steps.push({ at, label, run });
@@ -151,8 +150,17 @@ function stepsFor(scenario: LabScenario, name: ScenarioKind): { duration: number
       action(interval + 900, "start a second Section", start);
       duration = 2 * interval + 1600;
       break;
-    case "duration":
-      duration = limit + 400;
+    case "allowance-storage-warning":
+    case "allowance-duration-warning":
+    case "allowance-overlap":
+      duration = 2 * interval + 200;
+      break;
+    case "allowance-storage-rejection":
+    case "allowance-duration-rejection":
+      duration = 3 * interval + 500;
+      break;
+    case "allowance-duration-zero":
+      duration = 3 * interval + 200;
       break;
     case "older":
       action(shortCapture, "Stop older Section", stop);

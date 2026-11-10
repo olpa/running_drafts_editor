@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import AllowanceStatus from "../recording/AllowanceStatus.vue";
 import { useUsage } from "./usage.ts";
 
 const usage = useUsage(true);
@@ -37,6 +38,7 @@ function duration(value: number): string {
     aria-live="polite"
   >
     <h3 id="usage-summary-title">Usage</h3>
+    <AllowanceStatus />
     <p v-if="usage.status.value === 'loading' && !snapshot">Loading usage…</p>
     <p v-else-if="usage.problem.value && !snapshot" role="status">{{ usage.problem.value }}</p>
     <dl v-if="snapshot">
@@ -52,7 +54,7 @@ function duration(value: number): string {
           {{ bytes(snapshot.audioStorage.limitBytes) }}
         </dd>
       </div>
-      <div>
+      <div v-if="snapshot.audioStorage.grantedBytes > 0">
         <dt>Storage grants</dt>
         <dd>{{ bytes(snapshot.audioStorage.grantedBytes) }}</dd>
       </div>
@@ -63,7 +65,7 @@ function duration(value: number): string {
           {{ duration(snapshot.audioAssetDuration.limitMs) }}
         </dd>
       </div>
-      <div>
+      <div v-if="snapshot.audioAssetDuration.grantedMs > 0">
         <dt>Duration grants</dt>
         <dd>{{ duration(snapshot.audioAssetDuration.grantedMs) }}</dd>
       </div>

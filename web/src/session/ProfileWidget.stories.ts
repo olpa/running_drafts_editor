@@ -4,6 +4,7 @@ import ProfileWidgetStory from "./ProfileWidgetStory.vue";
 const HOUR_MS = 60 * 60 * 1000;
 
 const meta = {
+  title: "Account/Profile",
   component: ProfileWidgetStory,
   tags: ["autodocs"],
   args: {

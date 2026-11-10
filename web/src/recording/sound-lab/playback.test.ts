@@ -16,7 +16,12 @@ const kinds: ScenarioKind[] = [
   "finalization",
   "sealing",
   "repeated",
-  "duration",
+  "allowance-storage-warning",
+  "allowance-duration-warning",
+  "allowance-overlap",
+  "allowance-storage-rejection",
+  "allowance-duration-rejection",
+  "allowance-duration-zero",
 ];
 
 function cues(): Cues {

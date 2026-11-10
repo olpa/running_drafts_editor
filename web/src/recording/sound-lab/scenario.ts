@@ -12,6 +12,9 @@ import { ManualScheduler, settle } from "../../test-support/manual-scheduler.ts"
 import type { Cues } from "../cues.ts";
 import type { CaptureAlerts } from "../../alerts/capture-alerts.ts";
 import { ApiError } from "../../shared/http.ts";
+import { createAllowanceFeedback } from "../../alerts/allowance-feedback.ts";
+import { createUsage } from "../../usage/usage.ts";
+import type { UsageSnapshot } from "../../usage/gateway.ts";
 
 export type ScenarioKind =
   | "healthy"
@@ -25,7 +28,38 @@ export type ScenarioKind =
   | "finalization"
   | "sealing"
   | "repeated"
-  | "duration";
+  | "allowance-storage-warning"
+  | "allowance-duration-warning"
+  | "allowance-overlap"
+  | "allowance-storage-rejection"
+  | "allowance-duration-rejection"
+  | "allowance-duration-zero";
+
+function usageSnapshot(name: ScenarioKind, intervalMs: number): UsageSnapshot {
+  const storageWarning =
+    name === "allowance-storage-warning" ||
+    name === "allowance-overlap" ||
+    name === "allowance-storage-rejection";
+  const durationWarning =
+    name === "allowance-duration-warning" ||
+    name === "allowance-overlap" ||
+    name === "allowance-duration-rejection" ||
+    name === "allowance-duration-zero";
+  return {
+    plan: "free",
+    audioStorage: {
+      usedBytes: 0,
+      grantedBytes: 0,
+      warningAtBytes: storageWarning ? 6 : 107_374_182,
+      limitBytes: storageWarning ? 12 : 134_217_728,
+    },
+    audioAssetDuration: {
+      grantedMs: 0,
+      warningAtMs: durationWarning ? 2 * intervalMs : 2_880_000,
+      limitMs: durationWarning ? 3 * intervalMs : 3_600_000,
+    },
+  };
+}
 
 interface Pending {
   finish(): void;
@@ -61,7 +95,6 @@ export function createLabScenario(options: {
       };
     },
   };
-  const scenarioLimitMs = 2 * options.intervalMs;
   const config = {
     ...DEFAULT_CONFIG,
     frameIntervalMs: options.intervalMs,
@@ -101,6 +134,14 @@ export function createLabScenario(options: {
     replace: () => unexpected("Session address replacement"),
   });
   void session.bootstrap();
+  const snapshot = usageSnapshot(name, options.intervalMs);
+  const usage = createUsage({
+    async current() {
+      log(`Usage gateway: current ${snapshot.plan} snapshot`);
+      return snapshot;
+    },
+  });
+  const allowanceFeedback = createAllowanceFeedback(options.cues, scheduler);
   const microphones: SimulatedMicrophone[] = [];
   const assets = new Map<string, { frames: number; duration: number }>();
   const frames = new Set<Pending>();
@@ -144,20 +185,33 @@ export function createLabScenario(options: {
       log(`Recording gateway: put frame ${id} f${frame.seq} request`);
       const asset = assets.get(id);
       if (!asset) return Promise.reject(new Error(`Unexpected Audio Asset ${id}`));
-      asset.frames = Math.max(asset.frames, frame.seq + 1);
-      asset.duration = Math.max(asset.duration, frame.endMs);
-      if (name === "duration" && frame.seq === 1 && !allowanceRejectedAssets.has(id)) {
+      const rejectedDimension =
+        frame.seq === 2 && name === "allowance-storage-rejection"
+          ? "storage"
+          : frame.seq === 2 && name === "allowance-duration-rejection"
+            ? "duration"
+            : null;
+      if (rejectedDimension && !allowanceRejectedAssets.has(id)) {
         allowanceRejectedAssets.add(id);
-        log(`Recording gateway: put frame ${id} f${frame.seq} outcome duration rejection`);
+        log(
+          `Recording gateway: put frame ${id} f${frame.seq} outcome ${rejectedDimension} rejection`,
+        );
+        const storage = rejectedDimension === "storage";
         return Promise.reject(
           new ApiError("PUT", `/audio-assets/${id}/frames/${frame.seq}`, 429, {
-            title: "Recording duration allowance exceeded",
-            detail: "The simulated frame would exceed this Audio Asset's duration allowance.",
-            code: "audio_asset_duration_limit_exceeded",
+            title: storage
+              ? "Stored audio allowance exceeded"
+              : "Recording duration allowance exceeded",
+            detail: storage
+              ? "The simulated frame would exceed this Account's stored audio allowance."
+              : "The simulated frame would exceed this Audio Asset's duration allowance.",
+            code: storage ? "audio_storage_limit_exceeded" : "audio_asset_duration_limit_exceeded",
             referenceId: `storybook-${id}`,
           }),
         );
       }
+      asset.frames = Math.max(asset.frames, frame.seq + 1);
+      asset.duration = Math.max(asset.duration, frame.endMs);
       return new Promise<FrameAck>((resolve, reject) => {
         const pending: Pending = {
           finish() {
@@ -234,6 +288,8 @@ export function createLabScenario(options: {
     cues: options.cues,
     alerts: options.alerts,
     authorizeStart: () => session.authorizeRecordingStart(),
+    usage,
+    allowanceFeedback,
     environment: {
       gateway,
       scheduler,
@@ -267,6 +323,7 @@ export function createLabScenario(options: {
       log(`event: ${event.type}${"frameId" in event ? ` f${event.frameId}` : ""}`);
     },
   });
+  usage.setAccount(accountId);
   app.setSessionAccount(accountId);
   async function advance(ms: number, quiet = false): Promise<void> {
     if (!manual || disposed) return;
@@ -278,8 +335,9 @@ export function createLabScenario(options: {
     app,
     session,
     alerts: options.alerts,
+    usage,
+    allowanceFeedback,
     config,
-    scenarioLimitMs,
     manual,
     scheduler,
     advance,
@@ -311,6 +369,8 @@ export function createLabScenario(options: {
     dispose() {
       disposed = true;
       app.dispose();
+      usage.dispose();
+      allowanceFeedback.dispose();
       access.dispose();
       for (const cancel of cancellations) cancel();
       cancellations.clear();

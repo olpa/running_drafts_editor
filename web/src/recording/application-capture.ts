@@ -292,8 +292,10 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
 
 export const applicationCaptureKey: InjectionKey<ApplicationCapture> = Symbol("recording");
 
-export function useApplicationCapture(): ApplicationCapture {
-  const recording = inject(applicationCaptureKey);
-  if (!recording) throw new Error("The ApplicationCapture module was not provided.");
+export function useApplicationCapture(): ApplicationCapture;
+export function useApplicationCapture(optional: true): ApplicationCapture | null;
+export function useApplicationCapture(optional = false): ApplicationCapture | null {
+  const recording = inject(applicationCaptureKey, null);
+  if (!recording && !optional) throw new Error("The ApplicationCapture module was not provided.");
   return recording;
 }

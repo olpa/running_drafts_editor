@@ -28,7 +28,7 @@ occupied. Press Ctrl+C in the Storybook terminal to stop the workbench.
 Capture stories make production states involving timing, delivery, recovery,
 and failure repeatable without a microphone, backend, credentials, or saved
 Project data. They are grouped by healthy completion, delivery and recovery,
-failures, and hard stops. Stories render production modules and Vue components
+failures, and allowances. Stories render production modules and Vue components
 over typed in-memory adapters; unexpected operations fail visibly and never
 reach an external service.
 
@@ -38,7 +38,9 @@ actions, and advances injected time. Long setup is fast-forwarded, then the last
 one or two scheduler frames play at 2× review speed so the transition remains
 visible. The resulting state remains visible.
 Production controls are inactive in these arranged reviews, except
-**Acknowledge**, which can stop a repeating Problem sound.
+**Acknowledge**, which can stop a repeating Problem sound. Allowance stories
+also keep **Stop warning sound** available while the temporary warning cue is
+active. Recording, retry, and pending-upload actions remain inactive.
 
 After playback finishes, **Replay scenario** constructs fresh scheduler,
 adapters, Session and Capture state, pending work, alerts, and sound. The
@@ -54,6 +56,32 @@ states, arranged recovery, retained Unrequested Capture stop alert, and one
 Problem loop. **Acknowledge** stops the loop and clears the current alert.
 Activate **Replay scenario** to reconstruct the original state and compare the
 new numbered activity with the retained history.
+
+## Allowance states
+
+Open **Account → Profile → Allowances** to inspect fixed Free, Pro, granted, and
+already-warned usage snapshots in the complete production Profile card. These
+static stories open directly in their review state. They use complete
+backend-shaped snapshots and never calculate thresholds or Plan behavior in
+Storybook. The existing Signed In and Signed Out stories share the same
+**Account → Profile** hierarchy, and Signed In includes baseline Usage. Zero
+grant values are omitted. The loaded-at-warning state is visual and silent,
+with the warning directly after the **Usage** heading.
+
+Open **Capture → Allowances** to inspect storage, duration, overlapping-warning,
+backend-rejection, and zero-remaining states. Activate **Play scenario** to show
+one healthy frame before the warning transition. Backend-rejection stories add
+one warning frame before the rejected frame. They leave pending audio and safe
+production errors visible; they do not perform recovery.
+
+### Reproducible allowance review
+
+Open **Capture → Allowances → Backend Storage Rejection** and activate **Play
+scenario**. Inspect the healthy frame, warning frame, backend rejection, retained
+pending audio, safe Section error, and global Capture alert. Recording and
+**Upload pending audio** controls are inactive. **Acknowledge** remains usable to
+stop the Problem sound and clear the alert. Activate **Replay scenario** to
+restore the arranged state and compare the retained numbered history.
 
 ## Sound configuration
 

@@ -2,8 +2,14 @@
 import { computed } from "vue";
 import { useApplicationCapture } from "./application-capture.ts";
 
-const recording = useApplicationCapture();
-const warning = computed(() => recording.allowanceWarnings.value);
+const recording = useApplicationCapture(true);
+const warning = computed(
+  () =>
+    recording?.allowanceWarnings.value ?? {
+      storageRemainingBytes: null,
+      durationRemainingMs: null,
+    },
+);
 
 function bytes(value: number): string {
   if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MiB`;

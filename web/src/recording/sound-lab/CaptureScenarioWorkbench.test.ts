@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { settle } from "../../test-support/manual-scheduler.ts";
 import CaptureScenarioWorkbench from "./CaptureScenarioWorkbench.vue";
+import type { ScenarioKind } from "./scenario.ts";
 
 class Buffer {
   copyToChannel() {}
@@ -45,6 +46,20 @@ afterEach(() => {
 });
 
 describe("Capture scenario workbench", () => {
+  async function play(scenarioKind: ScenarioKind) {
+    vi.useFakeTimers();
+    vi.stubGlobal("AudioContext", Audio);
+    const wrapper = mount(CaptureScenarioWorkbench, {
+      props: { scenarioKind, ...common },
+    });
+    await flushPromises();
+    await wrapper.get(".playback-actions button").trigger("click");
+    await vi.runAllTimersAsync();
+    await settle();
+    await flushPromises();
+    return wrapper;
+  }
+
   it("requires explicit Play, preserves semantic guidance, and offers Replay only when finished", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("AudioContext", Audio);
@@ -78,21 +93,56 @@ describe("Capture scenario workbench", () => {
   });
 
   it("keeps production Acknowledge interactive outside the inert scenario surface", async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("AudioContext", Audio);
-    const wrapper = mount(CaptureScenarioWorkbench, {
-      props: { scenarioKind: "duration", ...common },
-    });
-    await flushPromises();
-    await wrapper.get(".playback-actions button").trigger("click");
-    await vi.runAllTimersAsync();
-    await settle();
-    await flushPromises();
+    const wrapper = await play("allowance-duration-rejection");
     const acknowledge = wrapper.findAll("button").find((button) => button.text() === "Acknowledge");
     expect(acknowledge).toBeDefined();
     expect(acknowledge!.element.closest("[inert]")).toBeNull();
     await acknowledge!.trigger("click");
     expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("shows both warning dimensions and keeps only the sound action interactive", async () => {
+    const wrapper = await play("allowance-overlap");
+
+    expect(wrapper.get('[data-testid="storage-warning"]').text()).toContain("remains");
+    expect(wrapper.get('[data-testid="duration-warning"]').text()).toContain("remaining");
+    const stopSound = wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Stop warning sound");
+    expect(stopSound).toBeDefined();
+    expect(stopSound!.element.closest("[inert]")).toBeNull();
+    await stopSound!.trigger("click");
+    expect(wrapper.findAll("button").some((button) => button.text() === "Stop warning sound")).toBe(
+      false,
+    );
+    expect(wrapper.find('[data-testid="allowance-status"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("shows zero duration remaining without stopping Capture", async () => {
+    const wrapper = await play("allowance-duration-zero");
+
+    expect(wrapper.get('[data-testid="duration-warning"]').text()).toContain("0 seconds remaining");
+    expect(wrapper.get('[data-testid="capture-indicator"]').attributes("data-capturing")).toBe(
+      "true",
+    );
+    wrapper.unmount();
+  });
+
+  it("retains rejected audio while the production upload action stays inert", async () => {
+    const wrapper = await play("allowance-storage-rejection");
+
+    expect(wrapper.get('[data-testid="section"]').text()).toContain(
+      "storage allowance rejected this audio",
+    );
+    expect(wrapper.get('[data-testid="section"]').text()).toContain("audio pending");
+    const upload = wrapper
+      .findAll("button")
+      .find((button) => button.text() === "Upload pending audio");
+    expect(upload).toBeDefined();
+    expect(upload!.element.closest("[inert]")).not.toBeNull();
+    expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(true);
     wrapper.unmount();
   });
 });

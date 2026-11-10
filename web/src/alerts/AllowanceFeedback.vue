@@ -8,7 +8,7 @@ const feedback = useAllowanceFeedback();
   <div v-if="feedback.active.value" class="allowance-feedback" role="status">
     <span>Allowance warning sound is playing.</span>
     <span v-if="feedback.soundUnavailable.value"> Warning sound is unavailable.</span>
-    <button type="button" @click="feedback.silence()">Silence warning</button>
+    <button type="button" @click="feedback.silence()">Stop warning sound</button>
   </div>
 </template>
 

@@ -134,8 +134,8 @@ onBeforeUnmount(() => runtime.value?.dispose());
       </button>
     </div>
     <p id="arranged-controls-note" class="interaction-note">
-      This is an arranged review. Production controls are inactive; Acknowledge remains available to
-      stop a repeating Problem sound.
+      This is an arranged review. Production controls are inactive; Acknowledge and Stop warning
+      sound remain available when shown.
     </p>
     <p v-if="error" role="alert" class="story-error">{{ error }}</p>
     <ProductionCapture v-if="runtime" :key="revision" :scenario="runtime.scenario" />
