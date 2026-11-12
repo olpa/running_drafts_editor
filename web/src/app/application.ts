@@ -14,6 +14,7 @@ import {
   type MicrophoneAccess,
 } from "../recording/microphone-access.ts";
 import { createApp, watch, type App } from "vue";
+import type { Router } from "vue-router";
 import { createHealth, healthKey } from "../health/health.ts";
 import { createHealthGateway, type HealthGateway } from "../health/gateway.ts";
 import { createProjectsGateway, type ProjectsGateway } from "../projects/gateway.ts";
@@ -40,6 +41,8 @@ import { createApiRequester } from "../shared/http.ts";
 import { createUsageGateway, type UsageGateway } from "../usage/gateway.ts";
 import { createUsage, usageKey, type Usage } from "../usage/usage.ts";
 import AppShell from "./AppShell.vue";
+import { coordinateRoutes } from "../routing/coordinator.ts";
+import { createEditorRouter } from "../routing/router.ts";
 
 /** Replaceable external adapters; every one defaults to its production implementation. */
 export interface ApplicationAdapters {
@@ -54,6 +57,7 @@ export interface ApplicationAdapters {
   microphoneAccess?: MicrophoneAccess;
   usageGateway?: UsageGateway;
   confirmDiscardPending?: () => boolean;
+  router?: Router;
 }
 
 export interface Application {
@@ -65,6 +69,7 @@ export interface Application {
   readonly microphoneAccess: MicrophoneAccess;
   readonly usage: Usage;
   readonly allowanceFeedback: AllowanceFeedback;
+  readonly router: Router;
 }
 
 /** The composition root: wires adapters into modules and provides them to components. */
@@ -119,6 +124,7 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
   });
   const projects = createProjects(adapters.projectsGateway ?? createProjectsGateway(api));
   const health = createHealth(adapters.healthGateway ?? createHealthGateway());
+  const router = adapters.router ?? createEditorRouter();
 
   // Private state follows the Account: recording is retained, everything else is dropped.
   watch(
@@ -140,7 +146,10 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
   );
 
   const app = createApp(AppShell);
+  app.use(router);
+  const stopRoutes = coordinateRoutes(router, session, projects, recording);
   app.onUnmount(() => {
+    stopRoutes();
     recording.dispose();
     alerts.dispose();
     microphoneAccess.dispose();
@@ -166,5 +175,6 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
     microphoneAccess,
     usage,
     allowanceFeedback,
+    router,
   };
 }

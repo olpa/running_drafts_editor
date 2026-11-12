@@ -1,4 +1,4 @@
-import { shallowRef, type Ref, type InjectionKey } from "vue";
+import { inject, shallowRef, type Ref, type InjectionKey } from "vue";
 
 export interface MicrophoneReservation {
   readonly active: boolean;
@@ -83,3 +83,9 @@ export function createMicrophoneAccess(): MicrophoneAccess {
 }
 
 export const microphoneAccessKey: InjectionKey<MicrophoneAccess> = Symbol("microphone-access");
+
+export function useMicrophoneAccess(): MicrophoneAccess {
+  const access = inject(microphoneAccessKey);
+  if (!access) throw new Error("MicrophoneAccess was not provided.");
+  return access;
+}

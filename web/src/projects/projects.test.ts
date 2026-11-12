@@ -1,140 +1,97 @@
-import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
-import { axe } from "../test-support/axe.ts";
+import { ApiError } from "../shared/http.ts";
 import type { ProjectsGateway, ProjectDetail } from "./gateway.ts";
-import ProjectBrowser from "./ProjectBrowser.vue";
-import { createProjects, projectsKey, type Projects } from "./projects.ts";
+import { createProjects, type ProjectsScheduler } from "./projects.ts";
 
-const createdId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const newerId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-const sectionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const assetId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-
+const projectId = "project-a";
 const detail: ProjectDetail = {
-  id: createdId,
+  id: projectId,
   title: "Canonical field notes",
   createdAt: "2026-10-26T10:00:00Z",
   updatedAt: "2026-10-26T10:01:00Z",
-  document: {
-    sections: [
-      {
-        id: sectionId,
-        position: 0,
-        audioAsset: {
-          id: assetId,
-          mediaType: "audio/webm;codecs=opus",
-          isSealed: true,
-          sealReason: "completed",
-          sealedAt: "2026-10-26T10:01:00Z",
-          frameCount: 3,
-          observedDurationMs: 21_500,
-          storedBytes: 123_456,
-        },
-      },
-    ],
-  },
+  document: { sections: [] },
 };
 
 function fakeGateway(overrides: Partial<ProjectsGateway> = {}): ProjectsGateway {
   return {
-    listProjects: async () => [
-      { id: newerId, title: "Newer Project", createdAt: "x", updatedAt: "2026-10-26T10:02:00Z" },
-      { id: createdId, title: detail.title, createdAt: "x", updatedAt: detail.updatedAt },
-    ],
+    listProjects: async () => [detail],
     getProjectDetail: async () => detail,
-    audioDownloadUrl: (id) => `https://api.example.test/api/v1/audio-assets/${id}/download`,
+    audioDownloadUrl: (id) => `https://api.example.test/audio-assets/${id}/download`,
     ...overrides,
   };
 }
 
-function mountBrowser(projects: Projects) {
-  return mount(ProjectBrowser, { global: { provide: { [projectsKey as symbol]: projects } } });
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((yes) => (resolve = yes));
+  return { promise, resolve };
 }
 
 describe("Projects module", () => {
-  it("lists Projects, opens one, and clears on request", async () => {
+  it("loads collection and detail independently", async () => {
     const projects = createProjects(fakeGateway());
-    await projects.showList();
-    expect(projects.view.value).toMatchObject({ kind: "list" });
-    await projects.showProject(createdId);
-    expect(projects.view.value).toMatchObject({ kind: "detail" });
-    expect(projects.status.value).toBe("");
-    projects.clear();
-    expect(projects.view.value).toEqual({ kind: "empty" });
+    await Promise.all([projects.loadList(), projects.loadProject(projectId)]);
+    expect(projects.list.value).toEqual({ kind: "ready", value: [detail] });
+    expect(projects.detail.value).toEqual({ kind: "ready", value: detail });
+
+    projects.clearDetail();
+    expect(projects.detail.value).toEqual({ kind: "idle" });
+    expect(projects.list.value.kind).toBe("ready");
   });
 
-  it("ignores a stale response after a newer request", async () => {
-    let release!: (value: ProjectDetail) => void;
+  it("ignores a stale detail response after a newer request", async () => {
+    const first = deferred<ProjectDetail>();
+    const second = deferred<ProjectDetail>();
+    const requests = [first, second];
     const projects = createProjects(
-      fakeGateway({ getProjectDetail: () => new Promise((resolve) => (release = resolve)) }),
+      fakeGateway({ getProjectDetail: () => requests.shift()!.promise }),
     );
-    const pending = projects.showProject(createdId);
-    projects.clear();
-    release(detail);
-    await pending;
-    expect(projects.view.value).toEqual({ kind: "empty" });
-  });
-});
 
-describe("ProjectBrowser", () => {
-  it("shows Projects in backend order and opens a downloadable Section", async () => {
-    const projects = createProjects(fakeGateway());
-    const wrapper = mountBrowser(projects);
-    await projects.showList();
-    await flushPromises();
+    const stale = projects.loadProject("first");
+    const current = projects.loadProject("second");
+    first.resolve({ ...detail, id: "first" });
+    second.resolve({ ...detail, id: "second" });
+    await Promise.all([stale, current]);
 
-    const entries = wrapper.findAll("[data-testid=project-list-item]");
-    expect(entries.map((entry) => entry.attributes("data-project-id"))).toEqual([
-      newerId,
-      createdId,
-    ]);
-    await entries[1]!.get("button").trigger("click");
-    await flushPromises();
-
-    const view = wrapper.get("[data-testid=project-detail]");
-    expect(view.attributes("data-project-id")).toBe(createdId);
-    expect(view.get("h2").text()).toBe("Canonical field notes");
-    const section = view.get("[data-testid=project-section]");
-    expect(section.attributes()).toMatchObject({
-      "data-section-id": sectionId,
-      "data-audio-asset-id": assetId,
-      "data-sealed": "true",
-      "data-seal-reason": "completed",
+    expect(projects.detail.value).toEqual({
+      kind: "ready",
+      value: { ...detail, id: "second" },
     });
-    const download = section.get("[data-testid=audio-download]");
-    expect(download.attributes("href")).toBe(
-      `https://api.example.test/api/v1/audio-assets/${assetId}/download`,
-    );
-    expect(download.text()).toBe("Download original audio");
   });
 
-  it("offers a visible retry after a failed load", async () => {
-    let attempts = 0;
+  for (const status of [400, 403, 404, 422]) {
+    it(`maps backend Project rejection ${status} to the privacy-preserving not-found state`, async () => {
+      const projects = createProjects(
+        fakeGateway({
+          getProjectDetail: async () => {
+            throw new ApiError("GET", "/projects/opaque", status);
+          },
+        }),
+      );
+      await projects.loadProject("opaque");
+      expect(projects.detail.value).toEqual({ kind: "notFound" });
+    });
+  }
+
+  it("delays the visible loading status", async () => {
+    let showSlow!: () => void;
+    const scheduler: ProjectsScheduler = {
+      schedule(_delay, callback) {
+        showSlow = callback;
+        return () => undefined;
+      },
+    };
+    const pending = deferred<never[]>();
     const projects = createProjects(
-      fakeGateway({
-        listProjects: async () => {
-          attempts++;
-          if (attempts === 1) throw new Error("unavailable");
-          return [];
-        },
-      }),
+      fakeGateway({ listProjects: () => pending.promise }),
+      scheduler,
     );
-    const wrapper = mountBrowser(projects);
-    await projects.showList();
-    await flushPromises();
-    expect(wrapper.get("[role=status]").text()).toBe("Projects could not be loaded.");
-
-    await wrapper.get("button").trigger("click");
-    await flushPromises();
-    expect(attempts).toBe(2);
-    expect(wrapper.text()).toContain("No Projects yet.");
-  });
-
-  it("has no detectable accessibility violations", async () => {
-    const projects = createProjects(fakeGateway());
-    const wrapper = mountBrowser(projects);
-    await projects.showList();
-    await flushPromises();
-    expect(await axe(wrapper.element as HTMLElement)).toHaveNoViolations();
+    const load = projects.loadList();
+    expect(projects.list.value).toEqual({ kind: "loading", slow: false });
+    showSlow();
+    expect(projects.list.value).toEqual({ kind: "loading", slow: true });
+    pending.resolve([]);
+    await load;
+    expect(projects.list.value).toEqual({ kind: "ready", value: [] });
   });
 });

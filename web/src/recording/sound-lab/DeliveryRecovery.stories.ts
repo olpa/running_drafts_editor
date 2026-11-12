@@ -4,7 +4,12 @@ const meta = {
   title: "Capture/Delivery delay and recovery",
   component: CaptureScenarioWorkbench,
   parameters: { layout: "fullscreen" },
-  argTypes: { scenarioKind: { control: false } },
+  argTypes: { scenarioKind: { control: false }, reviewMode: { control: false } },
+  render: (args, context) => ({
+    components: { CaptureScenarioWorkbench },
+    setup: () => ({ args, reviewMode: context.globals.captureReviewMode }),
+    template: `<CaptureScenarioWorkbench :key="reviewMode" v-bind="args" :review-mode="reviewMode" />`,
+  }),
 } satisfies Meta<typeof CaptureScenarioWorkbench>;
 export default meta;
 type Story = StoryObj<typeof meta>;

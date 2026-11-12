@@ -23,7 +23,7 @@ ssh -N -L 6006:127.0.0.1:6006 user@remote-host
 Open `http://127.0.0.1:6006` locally. Use another local port when 6006 is
 occupied. Press Ctrl+C in the Storybook terminal to stop the workbench.
 
-## Capture Scenario Workbench
+## Capture stories
 
 Capture stories make production states involving timing, delivery, recovery,
 and failure repeatable without a microphone, backend, credentials, or saved
@@ -32,30 +32,47 @@ failures, and allowances. Stories render production modules and Vue components
 over typed in-memory adapters; unexpected operations fail visibly and never
 reach an external service.
 
-Opening a story does nothing. Read its review note, then activate **Play
-scenario**. Play prepares browser audio, performs the fixed arranged production
-actions, and advances injected time. Long setup is fast-forwarded, then the last
-one or two scheduler frames play at 2× review speed so the transition remains
-visible. The resulting state remains visible.
-Production controls are inactive in these arranged reviews, except
-**Acknowledge**, which can stop a repeating Problem sound. Allowance stories
-also keep **Stop warning sound** available while the temporary warning cue is
-active. Recording, retry, and pending-upload actions remain inactive.
+The **Capture view** toolbar menu switches every Capture story between two views
+over the same scenario modules and adapters:
+
+- **Experience** is the default. Read the review note, then activate **New
+  recording** on the simulated Project page. The arranged sequence opens and
+  runs through the real production Capture modal. Its focus trap, inert
+  background, production controls, explicit dismissal, successful automatic
+  close, alerts, and allowance feedback remain active. Capture alerts,
+  **Acknowledge**, **Stop warning sound**, and any microphone-takeover prompt
+  appear inside that one modal, as they do in the application.
+- **Workbench** exposes the production Capture panel beside the arrangement
+  controls and activity log. Activate **Play scenario** to prepare browser audio,
+  perform the fixed arranged actions, and advance injected time. Production
+  Capture controls are inactive here so the arranged state remains
+  deterministic; its exposed **Acknowledge** and **Stop warning sound** actions
+  remain outside the inert arranged panel and available when applicable.
+
+Long setup is fast-forwarded, then the last one or two scheduler frames play at
+2× review speed so the transition remains visible. Switching Capture view
+reconstructs all scenario state. The toolbar belongs to Storybook rather than
+the story iframe, so it remains available while the modal correctly makes its
+background inert.
 
 After playback finishes, **Replay scenario** constructs fresh scheduler,
 adapters, Session and Capture state, pending work, alerts, and sound. The
-always-visible bounded activity log keeps numbered history across Replay for
-comparison. Changing/remounting the story or refreshing the page starts a fresh
-log.
+bounded activity log keeps numbered history across Replay for comparison. In
+Experience view, successful Capture closes the modal before Replay becomes
+available; a failure remains in the modal for production recovery, dismissal,
+or discard actions. Changing/remounting the story or refreshing the page starts
+a fresh log.
 
 ### Reproducible review
 
 Open **Capture → Delivery delay and recovery → Backlog Stop After Two Overdue
-Frames** and activate **Play scenario**. Inspect the two identified delayed-frame
-states, arranged recovery, retained Unrequested Capture stop alert, and one
-Problem loop. **Acknowledge** stops the loop and clears the current alert.
-Activate **Replay scenario** to reconstruct the original state and compare the
-new numbered activity with the retained history.
+Frames**. In the default Experience view, activate **New recording** and inspect
+the modal through the delayed-frame states, arranged recovery, retained
+Unrequested Capture stop alert, and one Problem loop. Switch **Capture view** to
+Workbench for the exposed final state and activity log. **Acknowledge** stops the
+loop and clears the current alert. Activate **Replay scenario** to reconstruct
+the original state and compare the new numbered activity with the retained
+history.
 
 ## Allowance states
 
@@ -69,19 +86,21 @@ grant values are omitted. The loaded-at-warning state is visual and silent,
 with the warning directly after the **Usage** heading.
 
 Open **Capture → Allowances** to inspect storage, duration, overlapping-warning,
-backend-rejection, and zero-remaining states. Activate **Play scenario** to show
-one healthy frame before the warning transition. Backend-rejection stories add
-one warning frame before the rejected frame. They leave pending audio and safe
-production errors visible; they do not perform recovery.
+backend-rejection, and zero-remaining states. Activate **New recording** in
+Experience view or **Play scenario** in Workbench view to show one healthy frame
+before the warning transition. Backend-rejection stories add one warning frame
+before the rejected frame. They leave pending audio and safe production errors
+visible; they do not perform recovery.
 
 ### Reproducible allowance review
 
 Open **Capture → Allowances → Backend Storage Rejection** and activate **Play
-scenario**. Inspect the healthy frame, warning frame, backend rejection, retained
-pending audio, safe Section error, and global Capture alert. Recording and
-**Upload pending audio** controls are inactive. **Acknowledge** remains usable to
-stop the Problem sound and clear the alert. Activate **Replay scenario** to
-restore the arranged state and compare the retained numbered history.
+scenario** in Workbench view. Inspect the healthy frame, warning frame, backend
+rejection, retained pending audio, safe Section error, and global Capture alert.
+Recording and **Upload pending audio** controls are inactive. **Acknowledge**
+remains usable to stop the Problem sound and clear the alert. Repeat in
+Experience view with **New recording** to review the same state in the production
+modal.
 
 ## Sound configuration
 
