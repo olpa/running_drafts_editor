@@ -1,9 +1,10 @@
 # Browser seed experiment
 
 This directory is the home for the Running Drafts browser seed. Its current
-#84/#85 slice supports authenticated browser recording, durable audio delivery,
-Project browsing, and sealed original-audio download through the backend; the
-broader seed also covers progressive transcription work.
+#84/#85/#103 slice supports authenticated browser recording, durable audio
+delivery, resource-oriented Project browsing, and sealed original-audio
+download through the backend; the broader seed also covers progressive
+transcription work.
 
 [Product issue #1](https://github.com/olpa/running_drafts_product/issues/1)
 coordinates the seed across repositories. Backend and inference implementation
@@ -28,11 +29,11 @@ Vite/TypeScript page to the authenticated backend Project contract:
   completion, and interruption endpoints. Each recorder run creates one Section
   and Audio Asset; transcription and polling are outside #84's authenticated
   delivery slice.
-- Browsing: `ProjectBrowser.vue` shows the authenticated Project list in
-  backend order, loads one complete Project detail response, displays ordered
-  Sections and semantic Audio Asset state, and exposes the backend's native
-  download response for sealed assets. The visible Record/Projects navigation
-  preserves the page-lifetime recording module while switching surfaces.
+- Browsing: `/projects` and `/projects/{projectId}` show the authenticated
+  Project list and complete Project detail. Persistent Project links follow
+  backend order. Detail displays ordered Sections and semantic Audio Asset
+  state, and exposes the backend's native download response for sealed assets.
+  Capture opens as a modal without adding a route or history entry.
 
 ## Run browser E2E tests
 
@@ -129,6 +130,7 @@ organised by feature, each owning its module, gateway, components, and tests:
 - `projects/`: the Project list and detail browser with original-audio downloads.
 - `health/`: the development health checks.
 - `app/`: the page layout, private workspace, and the composition root.
+- `routing/`: browser paths, history behavior, and route-to-module coordination.
 - `shared/`: configuration, HTTP transport, and formatting used by several features.
 
 `src/app/application.ts` is the only place that creates production adapters. It
@@ -158,10 +160,18 @@ frames ignore their later deadline events; disposal cancels all timers. An injec
 monotonic clock/scheduler supports deterministic tests without browser globals.
 
 Shared `MicrophoneAccess` reserves microphone use before startup. If another
-reservation is held, a modal offers **Cancel** or **Stop previous Capture and
-start new**. Takeover releases the previous recorder while keeping its Section's
-retained audio and delivery state. A revoked reservation cannot release its
-successor. Browser permission remains the recorder adapter's responsibility.
+reservation is held, the existing Capture modal shows an inline blocking prompt
+with **Cancel** and **Stop previous Capture and start new**. It remains the sole
+modal and focus boundary: ordinary Capture controls are inert until an explicit
+choice, and Escape does nothing. Takeover releases the previous recorder while
+keeping its Section's retained audio and delivery state. A revoked reservation
+cannot release its successor. Browser permission remains the recorder adapter's
+responsibility.
+
+Capture alerts and allowance feedback share application-owned state. Their
+actions render inside the Capture modal while it is open; the page-level copies
+remain present for application-lifetime feedback after closure, but are inert
+and hidden behind the modal. Neither rendering duplicates alert or sound state.
 
 `openMicrophoneCapture` owns strict WebM/Opus capability checking, preferred-mono
 microphone acquisition, usable-track verification, recorder finalization, and

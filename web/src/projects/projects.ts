@@ -1,73 +1,110 @@
 import { computed, inject, shallowRef, type InjectionKey, type Ref } from "vue";
+import { ApiError } from "../shared/http.ts";
 import type { ProjectSummary } from "../shared/project-types.ts";
 import type { ProjectDetail, ProjectsGateway } from "./gateway.ts";
 
-export type ProjectsView =
-  | { kind: "empty" }
-  | { kind: "list"; projects: readonly ProjectSummary[] }
-  | { kind: "detail"; project: ProjectDetail }
-  | { kind: "failure"; retryLabel: string };
+export type ProjectLoad<T> =
+  | { kind: "idle" }
+  | { kind: "loading"; slow: boolean }
+  | { kind: "ready"; value: T }
+  | { kind: "notFound" }
+  | { kind: "failure" };
 
-/** Authenticated Project list and complete Project-detail browsing state. */
+export interface ProjectsScheduler {
+  schedule(delayMs: number, callback: () => void): () => void;
+}
+
+/** Authenticated Project collection and complete Project-detail data. */
 export interface Projects {
-  readonly status: Readonly<Ref<string>>;
-  readonly view: Readonly<Ref<ProjectsView>>;
-  showList(): Promise<void>;
-  showProject(projectId: string): Promise<void>;
-  /** Forget everything loaded, for example when the Account signs out. */
+  readonly list: Readonly<Ref<ProjectLoad<readonly ProjectSummary[]>>>;
+  readonly detail: Readonly<Ref<ProjectLoad<ProjectDetail>>>;
+  loadList(): Promise<void>;
+  loadProject(projectId: string): Promise<void>;
+  clearDetail(): void;
+  /** Forget all Account-owned data, for example when the Account signs out. */
   clear(): void;
   audioDownloadUrl(audioAssetId: string): string;
 }
 
-export function createProjects(gateway: ProjectsGateway): Projects {
-  const status = shallowRef("");
-  const view = shallowRef<ProjectsView>({ kind: "empty" });
-  let generation = 0;
+const browserScheduler: ProjectsScheduler = {
+  schedule(delayMs, callback) {
+    const timer = window.setTimeout(callback, delayMs);
+    return () => window.clearTimeout(timer);
+  },
+};
+
+export function createProjects(
+  gateway: ProjectsGateway,
+  scheduler: ProjectsScheduler = browserScheduler,
+): Projects {
+  const list = shallowRef<ProjectLoad<readonly ProjectSummary[]>>({ kind: "idle" });
+  const detail = shallowRef<ProjectLoad<ProjectDetail>>({ kind: "idle" });
+  let listGeneration = 0;
+  let detailGeneration = 0;
 
   async function load<T>(
-    message: string,
-    failure: { message: string; retryLabel: string },
+    generation: number,
+    currentGeneration: () => number,
+    target: Ref<ProjectLoad<T>>,
     fetch: () => Promise<T>,
-    show: (value: T) => ProjectsView,
+    notFound: (error: unknown) => boolean,
   ): Promise<void> {
-    const current = ++generation;
-    status.value = message;
+    target.value = { kind: "loading", slow: false };
+    const cancelSlow = scheduler.schedule(1_000, () => {
+      if (generation === currentGeneration() && target.value.kind === "loading") {
+        target.value = { kind: "loading", slow: true };
+      }
+    });
     try {
       const value = await fetch();
-      if (current !== generation) return;
-      view.value = show(value);
-      status.value = "";
-    } catch {
-      if (current !== generation) return;
-      status.value = failure.message;
-      view.value = { kind: "failure", retryLabel: failure.retryLabel };
+      if (generation === currentGeneration()) target.value = { kind: "ready", value };
+    } catch (error) {
+      if (generation !== currentGeneration()) return;
+      target.value = notFound(error) ? { kind: "notFound" } : { kind: "failure" };
+    } finally {
+      cancelSlow();
     }
   }
 
   return {
-    status: computed(() => status.value),
-    view: computed(() => view.value),
-    showList: () =>
-      load(
-        "Loading Projects…",
-        { message: "Projects could not be loaded.", retryLabel: "Retry Projects" },
+    list: computed(() => list.value),
+    detail: computed(() => detail.value),
+    loadList() {
+      const generation = ++listGeneration;
+      return load(
+        generation,
+        () => listGeneration,
+        list,
         () => gateway.listProjects(),
-        (projects) => ({ kind: "list", projects }),
-      ),
-    showProject: (projectId) =>
-      load(
-        "Loading Project…",
-        { message: "The Project could not be loaded.", retryLabel: "Back to Projects" },
+        () => false,
+      );
+    },
+    loadProject(projectId) {
+      const generation = ++detailGeneration;
+      return load(
+        generation,
+        () => detailGeneration,
+        detail,
         () => gateway.getProjectDetail(projectId),
-        (project) => ({ kind: "detail", project }),
-      ),
+        projectMissing,
+      );
+    },
+    clearDetail() {
+      detailGeneration++;
+      detail.value = { kind: "idle" };
+    },
     clear() {
-      generation++;
-      status.value = "";
-      view.value = { kind: "empty" };
+      listGeneration++;
+      detailGeneration++;
+      list.value = { kind: "idle" };
+      detail.value = { kind: "idle" };
     },
     audioDownloadUrl: (audioAssetId) => gateway.audioDownloadUrl(audioAssetId),
   };
+}
+
+function projectMissing(error: unknown): boolean {
+  return error instanceof ApiError && [400, 403, 404, 422].includes(error.status);
 }
 
 export const projectsKey: InjectionKey<Projects> = Symbol("projects");

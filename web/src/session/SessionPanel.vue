@@ -1,10 +1,31 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { formatDateTime } from "../shared/format.ts";
 import { useSession } from "./session.ts";
 
 const session = useSession();
 const state = computed(() => session.state.value);
+const slowCheck = ref(false);
+let slowTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+
+watch(
+  state,
+  (value) => {
+    if (slowTimer !== null) globalThis.clearTimeout(slowTimer);
+    slowTimer = null;
+    slowCheck.value = false;
+    if (value.status === "loading") {
+      slowTimer = globalThis.setTimeout(() => {
+        slowCheck.value = true;
+      }, 1_000);
+    }
+  },
+  { immediate: true },
+);
+
+onUnmounted(() => {
+  if (slowTimer !== null) globalThis.clearTimeout(slowTimer);
+});
 
 function identity(current: {
   account: { id: string };
@@ -19,7 +40,12 @@ function identity(current: {
 </script>
 
 <template>
-  <section class="authentication" data-testid="authentication" aria-live="polite">
+  <section
+    v-if="state.status !== 'loading' || slowCheck"
+    class="authentication"
+    data-testid="authentication"
+    aria-live="polite"
+  >
     <p v-if="state.status === 'loading'">Checking your session…</p>
 
     <template v-else-if="state.status === 'signedIn'">

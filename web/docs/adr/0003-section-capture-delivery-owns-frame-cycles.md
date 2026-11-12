@@ -51,12 +51,15 @@ Delivery may continue after release. Browser microphone permission remains the
 browser recorder adapter's responsibility.
 
 A stale reservation must not permanently prevent Capture. If another holder
-exists, show a modal offering **Cancel** and **Stop previous Capture and start
-new**. Cancellation leaves the current holder unchanged. Explicit takeover
-revokes the old reservation, tells its recorder to stop and release the
-microphone, and grants a new reservation for the new Capture. Merely clearing a
-busy flag is insufficient. Keep microphone cleanup close to this module so
-takeover does not rely entirely on the old workflow finishing correctly.
+exists, the existing Capture modal shows an inline blocking prompt offering
+**Cancel** and **Stop previous Capture and start new**. Do not open a nested
+modal. While the prompt is present, ordinary Capture controls are inert; Escape
+does nothing, so either outcome is explicit. Cancellation leaves the current
+holder unchanged. Explicit takeover revokes the old reservation, tells its
+recorder to stop and release the microphone, and grants a new reservation for
+the new Capture. Merely clearing a busy flag is insufficient. Keep microphone
+cleanup close to this module so takeover does not rely entirely on the old
+workflow finishing correctly.
 
 Reservations have distinct identities. Late release by a revoked holder must
 not release its successor's reservation. Preserve the previous Section's
@@ -65,10 +68,10 @@ user-requested stop and does not raise a new Capture alert. It also does not
 acknowledge already active Capture alerts.
 
 Starting a new Section remains available while an older Section is finalizing.
-If its reservation is still held, the same modal offers takeover. Forced cleanup
-also releases a stalled finalization wait; it must not depend on that promise
-settling by itself. If Section creation finishes after its reservation was
-revoked, keep the Section identity and close its unused Audio Asset without
+If its reservation is still held, the same inline prompt offers takeover. Forced
+cleanup also releases a stalled finalization wait; it must not depend on that
+promise settling by itself. If Section creation finishes after its reservation
+was revoked, keep the Section identity and close its unused Audio Asset without
 starting Capture or suspending delivery as if authentication had ended.
 
 Scoped automatic release alone is insufficient: bugs can leave a reservation
@@ -294,10 +297,18 @@ acknowledgement. The global surface may list each alert or show a generic summar
 while the workflow UI retains specific details; either presentation must make
 acknowledgement and playback failure visible.
 
-The unrequested-stop alert says **Capture stopped. Up to 15 seconds of recent
-audio may not be saved.** The fixed bound follows the production 5-second interval,
-two-frame backlog, and final partial frame; this is why production rejects a
-different interval while Storybook remains free to experiment.
+The application owns one alert and allowance-feedback state even when it has
+more than one renderer. While the Capture modal is open, Capture alerts,
+**Acknowledge**, allowance feedback, and **Stop warning sound** render inside its
+single dialog. The application shell retains page-level renderers so feedback
+survives modal closure, but makes that copy inert and hidden while the dialog is
+open. The renderers do not duplicate alert state or sound playback, and alert
+feedback does not open a nested dialog.
+
+The unrequested-stop alert says **Capture stopped. Check the recording Section
+for retained audio and recovery details.** Do not derive a fixed loss estimate
+from the Transport frame cadence: the same alert also covers backend-enforced
+stops whose retained-audio outcome is reported by the Section workflow.
 
 The browser sound adapter uses one looping WebAudio source rather than repeated
 JavaScript timers or visibility checks. Playback failure remains visible; do not

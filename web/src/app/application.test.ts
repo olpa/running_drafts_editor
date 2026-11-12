@@ -107,11 +107,13 @@ class FakeRecordingGateway implements RecordingGateway {
 function sessionBackend() {
   const backend = {
     current: session(ACCOUNT_A, 8 * HOUR) as CurrentSession | "signedOut" | "failure",
+    currentAttempts: 0,
     logouts: [] as Promise<void>[],
     logoutAttempts: 0,
   };
   const gateway: SessionGateway = {
     async current() {
+      backend.currentAttempts++;
       if (backend.current === "signedOut") {
         throw new ApiError("GET", "/api/v1/me", 401, { code: "authentication_required" });
       }
@@ -135,7 +137,17 @@ function mountApplication(adapters: ApplicationAdapters = {}) {
   const application = createApplication({
     sessionGateway: gateway,
     recordingGateway,
-    projectsGateway: { listProjects: async () => [] } as unknown as ProjectsGateway,
+    projectsGateway: {
+      listProjects: async () => [],
+      getProjectDetail: async (projectId) => ({
+        id: projectId,
+        title: "Existing",
+        createdAt: "now",
+        updatedAt: "now",
+        document: { sections: [] },
+      }),
+      audioDownloadUrl: (id) => `https://api.example.test/audio-assets/${id}/download`,
+    } satisfies ProjectsGateway,
     healthGateway: { check: async () => Promise.reject(new Error("unused")) },
     usageGateway: {
       current: async (): Promise<UsageSnapshot> => ({
@@ -209,6 +221,12 @@ function testId(root: HTMLElement, id: string): HTMLElement | null {
   return root.querySelector<HTMLElement>(`[data-testid="${id}"]`);
 }
 
+async function openNewCapture(root: HTMLElement): Promise<void> {
+  testId(root, "new-recording")!.click();
+  await flushPromises();
+  expect(testId(root, "capture-modal")).not.toBeNull();
+}
+
 describe("application", () => {
   it("retains real queued audio across short-session reauthentication and resumes only for its Account", async () => {
     window.history.replaceState(null, "", "/projects/one?tab=record");
@@ -218,6 +236,7 @@ describe("application", () => {
       (backend.current as CurrentSession).sessionExpiresAt,
     );
 
+    await openNewCapture(root);
     testId(root, "start")!.click();
     await flushPromises();
     const capture = captures[0]!;
@@ -247,8 +266,7 @@ describe("application", () => {
 
     expect(button(root, "Continue with Google")).not.toBeNull();
     expect(root.querySelector("time")).toBeNull();
-    expect(testId(root, "recording-workspace")).not.toBeNull();
-    expect(testId(root, "private-results")).toBeNull();
+    expect(testId(root, "capture-modal")).not.toBeNull();
     expect(capture.disposed).toBe(true);
     expect(recordingGateway.requests).toHaveLength(1);
     const leave = new Event("beforeunload", { cancelable: true });
@@ -305,7 +323,7 @@ describe("application", () => {
     window.history.replaceState(
       null,
       "",
-      "/login?keep=1&keep=2&authError=cancelled&authError=provider_unavailable&referenceId=attacker&referenceId=other",
+      "/projects?keep=1&keep=2&authError=cancelled&authError=provider_unavailable&referenceId=attacker&referenceId=other",
     );
     const { root, backend } = mountApplication();
     backend.current = "signedOut";
@@ -316,74 +334,224 @@ describe("application", () => {
 
     expect(root.textContent).toMatch(/Sign-in could not be verified/u);
     expect(root.textContent).not.toMatch(/cancelled|attacker|Reference:/u);
-    expect(window.location.pathname + window.location.search).toBe("/login?keep=1&keep=2");
+    expect(window.location.pathname + window.location.search).toBe("/projects?keep=1&keep=2");
   });
 
   it("shows one validated reference after a failed callback and removes its parameters", async () => {
     window.history.replaceState(
       null,
       "",
-      "/login?keep=1&authError=authentication_failed&referenceId=safe_REF-42",
+      "/projects?keep=1&authError=authentication_failed&referenceId=safe_REF-42",
     );
     const { sessionGateway } = { sessionGateway: sessionBackend() };
     sessionGateway.backend.current = "signedOut";
-    const { root } = mountApplication({ sessionGateway: sessionGateway.gateway });
+    const { application, root } = mountApplication({ sessionGateway: sessionGateway.gateway });
     await flushPromises();
 
     expect(root.textContent).toMatch(/Reference: safe_REF-42/u);
-    expect(window.location.pathname + window.location.search).toBe("/login?keep=1");
+    expect(window.location.pathname + window.location.search).toBe("/projects?keep=1");
+    expect(application.router.currentRoute.value.fullPath).toBe("/projects?keep=1");
     expect(button(root, "Continue with Google")).not.toBeNull();
   });
 
-  it("lets a signed-in user reach Projects through visible navigation and return to recording", async () => {
+  it("renders unknown paths without bootstrapping private authentication", async () => {
+    window.history.replaceState(null, "", "/record?keep=1#fragment");
+    const authentication = sessionBackend();
+    const { root } = mountApplication({ sessionGateway: authentication.gateway });
+    await flushPromises();
+
+    expect(testId(root, "page-not-found")).not.toBeNull();
+    expect(authentication.backend.currentAttempts).toBe(0);
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe(
+      "/record?keep=1#fragment",
+    );
+  });
+
+  it("loads a direct opaque Project route and its compact navigation in parallel", async () => {
+    window.history.replaceState(null, "", "/projects/Opaque-ID/");
+    const reads: string[] = [];
+    const summary = {
+      id: "Opaque-ID",
+      title: "Canonical route title",
+      createdAt: "now",
+      updatedAt: "now",
+    };
+    const { root } = mountApplication({
+      projectsGateway: {
+        async listProjects() {
+          reads.push("list");
+          return [summary];
+        },
+        async getProjectDetail(projectId) {
+          reads.push(`detail:${projectId}`);
+          return { ...summary, document: { sections: [] } };
+        },
+        audioDownloadUrl: (id) => `/audio-assets/${id}/download`,
+      },
+    });
+    await flushPromises();
+
+    expect(reads).toEqual(["list", "detail:Opaque-ID"]);
+    expect(testId(root, "project-detail")?.getAttribute("data-project-id")).toBe("Opaque-ID");
+    expect(root.querySelector('[aria-current="page"]')?.textContent).toContain(
+      "Canonical route title",
+    );
+    expect(window.location.pathname).toBe("/projects/Opaque-ID/");
+    expect(globalThis.document.title).toBe("Canonical route title — Running Drafts");
+  });
+
+  it("keeps a rejected Project URL and renders the privacy-preserving state", async () => {
+    window.history.replaceState(null, "", "/projects/not-a-uuid");
+    const { root } = mountApplication({
+      projectsGateway: {
+        listProjects: async () => [],
+        getProjectDetail: async () => {
+          throw new ApiError("GET", "/projects/not-a-uuid", 404);
+        },
+        audioDownloadUrl: (id) => `/audio-assets/${id}/download`,
+      },
+    });
+    await flushPromises();
+
+    expect(testId(root, "project-not-found")).not.toBeNull();
+    expect(window.location.pathname).toBe("/projects/not-a-uuid");
+    expect(globalThis.document.title).toBe("Project not found — Running Drafts");
+  });
+
+  it("matches static paths case-sensitively", async () => {
+    window.history.replaceState(null, "", "/Projects");
+    const authentication = sessionBackend();
+    const { root } = mountApplication({ sessionGateway: authentication.gateway });
+    await flushPromises();
+
+    expect(testId(root, "page-not-found")).not.toBeNull();
+    expect(authentication.backend.currentAttempts).toBe(0);
+  });
+
+  it("renders Projects at the canonical root and opens Capture without changing history", async () => {
     const { root } = mountApplication();
     await flushPromises();
 
+    expect(window.location.pathname).toBe("/projects");
     expect(testId(root, "private-navigation")).not.toBeNull();
-    expect(testId(root, "recording-workspace")).not.toBeNull();
-    expect(testId(root, "projects-workspace")).toBeNull();
-
-    testId(root, "projects-view")!.click();
-    await flushPromises();
-    expect(testId(root, "recording-workspace")).toBeNull();
     expect(testId(root, "projects-workspace")).not.toBeNull();
     expect(root.textContent).toContain("No Projects yet.");
 
-    testId(root, "record-view")!.click();
+    await openNewCapture(root);
+    expect(window.location.pathname).toBe("/projects");
+    testId(root, "close-capture")!.click();
     await flushPromises();
-    expect(testId(root, "recording-workspace")).not.toBeNull();
-    expect(testId(root, "projects-workspace")).toBeNull();
+    expect(testId(root, "capture-modal")).toBeNull();
+    expect(window.location.pathname).toBe("/projects");
   });
 
-  it("hides navigation during focused recording and restores it after finalization", async () => {
-    const { root, captures } = mountApplication();
+  it("uses real Project links and focuses the routed heading on ordinary navigation", async () => {
+    window.history.replaceState(null, "", "/projects?keep=1#notes");
+    const summary = {
+      id: "project-link",
+      title: "Linked Project",
+      createdAt: "now",
+      updatedAt: "now",
+    };
+    const { root } = mountApplication({
+      projectsGateway: {
+        listProjects: async () => [summary],
+        getProjectDetail: async () => ({ ...summary, document: { sections: [] } }),
+        audioDownloadUrl: (id) => `/audio-assets/${id}/download`,
+      },
+    });
     await flushPromises();
+
+    const link = root.querySelector<HTMLAnchorElement>('[data-testid="project-list"] a')!;
+    expect(link.getAttribute("href")).toBe("/projects/project-link?keep=1#notes");
+    link.click();
+    await flushPromises();
+
+    expect(window.location.pathname).toBe("/projects/project-link");
+    expect(window.location.search + window.location.hash).toBe("?keep=1#notes");
+    expect(document.activeElement).toBe(root.querySelector("#project-detail-title"));
+  });
+
+  it("makes routed content inert while Capture is open and restores its trigger", async () => {
+    const { root } = mountApplication();
+    await flushPromises();
+    const trigger = testId(root, "new-recording")!;
+    trigger.focus();
+    trigger.click();
+    await flushPromises();
+
+    let background: HTMLElement | null = trigger;
+    let isInert = false;
+    while (background) {
+      isInert ||= background.inert;
+      background = background.parentElement;
+    }
+    expect(isInert).toBe(true);
+    expect(document.activeElement).toBe(testId(root, "close-capture"));
+    testId(root, "close-capture")!.click();
+    await flushPromises();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("keeps warning and Capture-alert actions inside the modal over one inert page copy", async () => {
+    const { application, root } = mountApplication();
+    await flushPromises();
+    await openNewCapture(root);
+
+    application.allowanceFeedback.play("storage");
+    application.alerts.raise({ kind: "unrequested-capture-stop", sectionId: "attention" });
+    await flushPromises();
+
+    const dialog = root.querySelector<HTMLElement>('[role="dialog"]')!;
+    const feedbackLayer = root.querySelector<HTMLElement>(".global-feedback-layer")!;
+    expect(feedbackLayer.inert).toBe(true);
+    expect(root.querySelectorAll('[data-testid="capture-alerts"]')).toHaveLength(2);
+    expect(button(dialog, "Stop warning sound")).not.toBeNull();
+    expect(button(dialog, "Acknowledge")).not.toBeNull();
+
+    button(dialog, "Stop warning sound")!.click();
+    button(dialog, "Acknowledge")!.click();
+    await flushPromises();
+    expect(application.allowanceFeedback.active.value).toBe(false);
+    expect(application.alerts.alerts.value).toEqual([]);
+  });
+
+  it("keeps routed context inert behind focused Capture and closes after finalization", async () => {
+    const { application, root, captures } = mountApplication();
+    await flushPromises();
+    await openNewCapture(root);
     testId(root, "start")!.click();
     await flushPromises();
 
-    expect(testId(root, "private-navigation")).toBeNull();
-    expect(testId(root, "projects-workspace")).toBeNull();
-    expect(root.textContent).not.toContain("Backend health");
-    expect(root.textContent).not.toContain("Development tools");
+    expect(testId(root, "private-navigation")).not.toBeNull();
+    expect(testId(root, "capture-modal")).not.toBeNull();
+    expect(root.textContent).toContain("Backend health");
+    const blocked = application.router.push({
+      name: "project-detail",
+      params: { projectId: "another" },
+    });
+    await flushPromises();
+    expect(window.location.pathname).toBe("/projects");
+    await blocked;
     testId(root, "start")!.click();
     await flushPromises();
     expect(captures).toHaveLength(1);
     expect(captures[0]!.disposed).toBe(true);
+    expect(testId(root, "capture-modal")).toBeNull();
+    expect(window.location.pathname).toBe("/projects/project-a");
     expect(testId(root, "private-navigation")).not.toBeNull();
-    expect(root.textContent).toContain("Backend health");
   });
 
   it("drops private Project data when the user signs out", async () => {
     const { application, root } = mountApplication();
-    await flushPromises();
-    testId(root, "projects-view")!.click();
     await flushPromises();
 
     await application.session.logout();
     await flushPromises();
     expect(testId(root, "private-navigation")).toBeNull();
     expect(testId(root, "projects-workspace")).toBeNull();
-    expect(application.projects.view.value).toEqual({ kind: "empty" });
+    expect(application.projects.list.value).toEqual({ kind: "idle" });
+    expect(application.projects.detail.value).toEqual({ kind: "idle" });
   });
 
   it("confirms destructive logout and clears pending work before the server responds", async () => {
@@ -398,6 +566,7 @@ describe("application", () => {
     });
     backend.logouts.push(pendingLogout.promise);
     await flushPromises();
+    await openNewCapture(root);
     testId(root, "start")!.click();
     await flushPromises();
     captures[0]!.emit({
@@ -428,6 +597,7 @@ describe("application", () => {
   it("reuses authentication loss for Account suspension and retains pending audio", async () => {
     const { application, root, captures, recordingGateway } = mountApplication();
     await flushPromises();
+    await openNewCapture(root);
     testId(root, "start")!.click();
     await flushPromises();
     captures[0]!.emit({
@@ -451,7 +621,8 @@ describe("application", () => {
     expect(application.recording.hasRetainedWork.value).toBe(true);
     expect(application.recording.snapshot.value.sections[0]!.canUploadPending).toBe(false);
     expect(application.usage.snapshot.value).toBeNull();
-    expect(application.projects.view.value).toEqual({ kind: "empty" });
+    expect(application.projects.list.value).toEqual({ kind: "idle" });
+    expect(application.projects.detail.value).toEqual({ kind: "idle" });
   });
 });
 
@@ -472,6 +643,7 @@ it("keeps Capture alerts across views, new Capture, and sign-out until explicit 
     },
   });
   await flushPromises();
+  await openNewCapture(root);
   testId(root, "start")!.click();
   await flushPromises();
   const focused = document.activeElement;
@@ -480,11 +652,10 @@ it("keeps Capture alerts across views, new Capture, and sign-out until explicit 
   expect(testId(root, "capture-alerts")).not.toBeNull();
   expect(document.activeElement).toBe(focused);
   expect(starts).toBe(1);
-  testId(root, "projects-view")!.click();
-  await flushPromises();
   expect(testId(root, "capture-alerts")).not.toBeNull();
-  testId(root, "record-view")!.click();
+  testId(root, "close-capture")!.click();
   await flushPromises();
+  await openNewCapture(root);
   testId(root, "start")!.click();
   await flushPromises();
   expect(application.recording.snapshot.value.capturing).toBe(true);
@@ -499,6 +670,7 @@ it("keeps Capture alerts across views, new Capture, and sign-out until explicit 
 it("offers takeover when an earlier Capture is stuck finalizing, and keeps Capture alerts independent", async () => {
   const { root, application, captures } = mountApplication();
   await flushPromises();
+  await openNewCapture(root);
   testId(root, "start")!.click();
   await flushPromises();
   // A stale finalization promise must not prevent the user's explicit takeover.
@@ -508,7 +680,11 @@ it("offers takeover when an earlier Capture is stuck finalizing, and keeps Captu
   expect(application.recording.snapshot.value.sections[0]!.finalizingCapture).toBe(true);
   testId(root, "start")!.click();
   await flushPromises();
-  expect(root.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(root.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  const takeoverPrompt = root.querySelector<HTMLElement>(".microphone-prompt")!;
+  expect(takeoverPrompt.closest('[role="dialog"]')).not.toBeNull();
+  expect(testId(root, "start")!.closest("[inert]")).not.toBeNull();
+  expect(document.activeElement).toBe(button(root, "Cancel"));
   button(root, "Cancel")!.click();
   await flushPromises();
   expect(captures).toHaveLength(1);
@@ -523,7 +699,8 @@ it("offers takeover when an earlier Capture is stuck finalizing, and keeps Captu
   expect(application.recording.snapshot.value.capturing).toBe(true);
   expect(application.recording.snapshot.value.sections[0]!.finalizingCapture).toBe(false);
   expect(application.alerts.alerts.value).toHaveLength(1);
-  expect(root.querySelector('[role="dialog"]')).toBeNull();
+  expect(button(root, "Stop previous Capture and start new")).toBeNull();
+  expect(testId(root, "capture-modal")).not.toBeNull();
 });
 
 it("plays completion when a signed-out Account's last retained Section seals", async () => {
@@ -539,6 +716,7 @@ it("plays completion when a signed-out Account's last retained Section seals", a
     },
   });
   await flushPromises();
+  await openNewCapture(root);
   testId(root, "start")!.click();
   await flushPromises();
   captures[0]!.emit({

@@ -145,4 +145,85 @@ describe("Capture scenario workbench", () => {
     expect(wrapper.find('[data-testid="capture-alerts"]').exists()).toBe(true);
     wrapper.unmount();
   });
+
+  it("runs a successful story through the real modal experience", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("AudioContext", Audio);
+    const wrapper = mount(CaptureScenarioWorkbench, {
+      attachTo: document.body,
+      props: { scenarioKind: "short", reviewMode: "experience", ...common },
+    });
+    await flushPromises();
+
+    const trigger = wrapper.get(".experience-shell button");
+    expect(trigger.text()).toBe("New recording");
+    await trigger.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="capture-modal"]').exists()).toBe(true);
+    expect(wrapper.find(".arranged-production").exists()).toBe(false);
+    const shell = wrapper.get(".experience-shell").element;
+    let background: HTMLElement | null = shell instanceof HTMLElement ? shell : null;
+    let isInert = false;
+    while (background) {
+      isInert ||= background.inert;
+      background = background.parentElement;
+    }
+    expect(isInert).toBe(true);
+
+    await wrapper.get('[data-testid="capture-modal"]').trigger("keydown", { key: "Escape" });
+    expect(wrapper.find('[data-testid="capture-modal"]').exists()).toBe(true);
+
+    await vi.runAllTimersAsync();
+    await settle();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="capture-modal"]').exists()).toBe(false);
+    expect(wrapper.get("#experience-projects-title").text()).toBe("Simulated Capture");
+    expect(wrapper.get(".experience-shell button").text()).toBe("Replay scenario");
+    wrapper.unmount();
+  });
+
+  it("keeps a failed Capture in the modal for review", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("AudioContext", Audio);
+    const wrapper = mount(CaptureScenarioWorkbench, {
+      attachTo: document.body,
+      props: { scenarioKind: "finalization", reviewMode: "experience", ...common },
+    });
+    await flushPromises();
+    await wrapper.get(".experience-shell button").trigger("click");
+    await vi.runAllTimersAsync();
+    await settle();
+    await flushPromises();
+
+    const modal = wrapper.get('[data-testid="capture-modal"]');
+    expect(wrapper.text()).toContain("Capture finalization failed");
+    expect(modal.findAll("button").some((button) => button.text() === "Acknowledge")).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps the warning-sound action inside the Storybook modal experience", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("AudioContext", Audio);
+    const wrapper = mount(CaptureScenarioWorkbench, {
+      attachTo: document.body,
+      props: { scenarioKind: "allowance-overlap", reviewMode: "experience", ...common },
+    });
+    await flushPromises();
+    await wrapper.get(".experience-shell button").trigger("click");
+    await vi.runAllTimersAsync();
+    await settle();
+    await flushPromises();
+
+    const modal = wrapper.get('[data-testid="capture-modal"]');
+    const stopSound = modal
+      .findAll("button")
+      .find((button) => button.text() === "Stop warning sound");
+    expect(stopSound).toBeDefined();
+    await stopSound!.trigger("click");
+    expect(modal.findAll("button").some((button) => button.text() === "Stop warning sound")).toBe(
+      false,
+    );
+    wrapper.unmount();
+  });
 });

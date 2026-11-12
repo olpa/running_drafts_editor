@@ -337,6 +337,7 @@ export function createLabScenario(options: {
     alerts: options.alerts,
     usage,
     allowanceFeedback,
+    microphoneAccess: access,
     config,
     manual,
     scheduler,

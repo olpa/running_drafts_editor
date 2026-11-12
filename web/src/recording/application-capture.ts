@@ -73,6 +73,10 @@ export interface ApplicationCapture {
   readonly ownsCurrentSession: Readonly<Ref<boolean>>;
   readonly focused: Readonly<Ref<boolean>>;
   readonly allowanceWarnings: Readonly<Ref<AllowanceWarningView>>;
+  /** Prepare an idle modal workspace for a new or existing Project. */
+  prepare(projectId?: string): boolean;
+  /** Release an idle modal workspace. Active or pending work refuses release. */
+  release(): boolean;
   setSessionAccount(accountId: AccountId | null): void;
   /** Stop when capturing; otherwise start if the Session and Account allow it. */
   toggle(): void;
@@ -95,6 +99,10 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
   const logView = shallowRef<LogView>({ lines: [], cursor: 0 });
   let log = new RadarLog(config.logColumns, config.logRows, config.logGapChars);
   let stopHandover: (() => void) | null = null;
+  // Keep an idle unbound recorder ready for existing module consumers. Preparing the
+  // Capture modal replaces it with the selected Project context before any audio starts.
+  let workspaceOpen = true;
+  let targetProjectId = options.projectId;
 
   const snapshot = computed(() => recorder.value?.snapshot.value ?? IDLE_SNAPSHOT);
   const hasRecorder = computed(() => recorder.value !== null);
@@ -169,7 +177,7 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
 
   function startRecorder(accountId: AccountId): void {
     moduleAccountId.value = accountId;
-    const context = options.projectId ? { accountId, projectId: options.projectId } : { accountId };
+    const context = targetProjectId ? { accountId, projectId: targetProjectId } : { accountId };
     const created: Project = createProject(config, environment, context, {
       event(sectionId, event) {
         if (event.type === "transportFrameCaptured") {
@@ -237,11 +245,26 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
     ownsCurrentSession,
     focused,
     allowanceWarnings,
+    prepare(projectId) {
+      if (focused.value || hasRetainedWork.value) return false;
+      workspaceOpen = true;
+      targetProjectId = projectId;
+      resetRecorder();
+      if (sessionAccountId.value) startRecorder(sessionAccountId.value);
+      return true;
+    },
+    release() {
+      if (focused.value || hasRetainedWork.value) return false;
+      workspaceOpen = false;
+      targetProjectId = undefined;
+      resetRecorder();
+      return true;
+    },
     setSessionAccount(accountId) {
       sessionAccountId.value = accountId;
       const current = recorder.value;
       if (!current) {
-        if (accountId) startRecorder(accountId);
+        if (accountId && workspaceOpen) startRecorder(accountId);
         return;
       }
       if (accountId && accountId === moduleAccountId.value) {
@@ -257,7 +280,7 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
         return;
       }
       resetRecorder();
-      if (accountId) startRecorder(accountId);
+      if (accountId && workspaceOpen) startRecorder(accountId);
     },
     toggle() {
       const current = recorder.value;
@@ -281,6 +304,8 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
     },
     clearLog,
     discardAll() {
+      workspaceOpen = false;
+      targetProjectId = undefined;
       resetRecorder();
       clearLog();
     },

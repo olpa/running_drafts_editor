@@ -16,7 +16,10 @@ export const modalFocus: ObjectDirective<HTMLElement, () => void> = {
       current = current.parentElement;
       if (current === document.body) break;
     }
-    const buttons = () => [...element.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+    const buttons = () =>
+      [...element.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")].filter(
+        (button) => !button.closest("[inert]"),
+      );
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -38,7 +41,11 @@ export const modalFocus: ObjectDirective<HTMLElement, () => void> = {
     cleanups.set(element, () => {
       element.removeEventListener("keydown", keydown);
       for (const item of blocked) item.element.inert = item.inert;
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+      if (previous instanceof HTMLElement && previous.isConnected) {
+        previous.focus();
+        return;
+      }
+      document.querySelector<HTMLElement>('h1[tabindex="-1"], h2[tabindex="-1"]')?.focus();
     });
   },
   unmounted(element) {
