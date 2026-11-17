@@ -122,7 +122,17 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
     onAccountSuspended: () =>
       session.requireLogin("Your Account is unavailable. Contact support for help."),
   });
-  const projects = createProjects(adapters.projectsGateway ?? createProjectsGateway(api));
+  const projects = createProjects(
+    adapters.projectsGateway ?? createProjectsGateway(api),
+    undefined,
+    {
+      signInAgain: () => {
+        const state = session.state.value;
+        if (state.status === "signedIn") session.login(state.session.provider.key);
+      },
+      logPlayback: (entry) => console.info("audio-playback", entry),
+    },
+  );
   const health = createHealth(adapters.healthGateway ?? createHealthGateway());
   const router = adapters.router ?? createEditorRouter();
 

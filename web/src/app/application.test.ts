@@ -147,6 +147,8 @@ function mountApplication(adapters: ApplicationAdapters = {}) {
         document: { sections: [] },
       }),
       audioDownloadUrl: (id) => `https://api.example.test/audio-assets/${id}/download`,
+      resolvePlaybackUrl: async (id) => `https://api.example.test/audio-assets/${id}/snapshot`,
+      probePlayback: async () => ({ status: 206, referenceId: null }),
     } satisfies ProjectsGateway,
     healthGateway: { check: async () => Promise.reject(new Error("unused")) },
     usageGateway: {
@@ -387,6 +389,8 @@ describe("application", () => {
           return { ...summary, document: { sections: [] } };
         },
         audioDownloadUrl: (id) => `/audio-assets/${id}/download`,
+        resolvePlaybackUrl: async (id) => `/audio-assets/${id}/snapshot`,
+        probePlayback: async () => ({ status: 206, referenceId: null }),
       },
     });
     await flushPromises();
@@ -409,6 +413,8 @@ describe("application", () => {
           throw new ApiError("GET", "/projects/not-a-uuid", 404);
         },
         audioDownloadUrl: (id) => `/audio-assets/${id}/download`,
+        resolvePlaybackUrl: async (id) => `/audio-assets/${id}/snapshot`,
+        probePlayback: async () => ({ status: 206, referenceId: null }),
       },
     });
     await flushPromises();
@@ -458,6 +464,8 @@ describe("application", () => {
         listProjects: async () => [summary],
         getProjectDetail: async () => ({ ...summary, document: { sections: [] } }),
         audioDownloadUrl: (id) => `/audio-assets/${id}/download`,
+        resolvePlaybackUrl: async (id) => `/audio-assets/${id}/snapshot`,
+        probePlayback: async () => ({ status: 206, referenceId: null }),
       },
     });
     await flushPromises();

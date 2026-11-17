@@ -1,4 +1,4 @@
-import type { ApiRequester } from "../shared/http.ts";
+import { ApiError, readProblemDetails, type ApiRequester } from "../shared/http.ts";
 import type { AudioAssetSummary, ProjectSummary } from "../shared/project-types.ts";
 
 export interface SectionSummary {
@@ -11,14 +11,42 @@ export interface ProjectDetail extends ProjectSummary {
   document: { sections: SectionSummary[] };
 }
 
+export interface PlaybackProbeResult {
+  status: number;
+  referenceId: string | null;
+}
+
 /** Backend reads the Project browser needs. */
 export interface ProjectsGateway {
   listProjects(): Promise<ProjectSummary[]>;
   getProjectDetail(projectId: string): Promise<ProjectDetail>;
   audioDownloadUrl(audioAssetId: string): string;
+  resolvePlaybackUrl(audioAssetId: string, signal: AbortSignal): Promise<string>;
+  probePlayback(url: string, signal: AbortSignal): Promise<PlaybackProbeResult>;
 }
 
-export function createProjectsGateway(api: ApiRequester): ProjectsGateway {
+export function createProjectsGateway(
+  api: ApiRequester,
+  request: typeof fetch = fetch.bind(window),
+): ProjectsGateway {
+  async function playbackRequest(
+    method: "HEAD" | "GET",
+    url: string,
+    signal: AbortSignal,
+    headers?: HeadersInit,
+  ): Promise<Response> {
+    const init: RequestInit = {
+      method,
+      credentials: "include",
+      redirect: "follow",
+      signal,
+    };
+    if (headers) init.headers = headers;
+    const response = await request(url, init);
+    if (response.ok) return response;
+    throw new ApiError(method, url, response.status, await readProblemDetails(response));
+  }
+
   return {
     async listProjects() {
       const result = await api.json<{ projects: ProjectSummary[] }>("GET", "/projects");
@@ -27,5 +55,17 @@ export function createProjectsGateway(api: ApiRequester): ProjectsGateway {
     getProjectDetail: (projectId) => api.json("GET", `/projects/${encodeURIComponent(projectId)}`),
     audioDownloadUrl: (audioAssetId) =>
       api.url(`/audio-assets/${encodeURIComponent(audioAssetId)}/download`),
+    async resolvePlaybackUrl(audioAssetId, signal) {
+      const latest = api.url(`/audio-assets/${encodeURIComponent(audioAssetId)}/playback/latest`);
+      const response = await playbackRequest("HEAD", latest, signal);
+      return response.url || latest;
+    },
+    async probePlayback(url, signal) {
+      const response = await playbackRequest("GET", url, signal, { Range: "bytes=0-0" });
+      return {
+        status: response.status,
+        referenceId: null,
+      };
+    },
   };
 }
