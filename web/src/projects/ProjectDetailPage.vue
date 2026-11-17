@@ -4,6 +4,7 @@ import { RouterLink, useRoute } from "vue-router";
 import { formatDateTime } from "../shared/format.ts";
 import type { AudioAssetSummary } from "../shared/project-types.ts";
 import { useProjects } from "./projects.ts";
+import SectionAudioPlayer from "./SectionAudioPlayer.vue";
 
 const props = defineProps<{ projectId: string }>();
 defineEmits<{ recordMore: [projectId: string] }>();
@@ -88,6 +89,11 @@ watchEffect(() => {
           <h3>Section {{ section.position + 1 }}</h3>
           <p>{{ assetState(section.audioAsset) }}</p>
           <p class="diagnostics">{{ assetDiagnostics(section.audioAsset) }}</p>
+          <SectionAudioPlayer
+            :audio-asset-id="section.audioAsset.id"
+            :frame-count="section.audioAsset.frameCount"
+            :section-number="section.position + 1"
+          />
           <a
             v-if="section.audioAsset.isSealed"
             class="download-control"

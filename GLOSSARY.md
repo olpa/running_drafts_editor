@@ -54,9 +54,16 @@ continuous recorder run. It receives that stream's ordered transport frames.
 Ending browser capture does not itself seal the Audio Asset; a later recorder
 run creates a new Section and Audio Asset.
 
+**Playback snapshot**:
+An immutable playable view of one Audio Asset through a specific acknowledged
+transport-frame count. It excludes audio still retained only by the browser and
+does not grow when the Audio Asset acknowledges later frames.
+_Avoid_: Live stream, playback file, latest audio.
+
 These definitions follow product ADRs 0003, “Model a project as one document
-composed of sections,” and 0005, “Treat each MediaRecorder run as one immutable
-audio stream,” in `running_drafts_product`.
+composed of sections,” 0005, “Treat each MediaRecorder run as one immutable
+audio stream,” and 0010, “Serve playback as virtual immutable snapshots,” in
+`running_drafts_product`.
 
 **Recording**:
 The complete original audio opened for transcription and editing.

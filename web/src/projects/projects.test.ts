@@ -17,6 +17,8 @@ function fakeGateway(overrides: Partial<ProjectsGateway> = {}): ProjectsGateway 
     listProjects: async () => [detail],
     getProjectDetail: async () => detail,
     audioDownloadUrl: (id) => `https://api.example.test/audio-assets/${id}/download`,
+    resolvePlaybackUrl: async (id) => `https://api.example.test/audio-assets/${id}/snapshot`,
+    probePlayback: async () => ({ status: 206, referenceId: null }),
     ...overrides,
   };
 }

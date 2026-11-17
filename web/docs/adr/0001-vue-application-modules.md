@@ -6,9 +6,10 @@ status: accepted
 
 The browser application is a Vue 3 application written with the Composition
 API. All state and behavior live in factory-created application modules
-(`createSession`, `createApplicationCapture`, `createProjects`, `createHealth`), not in
-components. Each module takes its external gateways (HTTP, microphone, clock,
-page location) as plain arguments. One composition root, `src/app/application.ts`,
+(`createSession`, `createApplicationCapture`, `createProjects`,
+`createSectionPlayback`, `createHealth`), not in components. Each module takes
+its external gateways (HTTP, microphone, clock, page location) as plain
+arguments. One composition root, `src/app/application.ts`,
 creates the production adapters and modules and provides the finished modules to
 components through typed `InjectionKey`s. Components inject modules; they never
 call HTTP or browser APIs directly.
@@ -27,6 +28,9 @@ ownership into Application -> Project(s) -> Section(s) -> `CaptureAndDelivery`.
 Section's `CaptureAndDelivery` coordinates Capture and delivery. The composition
 root owns the shared `MicrophoneAccess` and application-lifetime `CaptureAlerts`.
 Application disposal releases these resources; removing a workspace view does not.
+By contrast, [ADR 0005](0005-use-native-audio-for-playback-snapshots.md) keeps
+each playback module local to its mounted Section because it owns no retained
+audio and intentionally resets with the page view.
 
 There is no Pinia store. Reconsider it when several independent Vue branches must
 change or react to the same long-lived state, when forwarding layers appear, or

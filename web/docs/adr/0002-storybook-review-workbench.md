@@ -41,6 +41,14 @@ a reasonable deterministic fake. Real waits may last at most three seconds;
 longer behavior advances through an injected clock or scheduler rather than
 patched browser globals.
 
+When a browser-owned resource such as native media cannot use an in-memory
+application gateway for its follow-up requests, a story may provide a
+deterministic same-origin development-server endpoint. Keep that endpoint out
+of production, fail closed instead of reaching a live service, and continue to
+drive product state through the production module and browser adapter. Inspect
+native browser requests with browser network tooling; do not add diagnostic
+requests merely to mirror that traffic into the story.
+
 User-visible frontend work should normally include a reproducible **Manual
 review** handoff when ready for human review. Give ordinary application steps
 when the state is quick and repeatable to reach. Add or update a story when the

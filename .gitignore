@@ -5,6 +5,7 @@
 
 # Local recordings and model assets
 *.wav
+!web/e2e/fixtures/*.wav
 *.bin
 *.onnx
 *.pt
