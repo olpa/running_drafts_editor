@@ -49,6 +49,7 @@ export interface SectionSnapshot {
   readonly completionProblem: string;
   readonly canRetryCompletion: boolean;
   readonly problem: string;
+  readonly diagnosticDetails: readonly string[];
   readonly canUploadPending: boolean;
   readonly closeProblem: string;
   readonly canRetryClose: boolean;

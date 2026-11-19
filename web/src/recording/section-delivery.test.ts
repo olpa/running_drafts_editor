@@ -156,6 +156,23 @@ describe("SectionDelivery", () => {
     assert.equal(sent.length, 0);
   });
 
+  it("preserves a finalization failure through pending-audio recovery and sealing", async () => {
+    const { delivery, sent, calls } = harness();
+    delivery.accept(frame(0));
+    delivery.captureStopping("user");
+    delivery.captureFailedToFinalize("Capture was interrupted while finalizing.");
+
+    assert.equal(delivery.view.value.canUploadPending, true);
+    delivery.requestUpload();
+    assert.match(delivery.view.value.problem, /interrupted while finalizing/u);
+    sent[1]!.result.resolve(ack(0));
+    await settle();
+
+    assert.equal(calls.interrupt, 1);
+    assert.match(delivery.view.value.problem, /interrupted while finalizing/u);
+    assert.equal(delivery.view.value.awaitingSeal, false);
+  });
+
   it("treats a frame conflict as terminal and keeps every byte", async () => {
     const { delivery, sent, calls, logs } = harness();
     delivery.accept(frame(0));
@@ -168,8 +185,12 @@ describe("SectionDelivery", () => {
     );
     await settle();
     assert.deepEqual(calls.stops, ["conflict"]);
-    assert.match(delivery.view.value.problem, /Title: Frame conflict/);
-    assert.match(delivery.view.value.problem, /Reference ID: ref-1/);
+    assert.match(delivery.view.value.problem, /conflicted with stored data/u);
+    assert.deepEqual(delivery.view.value.diagnosticDetails, [
+      "Title: Frame conflict",
+      "Code: frame_conflict",
+      "Reference ID: ref-1",
+    ]);
     assert.ok(logs.some((line) => line.includes("HTTP 409 code=frame_conflict referenceId=ref-1")));
 
     delivery.captureStopping("conflict");
@@ -201,8 +222,15 @@ describe("SectionDelivery", () => {
     assert.deepEqual(calls.stops, ["hard"]);
     assert.deepEqual(calls.allowances, ["storage"]);
     assert.equal(delivery.view.value.pendingFrames, 1);
-    assert.match(delivery.view.value.problem, /Type: https:\/\/example\.test/u);
-    assert.match(delivery.view.value.problem, /Status: 429/u);
+    assert.deepEqual(delivery.view.value.diagnosticDetails, [
+      "Type: https://example.test/problems/audio-storage-limit",
+      "Title: Storage allowance exceeded",
+      "Status: 429",
+      "Detail: The frame would exceed the effective allowance.",
+      "Instance: /api/v1/audio-assets/asset/frames/0",
+      "Code: audio_storage_limit_exceeded",
+      "Reference ID: ref-storage",
+    ]);
 
     delivery.captureStopping("hard");
     delivery.captureEnded("hard");

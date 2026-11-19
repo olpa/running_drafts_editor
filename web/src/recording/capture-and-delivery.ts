@@ -238,6 +238,7 @@ export function createCaptureAndDelivery(options: {
       completionProblem: delivered?.completionProblem ?? "",
       canRetryCompletion: delivered?.canRetryCompletion ?? false,
       problem: delivered?.problem ?? "",
+      diagnosticDetails: delivered?.diagnosticDetails ?? [],
       canUploadPending: delivered?.canUploadPending ?? false,
       closeProblem: delivered?.closeProblem ?? "",
       canRetryClose: delivered?.canRetryClose ?? false,

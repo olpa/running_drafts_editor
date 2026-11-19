@@ -234,12 +234,13 @@ fixed automatic retry behavior instead of showing allowance or Plan messaging.
 - Each frame secured while its Section is actively capturing plays **Triangle
   cadence** immediately. Older stopped Sections and final partial frames
   do not play healthy heartbeats.
-- Each frame still unsecured at its deadline raises an identified Capture alert
-  and immediately shows its elapsed whole seconds, beginning with **Saving audio
-  is delayed by 2 seconds.** The line updates once per second. Each new overdue
-  line is announced politely;
-  elapsed-second updates stay silent. Securing the frame clears its line and its
-  matching alert, even for a final frame or an older stopped Section.
+- Each frame still unsecured at its deadline raises an identified Capture alert.
+  The Capture modal consolidates active overdue frames into **Saving audio is
+  delayed. Capture continues.** and prints the pending piece count and oldest
+  current delay beneath it. The initial warning is announced; routine detail
+  updates stay silent. Securing a frame clears its matching alert, even for a
+  final frame or an older stopped Section. Independent alert identities remain
+  internal and do not create duplicate Section delay lines.
 - User-requested stop is silent. **Four-note triangle cadence** plays after the
   backend confirms Audio Asset sealing only when that Section has no unresolved
   Capture integrity failure. Acknowledgement does not turn a problematic stop

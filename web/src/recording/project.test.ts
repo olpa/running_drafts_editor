@@ -343,7 +343,10 @@ it("failed graceful finalization interrupts the Section instead of completing it
       (event) => event.type === "log" && event.message.includes("interrupted while finalizing"),
     ),
   );
-  assert.equal(controller.snapshot.value.sections[0]!.completion, null);
+  const section = controller.snapshot.value.sections[0]!;
+  assert.equal(section.completion, null);
+  assert.match(section.problem, /interrupted while finalizing/u);
+  assert.equal(section.awaitingSeal, false);
   assert.equal(cues().filter((cue) => cue === "problem").length, 1);
 });
 
@@ -571,10 +574,12 @@ it("frame conflict terminally retains the Section and permits an independent new
     conflicted.problem,
     /Capture stopped because audio delivery conflicted with stored data/u,
   );
-  assert.match(conflicted.problem, /Title: Frame conflict/u);
-  assert.match(conflicted.problem, /Detail: Sequence 0 differs from stored audio\./u);
-  assert.match(conflicted.problem, /Code: frame_conflict/u);
-  assert.match(conflicted.problem, /Reference ID: conflict_REF-42/u);
+  assert.deepEqual(conflicted.diagnosticDetails, [
+    "Title: Frame conflict",
+    "Detail: Sequence 0 differs from stored audio.",
+    "Code: frame_conflict",
+    "Reference ID: conflict_REF-42",
+  ]);
 
   backend.resolveRequest(1);
   await settle();
@@ -632,7 +637,8 @@ it("an allowance rejection stops Capture and retains the rejected and final fram
   assert.equal(stopped.pendingMs, 2_000);
   assert.equal(stopped.canUploadPending, true);
   assert.equal(controller.snapshot.value.canStart, true);
-  assert.match(stopped.problem, /Storage allowance exceeded/u);
+  assert.match(stopped.problem, /storage allowance rejected this audio/u);
+  assert.ok(stopped.diagnosticDetails.includes("Title: Storage allowance exceeded"));
   assert.ok(
     events.some((event) => event.type === "event" && event.event.type === "allowanceRejected"),
   );

@@ -21,6 +21,7 @@ function snapshot(overrides: Partial<SectionSnapshot> = {}): SectionSnapshot {
     completionProblem: "",
     canRetryCompletion: false,
     problem: "",
+    diagnosticDetails: [],
     canUploadPending: false,
     closeProblem: "",
     canRetryClose: false,
@@ -31,29 +32,34 @@ function snapshot(overrides: Partial<SectionSnapshot> = {}): SectionSnapshot {
 }
 
 describe("SectionCard", () => {
-  it("renders a semantic Section and updates its completion lifecycle in place", async () => {
+  it("hides a Section with no visible work or outcome", () => {
     const wrapper = mount(SectionCard, { props: { section: snapshot() } });
-    const root = wrapper.element;
-    const liveStatus = wrapper.get("[role=status]").element;
 
-    expect(root.localName).toBe("section");
-    expect(wrapper.attributes("data-testid")).toBe("section");
-    expect(wrapper.attributes("data-completion")).toBeUndefined();
-    expect(wrapper.get("h3").text()).toBe("Section 1");
+    expect(wrapper.find('[data-testid="section"]').exists()).toBe(false);
+  });
+
+  it("hides a healthy Section and reveals it while Capture is finishing", async () => {
+    const wrapper = mount(SectionCard, {
+      props: { section: snapshot({ capturing: true, pendingMs: 2_000, pendingFrames: 1 }) },
+    });
+
+    expect(wrapper.find('[data-testid="section"]').exists()).toBe(false);
 
     await wrapper.setProps({
-      section: snapshot({ completion: "pending", pendingMs: 2_000, pendingFrames: 1 }),
+      section: snapshot({ finalizingCapture: true, pendingMs: 2_000, pendingFrames: 1 }),
     });
-    expect(wrapper.element).toBe(root);
-    expect(wrapper.get("[role=status]").element).toBe(liveStatus);
-    expect(wrapper.attributes("data-completion")).toBe("pending");
-    expect(wrapper.text()).toContain("2 seconds of audio pending");
-    expect(wrapper.text()).toContain("Completing recording…");
+
+    expect(wrapper.get('[data-testid="section"]').element.localName).toBe("section");
+    expect(wrapper.get("h3").text()).toBe("Section 1");
+    expect(wrapper.get("[role=status]").text()).toBe("Finishing capture…");
+
+    await wrapper.setProps({
+      section: snapshot({ completion: "pending", awaitingSeal: true }),
+    });
+    expect(wrapper.get("[role=status]").text()).toBe("Completing recording…");
 
     await wrapper.setProps({ section: snapshot({ completion: "succeeded" }) });
-    expect(wrapper.attributes("data-completion")).toBe("succeeded");
-    expect(wrapper.text()).toContain("Recording complete");
-    expect(wrapper.get("[role=status]").classes()).toContain("success");
+    expect(wrapper.find('[data-testid="section"]').exists()).toBe(false);
   });
 
   it("separates a retryable completion problem from its action", async () => {
@@ -68,7 +74,10 @@ describe("SectionCard", () => {
     });
 
     expect(wrapper.attributes("data-completion")).toBe("failed");
-    expect(wrapper.get("[role=status]").text()).toBe("Could not complete recording.");
+    expect(wrapper.get('[data-testid="completion-problem"]').text()).toBe(
+      "Could not complete recording.",
+    );
+    expect(wrapper.get('[data-testid="completion-problem"]').attributes("role")).toBeUndefined();
     const retry = wrapper.get("button");
     expect(retry.text()).toBe("Try again");
     expect(retry.attributes("aria-label")).toBe("Try completing Section 1 again");
@@ -99,48 +108,62 @@ describe("SectionCard", () => {
     expect(wrapper.emitted("uploadPending")).toHaveLength(1);
     expect(await axe(wrapper.element as HTMLElement)).toHaveNoViolations();
   });
+
+  it("prints backend diagnostics after the plain failure without announcing it twice", () => {
+    const wrapper = mount(SectionCard, {
+      props: {
+        section: snapshot({
+          problem: "Audio delivery stopped because stored data conflicted.",
+          diagnosticDetails: [
+            "Type: https://running-drafts.example/problems/frame-conflict",
+            "Status: 409",
+            "Code: frame_conflict",
+            "Reference ID: ref-121",
+          ],
+        }),
+      },
+    });
+
+    expect(wrapper.get('[data-testid="section-problem"]').text()).toBe(
+      "Audio delivery stopped because stored data conflicted.",
+    );
+    expect(wrapper.get('[data-testid="section-problem"]').attributes("role")).toBeUndefined();
+    expect(wrapper.findAll('[data-testid="problem-detail"]')).toHaveLength(4);
+    expect(wrapper.text()).toContain("Reference ID: ref-121");
+  });
+
+  it("keeps an interruption sealing failure beside its retry action", async () => {
+    const wrapper = mount(SectionCard, {
+      props: {
+        section: snapshot({
+          closeProblem: "Could not close recording: Service unavailable",
+          canRetryClose: true,
+        }),
+      },
+    });
+
+    expect(wrapper.get('[data-testid="close-problem"]').text()).toBe(
+      "Could not close recording: Service unavailable",
+    );
+    await wrapper.get("button").trigger("click");
+    expect(wrapper.emitted("retryClose")).toHaveLength(1);
+  });
 });
 
-it("keeps one silent visual counter and one stable announcement per overdue frame", async () => {
+it("does not repeat modal-level delivery-delay details in a Section", () => {
   const wrapper = mount(SectionCard, {
-    props: { section: snapshot({ overdueFrames: [{ frameId: 0, elapsedSeconds: 2 }] }) },
+    props: {
+      section: snapshot({
+        overdueFrames: [{ frameId: 0, elapsedSeconds: 7 }],
+        pendingMs: 5_000,
+        pendingFrames: 1,
+        problem: "Capture was interrupted because audio could not be uploaded.",
+        canUploadPending: true,
+      }),
+    },
   });
-  const firstAnnouncement = wrapper.get(".frame-delay [role=status]").element;
-  expect(wrapper.get('[data-testid="frame-delay"]').text()).toBe(
-    "Saving audio is delayed by 2 seconds.",
-  );
-  await wrapper.setProps({
-    section: snapshot({
-      overdueFrames: [
-        { frameId: 0, elapsedSeconds: 3 },
-        { frameId: 1, elapsedSeconds: 2 },
-      ],
-    }),
-  });
-  expect(wrapper.findAll(".frame-delay [role=status]")).toHaveLength(2);
-  expect(wrapper.get(".frame-delay [role=status]").element).toBe(firstAnnouncement);
-  expect(wrapper.get(".frame-delay [role=status]").text()).toBe(
-    "Saving audio is delayed by 2 seconds.",
-  );
-  expect(wrapper.findAll('[data-testid="frame-delay"]')[0]!.text()).toBe(
-    "Saving audio is delayed by 3 seconds.",
-  );
-  await wrapper.setProps({
-    section: snapshot({
-      overdueFrames: [
-        { frameId: 0, elapsedSeconds: 4 },
-        { frameId: 1, elapsedSeconds: 3 },
-      ],
-    }),
-  });
-  expect(wrapper.findAll('[data-testid="frame-delay"]')[0]!.attributes("aria-live")).toBe("off");
-  expect(wrapper.findAll('[data-testid="frame-delay"]')[0]!.text()).toBe(
-    "Saving audio is delayed by 4 seconds.",
-  );
-  expect(wrapper.get(".frame-delay [role=status]").element).toBe(firstAnnouncement);
-  await wrapper.setProps({
-    section: snapshot({ overdueFrames: [{ frameId: 1, elapsedSeconds: 3 }] }),
-  });
-  expect(wrapper.findAll(".frame-delay")).toHaveLength(1);
-  wrapper.unmount();
+
+  expect(wrapper.text()).toContain("5 seconds of audio pending");
+  expect(wrapper.text()).toContain("Capture was interrupted");
+  expect(wrapper.find('[data-testid="frame-delay"]').exists()).toBe(false);
 });
