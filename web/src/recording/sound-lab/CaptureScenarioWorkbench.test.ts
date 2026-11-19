@@ -80,7 +80,8 @@ describe("Capture scenario workbench", () => {
     await settle();
     await flushPromises();
     expect(wrapper.findAll("button").map((button) => button.text())).toContain("Replay scenario");
-    expect(wrapper.text()).toContain("Recording complete");
+    expect(wrapper.find('[data-testid="section"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Recording complete");
     expect(wrapper.find('[data-testid="scenario-log"]').exists()).toBe(true);
 
     await wrapper.get(".playback-actions button").trigger("click");

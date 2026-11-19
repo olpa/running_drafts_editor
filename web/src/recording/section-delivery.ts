@@ -33,7 +33,12 @@ type CloseCommand =
 type CloseLifecycle =
   | { kind: "open" }
   | { kind: "closing"; command: CloseCommand }
-  | { kind: "failed"; command: CloseCommand; problem: string }
+  | {
+      kind: "failed";
+      command: CloseCommand;
+      problem: string;
+      diagnosticDetails: readonly string[];
+    }
   | { kind: "closed"; command: CloseCommand; result: AudioAssetSummary };
 
 export interface DeliveryView {
@@ -48,6 +53,7 @@ export interface DeliveryView {
   readonly completionProblem: string;
   readonly canRetryCompletion: boolean;
   readonly problem: string;
+  readonly diagnosticDetails: readonly string[];
   readonly canUploadPending: boolean;
   readonly closeProblem: string;
   readonly canRetryClose: boolean;
@@ -109,6 +115,8 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     phase: "running" as CapturePhase,
     reason: null as StopReason | null,
     problem: "",
+    diagnosticDetails: [] as readonly string[],
+    preserveProblemAfterSeal: false,
     securedMs: 0,
     lastFrameEndMs: 0,
     assignedFrames: 0,
@@ -159,10 +167,12 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
       frames.freeze();
       state.recovery = "waiting";
       const dimension = code === "audio_storage_limit_exceeded" ? "storage" : "duration";
-      state.problem = problemDescription(
+      const presentation = problemPresentation(
         `Capture stopped because the ${dimension} allowance rejected this audio. The exact pending audio remains on this page.`,
         error.problem,
       );
+      state.problem = presentation.message;
+      state.diagnosticDetails = presentation.details;
       options.log(
         `allowance stop HTTP ${error.status} code=${code}` +
           ` referenceId=${error.problem?.referenceId ?? "none"}`,
@@ -174,12 +184,12 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     if (code === "account_suspended") {
       frames.terminate();
       state.recovery = "blocked-target";
-      state.problem = [
+      const presentation = problemPresentation(
         "Audio delivery stopped because this Account is unavailable. Contact support for help. Pending audio remains on this page for the original Account.",
-        error.problem?.referenceId ? `Reference ID: ${error.problem.referenceId}` : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
+        error.problem,
+      );
+      state.problem = presentation.message;
+      state.diagnosticDetails = presentation.details;
       options.onAccountSuspended?.();
       options.requestCaptureStop("hard");
       return;
@@ -187,30 +197,36 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     if (error.status === 404) {
       frames.terminate();
       state.recovery = "blocked-target";
-      state.problem = problemDescription(
+      const presentation = problemPresentation(
         "Audio delivery stopped because its original recording is no longer available. Pending audio remains on this page but cannot be uploaded or sealed.",
         error.problem,
       );
+      state.problem = presentation.message;
+      state.diagnosticDetails = presentation.details;
       options.requestCaptureStop("hard");
       return;
     }
     if (error.status === 413 || code === "frame_too_large") {
       frames.terminate();
       state.recovery = "blocked-oversize";
-      state.problem = problemDescription(
+      const presentation = problemPresentation(
         "Capture stopped because the backend rejected an audio frame as too large. Pending audio remains on this page but cannot be retried safely.",
         error.problem,
       );
+      state.problem = presentation.message;
+      state.diagnosticDetails = presentation.details;
       options.requestCaptureStop("hard");
       return;
     }
     if (error.status !== 409 || state.recovery === "blocked-conflict") return;
     frames.terminate();
     state.recovery = "blocked-conflict";
-    state.problem = problemDescription(
+    const presentation = problemPresentation(
       "Capture stopped because audio delivery conflicted with stored data. Audio remains in this page.",
       error.problem,
     );
+    state.problem = presentation.message;
+    state.diagnosticDetails = presentation.details;
     options.log(
       `frame conflict HTTP 409 code=${error.problem?.code ?? "none"}` +
         ` referenceId=${error.problem?.referenceId ?? "none"}`,
@@ -262,9 +278,10 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
               command.kind === "complete"
                 ? "Could not complete recording"
                 : "Could not close recording",
+            diagnosticDetails: [],
           };
       if (result.isSealed) {
-        state.problem = "";
+        if (!state.preserveProblemAfterSeal) state.problem = "";
       } else
         options.onSealFailure?.(
           new Error(
@@ -278,7 +295,12 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
         command.kind === "complete"
           ? `Could not complete recording: ${errorMessage(error)}`
           : `Could not close recording: ${errorMessage(error)}`;
-      state.close = { kind: "failed", command, problem };
+      state.close = {
+        kind: "failed",
+        command,
+        problem,
+        diagnosticDetails: error instanceof ApiError ? problemDetails(error.problem) : [],
+      };
       options.log(`ERR ${problem}`);
       options.onSealFailure?.(error);
     }
@@ -325,6 +347,8 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
       completionProblem: completion === "failed" ? completionProblem() : "",
       canRetryCompletion: closing.kind === "failed" && closing.command.kind === "complete",
       problem: state.problem,
+      diagnosticDetails:
+        closing.kind === "failed" ? closing.diagnosticDetails : state.diagnosticDetails,
       canUploadPending: state.phase === "ended" && state.pendingFrames > 0 && !blocked(),
       closeProblem,
       canRetryClose: !!closeProblem,
@@ -375,6 +399,7 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     captureFailedToFinalize(problem) {
       state.phase = "ended";
       state.reason = "capture";
+      state.preserveProblemAfterSeal = true;
       // A blocked mode stays, with its more specific problem.
       if (!blocked()) {
         state.recovery = frames.pendingCount ? "waiting" : "requested";
@@ -392,7 +417,10 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     requestUpload() {
       if (state.phase !== "ended" || !frames.pendingCount || blocked()) return;
       if (interrupted()) state.recovery = "requested";
-      state.problem = "";
+      if (!state.preserveProblemAfterSeal) {
+        state.problem = "";
+        state.diagnosticDetails = [];
+      }
       frames.retry();
     },
     retryClose() {
@@ -437,8 +465,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function problemDescription(prefix: string, problem: Readonly<ProblemDetails> | null): string {
-  const details = [
+function problemDetails(problem: Readonly<ProblemDetails> | null): readonly string[] {
+  return [
     problem?.type ? `Type: ${problem.type}` : "",
     problem?.title ? `Title: ${problem.title}` : "",
     problem?.status !== undefined ? `Status: ${problem.status}` : "",
@@ -447,5 +475,11 @@ function problemDescription(prefix: string, problem: Readonly<ProblemDetails> | 
     problem?.code ? `Code: ${problem.code}` : "",
     problem?.referenceId ? `Reference ID: ${problem.referenceId}` : "",
   ].filter(Boolean);
-  return [prefix, ...details].join(" ");
+}
+
+function problemPresentation(
+  message: string,
+  problem: Readonly<ProblemDetails> | null,
+): { message: string; details: readonly string[] } {
+  return { message, details: problemDetails(problem) };
 }

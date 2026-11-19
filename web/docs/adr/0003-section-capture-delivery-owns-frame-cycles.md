@@ -205,23 +205,24 @@ For a frame requested at `T1`:
 - Securing it by `T1 + secureDeadlineMs` while its Section is actively capturing
   emits the healthy heartbeat immediately.
 - If it remains unsecured at the deadline, that individual frame raises one
-  `transport-frame-overdue` Capture alert and immediately exposes
-  `Saving audio is delayed by 2 seconds.`
-- Its visible elapsed time then updates once per second with correct singular
-  and plural grammar.
-- Each overdue frame owns its line and clears it immediately when secured. Two
-  similar lines are acceptable because two frames can be overdue independently.
-- Each newly overdue frame is announced politely once, including when another
-  frame is already overdue, but routine healthy
-  acknowledgements and once-per-second counter changes are not live-region
-  announcements.
+  `transport-frame-overdue` Capture alert.
+- The Capture modal presents all active overdue-frame alerts as one primary
+  message, `Saving audio is delayed. Capture continues.` It prints secondary
+  detail at the same time: the pending piece count and the oldest current delay.
+  The detail updates as delivery state changes, without requiring disclosure or
+  another user action.
+- The modal does not repeat delay lines in individual Section cards and does not
+  expose Transport frame identities, request attempts, or queue internals.
+- The initial modal warning is announced. Routine count and elapsed-time changes
+  are visual updates, not repeated live-region announcements.
 
-Do not collapse overdue frames into one delay episode. Each frame that misses
-its deadline owns a distinct alert identity. Securing that frame resolves only
-its alert. Acknowledgements also emit immediately; several recovering frames
-may therefore create overlapping healthy sounds. This burst is useful evidence
-of abnormal recovery, and adding a sequencing queue would complicate the timing
-model while concealing the independent outcomes.
+The consolidated presentation does not collapse overdue frames into one domain
+episode. Each frame that misses its deadline owns a distinct alert identity,
+and securing that frame resolves only its alert. Acknowledgements also emit
+immediately; several recovering frames may therefore create overlapping healthy
+sounds. This burst is useful evidence of abnormal recovery, and adding a
+sequencing queue would complicate the timing model while concealing the
+independent outcomes.
 
 Healthy heartbeats describe the actively capturing Section. Retained frames from
 an older stopped Section update its state and diagnostics when secured but do
@@ -305,10 +306,13 @@ survives modal closure, but makes that copy inert and hidden while the dialog is
 open. The renderers do not duplicate alert state or sound playback, and alert
 feedback does not open a nested dialog.
 
-The unrequested-stop alert says **Capture stopped. Check the recording Section
-for retained audio and recovery details.** Do not derive a fixed loss estimate
-from the Transport frame cadence: the same alert also covers backend-enforced
-stops whose retained-audio outcome is reported by the Section workflow.
+While retained work remains, the unrequested-stop alert says **Capture stopped.
+Check the recording Section for retained audio and recovery details.** After the
+Section has no pending work or visible recovery state, the same persistent alert
+says **Capture stopped unexpectedly. No audio remains pending.** Do not derive a
+fixed loss estimate from the Transport frame cadence: the same alert also covers
+backend-enforced stops whose retained-audio outcome is reported by the Section
+workflow.
 
 The browser sound adapter uses one looping WebAudio source rather than repeated
 JavaScript timers or visibility checks. Playback failure remains visible; do not
