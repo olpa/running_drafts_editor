@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, it, vi } from "vitest";
 import {
   MediaRecorderFrameSource,
+  measureMicrophoneLevel,
   openMicrophoneCapture,
   requireTransportFrameMediaType,
   TRANSPORT_FRAME_MEDIA_TYPE,
@@ -19,6 +20,26 @@ afterEach(() => {
   while (cleanups.length) cleanups.pop()!();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+it("maps silence, ordinary input, and full scale onto the neutral percentage", () => {
+  assert.deepEqual(measureMicrophoneLevel(new Float32Array([0, 0])), {
+    averagePercent: 0,
+    peakPercent: 0,
+  });
+  const speech = measureMicrophoneLevel(new Float32Array([0.1, -0.1]));
+  assert.ok(speech.averagePercent > 60);
+  assert.equal(speech.averagePercent, speech.peakPercent);
+  assert.deepEqual(measureMicrophoneLevel(new Float32Array([1, -1])), {
+    averagePercent: 100,
+    peakPercent: 100,
+  });
+  const transient = new Float32Array(2048);
+  transient[0] = 1;
+  const measured = measureMicrophoneLevel(transient);
+  assert.ok(measured.averagePercent < 50);
+  assert.equal(measured.peakPercent, 100);
 });
 
 class FakeRecorder extends EventTarget {
@@ -278,6 +299,48 @@ it("stereo settings and absent channel-constraint reporting do not block capture
   FakeRecorder.instances[0]!.finish();
   await stopping;
   assert.equal(track.stops, 1);
+});
+
+it("analyses the acquired stream without routing microphone input to speakers", async () => {
+  installRecorder();
+  const track = new FakeTrack();
+  installMicrophone([track]);
+  const analyser = {
+    fftSize: 0,
+    getFloatTimeDomainData(samples: Float32Array) {
+      samples.fill(0);
+      samples[0] = 1;
+    },
+  };
+  const mediaSource = { connect: vi.fn(), disconnect: vi.fn() };
+  const destination = {};
+  const context = {
+    state: "running",
+    destination,
+    createMediaStreamSource: vi.fn(() => mediaSource),
+    createAnalyser: vi.fn(() => analyser),
+    resume: vi.fn(async () => {}),
+    close: vi.fn(async () => {}),
+  };
+  vi.stubGlobal("AudioContext", function () {
+    return context;
+  });
+
+  const capture = await openMicrophoneCapture({ onError: assert.fail });
+  await capture.start(() => {});
+  await Promise.resolve();
+
+  const level = capture.readLevel?.();
+  assert.equal(Math.round(level!.averagePercent), 45);
+  assert.equal(level!.peakPercent, 100);
+  assert.deepEqual(mediaSource.connect.mock.calls, [[analyser]]);
+  assert.equal(
+    mediaSource.connect.mock.calls.some(([target]) => target === destination),
+    false,
+  );
+  capture.dispose();
+  assert.equal(track.stops, 1);
+  assert.equal(context.close.mock.calls.length, 1);
 });
 
 it("missing and ended audio tracks are rejected and all acquired tracks are released", async () => {

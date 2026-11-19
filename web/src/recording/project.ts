@@ -5,6 +5,7 @@ import {
   createCaptureAndDelivery,
   type CaptureAndDelivery,
   type CaptureConfig,
+  type MicrophoneLevelView,
   type OverdueFrame,
 } from "./capture-and-delivery.ts";
 import { browserScheduler, type Scheduler } from "./frame-timing.ts";
@@ -56,6 +57,7 @@ export interface SectionSnapshot {
   /** Capture has ended but the Section is not sealed yet. */
   readonly awaitingSeal: boolean;
   readonly capturedBytes: number;
+  readonly microphoneLevel: Readonly<MicrophoneLevelView> | null;
 }
 
 export interface RecordingSnapshot {
@@ -70,6 +72,7 @@ export interface RecordingSnapshot {
   readonly sections: readonly SectionSnapshot[];
   readonly capturedBytes: number;
   readonly finalizingCapture: boolean;
+  readonly microphoneLevel: Readonly<MicrophoneLevelView> | null;
 }
 
 export interface RecordingSinks {
@@ -147,6 +150,7 @@ export function createProject(
       sections: views,
       capturedBytes: active.value?.snapshot.value.capturedBytes ?? 0,
       finalizingCapture: active.value?.snapshot.value.finalizingCapture ?? false,
+      microphoneLevel: active.value?.snapshot.value.microphoneLevel ?? null,
     };
   });
   async function ensureProject(): Promise<string> {

@@ -49,6 +49,7 @@ const IDLE_SNAPSHOT: RecordingSnapshot = {
   sections: [],
   capturedBytes: 0,
   finalizingCapture: false,
+  microphoneLevel: null,
 };
 
 export interface AllowanceWarningView {
@@ -73,6 +74,7 @@ export interface ApplicationCapture {
   readonly ownsCurrentSession: Readonly<Ref<boolean>>;
   readonly focused: Readonly<Ref<boolean>>;
   readonly allowanceWarnings: Readonly<Ref<AllowanceWarningView>>;
+  readonly cueVolumePercent: Readonly<Ref<number>>;
   /** Prepare an idle modal workspace for a new or existing Project. */
   prepare(projectId?: string): boolean;
   /** Release an idle modal workspace. Active or pending work refuses release. */
@@ -80,6 +82,7 @@ export interface ApplicationCapture {
   setSessionAccount(accountId: AccountId | null): void;
   /** Stop when capturing; otherwise start if the Session and Account allow it. */
   toggle(): void;
+  setCueVolume(percent: number): void;
   uploadPendingAudio(sectionId: string): void;
   retryClose(sectionId: string): void;
   clearLog(): void;
@@ -120,6 +123,8 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
     storageRemainingBytes: storageRemainingBytes.value,
     durationRemainingMs: durationRemainingMs.value,
   }));
+  const cueVolumePercent = shallowRef(50);
+  cues.setVolume(50);
   let lastUsageSnapshot: Readonly<UsageSnapshot> | null | undefined;
 
   if (options.usage) {
@@ -245,6 +250,7 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
     ownsCurrentSession,
     focused,
     allowanceWarnings,
+    cueVolumePercent,
     prepare(projectId) {
       if (focused.value || hasRetainedWork.value) return false;
       workspaceOpen = true;
@@ -292,6 +298,11 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
       cues.prepare();
       void options.usage?.refresh();
       void current?.start();
+    },
+    setCueVolume(percent) {
+      if (!Number.isFinite(percent) || percent < 0 || percent > 100 || percent % 10 !== 0) return;
+      cues.setVolume(percent);
+      cueVolumePercent.value = percent;
     },
     uploadPendingAudio(sectionId) {
       if (ownsCurrentSession.value) {

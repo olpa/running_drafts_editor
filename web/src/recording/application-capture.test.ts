@@ -23,11 +23,18 @@ const ACCOUNT_B = "37a919e8-4091-4c7f-809c-e1c856f3de2c" as AccountId;
 class FakeCapture implements MicrophoneCapture {
   private onFrame: ((frame: TransportFrame) => void) | null = null;
   disposed = false;
+  level: { averagePercent: number; peakPercent: number } | null = {
+    averagePercent: 42,
+    peakPercent: 64,
+  };
   async start(onFrame: (frame: TransportFrame) => void): Promise<void> {
     this.onFrame = onFrame;
   }
   requestFrame(): void {}
   async stop(): Promise<void> {}
+  readLevel(): { averagePercent: number; peakPercent: number } | null {
+    return this.level;
+  }
   dispose(): void {
     this.disposed = true;
   }
@@ -38,10 +45,17 @@ class FakeCapture implements MicrophoneCapture {
   }
 }
 
-function harness(authorize = true) {
+function harness(
+  authorize = true,
+  initialLevel: { averagePercent: number; peakPercent: number } | null = {
+    averagePercent: 42,
+    peakPercent: 64,
+  },
+) {
   const captures: FakeCapture[] = [];
   let frameTick: (() => void) | null = null;
   const played: string[] = [];
+  const volumes: number[] = [];
   const gateway: RecordingGateway = {
     createProject: async () => ({ id: "p", title: "Canonical", createdAt: "x", updatedAt: "x" }),
     getProject: async (id) => ({ id, title: "Existing", createdAt: "x", updatedAt: "x" }),
@@ -52,6 +66,7 @@ function harness(authorize = true) {
   };
   const cues = {
     prepare() {},
+    setVolume: (percent: number) => volumes.push(percent),
     play: (cue: string) => played.push(cue),
     loopProblem: () => () => {},
     dispose() {},
@@ -76,6 +91,7 @@ function harness(authorize = true) {
       now: () => performance.now(),
       openCapture: async () => {
         const capture = new FakeCapture();
+        capture.level = initialLevel;
         capture.beforeEmit = () => {
           const callback = frameTick;
           frameTick = null;
@@ -89,7 +105,7 @@ function harness(authorize = true) {
     alerts: createCaptureAlerts(cues),
     authorizeStart: () => authorize,
   });
-  return { recording, captures, played };
+  return { recording, captures, played, volumes };
 }
 
 function mountPanel(recording: ApplicationCapture) {
@@ -199,6 +215,7 @@ describe("ApplicationCapture module", () => {
     const captures: FakeCapture[] = [];
     const cues = {
       prepare() {},
+      setVolume() {},
       play() {},
       loopProblem: () => () => {},
       dispose() {},
@@ -305,6 +322,40 @@ describe("RecordingPanel", () => {
     expect(wrapper.find("[data-testid=capture-progress]").exists()).toBe(false);
     expect(played).toContain("capture-started");
     expect(wrapper.get("[data-testid=project-title]").text()).toBe("Canonical");
+    expect(wrapper.get("[data-testid=microphone-level]").attributes("aria-valuenow")).toBe("42");
+    expect(wrapper.get("[data-testid=microphone-level-value]").text()).toBe("42%");
+  });
+
+  it("controls every cue through an accessible transient master volume", async () => {
+    const { recording, volumes } = harness();
+    const wrapper = mountPanel(recording);
+    const volume = wrapper.get<HTMLInputElement>("[data-testid=cue-volume]");
+
+    expect(volume.attributes()).toMatchObject({ min: "0", max: "100", step: "10" });
+    expect(volume.element.value).toBe("50");
+    expect(wrapper.get("[data-testid=cue-volume-value]").text()).toBe("50%");
+    expect(volumes).toEqual([50]);
+
+    await volume.setValue(0);
+    expect(recording.cueVolumePercent.value).toBe(0);
+    expect(volumes).toEqual([50, 0]);
+    expect(wrapper.get("[data-testid=cue-volume-value]").text()).toBe("0%");
+  });
+
+  it("distinguishes an inactive microphone meter from active silence", async () => {
+    const { recording, captures } = harness(true, { averagePercent: 0, peakPercent: 0 });
+    recording.setSessionAccount(ACCOUNT_A);
+    const wrapper = mountPanel(recording);
+    const meter = wrapper.get("[data-testid=microphone-level]");
+    expect(meter.attributes("aria-valuetext")).toBe("Inactive");
+    expect(wrapper.get("[data-testid=microphone-level-value]").text()).toBe("—%");
+
+    await wrapper.get("[data-testid=start]").trigger("click");
+    await flushPromises();
+    expect(captures).toHaveLength(1);
+    expect(meter.attributes("aria-valuetext")).toBe("0%");
+    expect(meter.attributes("data-active")).toBe("true");
+    expect(wrapper.get("[data-testid=microphone-level-value]").text()).toBe("0%");
   });
 
   it("has no detectable accessibility violations", async () => {

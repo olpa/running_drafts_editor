@@ -19,8 +19,11 @@ export const productionSoundAssignments: SoundAssignments = {
 /** WebAudio feedback; `onEvent` records semantic roles rather than sound samples. */
 export class CuePlayer implements Cues {
   private context: AudioContext | null = null;
+  private output: GainNode | null = null;
+  private limiter: DynamicsCompressorNode | null = null;
   private readonly sources = new Set<AudioBufferSourceNode>();
   private count = 0;
+  private volumePercent = 50;
   private readonly decoded = new Map<string, AudioBuffer>();
 
   constructor(
@@ -35,7 +38,22 @@ export class CuePlayer implements Cues {
   /** Prepare during a user gesture. Audio failure must not prevent Capture. */
   async prepare(): Promise<void> {
     try {
-      this.context ??= new AudioContext();
+      if (!this.context) {
+        const context = new AudioContext();
+        const output = context.createGain();
+        const limiter = context.createDynamicsCompressor();
+        output.gain.value = volumeGain(this.volumePercent);
+        limiter.threshold.value = -3;
+        limiter.knee.value = 0;
+        limiter.ratio.value = 20;
+        limiter.attack.value = 0.003;
+        limiter.release.value = 0.1;
+        output.connect(limiter);
+        limiter.connect(context.destination);
+        this.context = context;
+        this.output = output;
+        this.limiter = limiter;
+      }
       await this.context.resume();
       await Promise.all(
         [...new Set(Object.values(this.definitions))]
@@ -45,6 +63,13 @@ export class CuePlayer implements Cues {
     } catch {
       // The visible equivalents remain available when audio is unavailable.
     }
+  }
+
+  setVolume(percent: number): void {
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100)
+      throw new Error("Cue volume must be between 0 and 100 percent.");
+    this.volumePercent = percent;
+    if (this.output) this.output.gain.value = volumeGain(percent);
   }
 
   play(cue: Cue): void {
@@ -91,6 +116,10 @@ export class CuePlayer implements Cues {
       source.disconnect();
     }
     this.sources.clear();
+    this.output?.disconnect();
+    this.output = null;
+    this.limiter?.disconnect();
+    this.limiter = null;
     if (context) void context.close().catch(() => {});
   }
 
@@ -110,7 +139,7 @@ export class CuePlayer implements Cues {
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.loop = loop;
-    source.connect(context.destination);
+    source.connect(this.output!);
     this.sources.add(source);
     let cleaned = false;
     const clean = () => {
@@ -158,7 +187,15 @@ export class CuePlayer implements Cues {
 /** What production Capture feedback needs from sound playback. */
 export interface Cues extends ProblemSound {
   prepare(): void | Promise<void>;
+  setVolume(percent: number): void;
   play(cue: Cue): void;
   loopAllowanceWarning?(onUnavailable: () => void): () => void;
   dispose(): void;
+}
+
+/** Fifty percent is unity; the upper half reaches +18 dB for loud-call headroom. */
+function volumeGain(percent: number): number {
+  if (percent === 0) return 0;
+  const decibels = percent <= 50 ? -30 + percent * 0.6 : (percent - 50) * 0.36;
+  return 10 ** (decibels / 20);
 }

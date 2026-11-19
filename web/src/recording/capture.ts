@@ -298,8 +298,99 @@ export interface CaptureOptions {
 }
 
 export interface MicrophoneCapture extends FrameSource {
+  /** Current average and sample-peak confidence levels, or null when unavailable. */
+  readLevel?(): Readonly<MicrophoneLevelSample> | null;
+  /** Browser-selected input processing for opt-in review tooling. */
+  inputSettings?(): Readonly<MicrophoneInputSettings>;
   /** Immediately release recorder and microphone, including after failed startup. */
   dispose(): void;
+}
+
+export interface MicrophoneLevelSample {
+  readonly averagePercent: number;
+  readonly peakPercent: number;
+}
+
+export interface MicrophoneInputSettings {
+  readonly autoGainControl: boolean | null;
+  readonly noiseSuppression: boolean | null;
+  readonly echoCancellation: boolean | string | null;
+}
+
+interface MicrophoneLevelReader {
+  start(): Promise<void>;
+  read(): Readonly<MicrophoneLevelSample> | null;
+  dispose(): void;
+}
+
+function amplitudePercent(amplitude: number): number {
+  if (amplitude <= 0.001) return 0;
+  const decibels = 20 * Math.log10(Math.min(1, amplitude));
+  return Math.min(100, Math.max(0, ((decibels + 60) / 60) * 100));
+}
+
+/** Separate speech energy from transient peak on the neutral confidence scale. */
+export function measureMicrophoneLevel(samples: Float32Array): MicrophoneLevelSample {
+  let energy = 0;
+  let peak = 0;
+  for (const sample of samples) {
+    energy += sample * sample;
+    peak = Math.max(peak, Math.abs(sample));
+  }
+  const average = samples.length ? Math.sqrt(energy / samples.length) : 0;
+  return {
+    averagePercent: amplitudePercent(average),
+    peakPercent: amplitudePercent(peak),
+  };
+}
+
+function prepareMicrophoneLevel(stream: MediaStream): MicrophoneLevelReader | null {
+  if (typeof AudioContext === "undefined") return null;
+  let context: AudioContext | null = null;
+  let source: MediaStreamAudioSourceNode | null = null;
+  let analyser: AnalyserNode | null = null;
+  let connected = false;
+  let active = false;
+  try {
+    context = new AudioContext();
+    source = context.createMediaStreamSource(stream);
+    analyser = context.createAnalyser();
+    analyser.fftSize = 2048;
+  } catch {
+    if (context) void context.close().catch(() => {});
+    return null;
+  }
+  const samples = new Float32Array(analyser.fftSize);
+  return {
+    async start() {
+      try {
+        source!.connect(analyser!);
+        connected = true;
+        await context!.resume();
+        active = context!.state === "running";
+      } catch {
+        active = false;
+        if (connected) source!.disconnect();
+        connected = false;
+      }
+    },
+    read() {
+      if (!active || context!.state !== "running") return null;
+      try {
+        analyser!.getFloatTimeDomainData(samples);
+        return measureMicrophoneLevel(samples);
+      } catch {
+        active = false;
+        return null;
+      }
+    },
+    dispose() {
+      active = false;
+      if (connected) source!.disconnect();
+      connected = false;
+      void context!.close().catch(() => {});
+    },
+  };
 }
 
 /** Browser adapter owning microphone acquisition, recorder finalization, and resource release. */
@@ -308,11 +399,13 @@ export async function openMicrophoneCapture(options: CaptureOptions): Promise<Mi
   const stream = await openMicrophone();
   const tracks = stream.getTracks();
   let source: MediaRecorderFrameSource | null = null;
+  const level = prepareMicrophoneLevel(stream);
   let released = false;
   const trackEnded = (): void => source?.interrupt(new Error("Microphone capture ended."));
   const release = (): void => {
     if (released) return;
     released = true;
+    level?.dispose();
     for (const track of tracks) {
       try {
         track.removeEventListener("ended", trackEnded);
@@ -339,10 +432,23 @@ export async function openMicrophoneCapture(options: CaptureOptions): Promise<Mi
       options.now,
     );
     for (const track of tracks) track.addEventListener("ended", trackEnded);
+    const audioTrack = audioTracks[0]!;
     return {
-      start: (onFrame) => source!.start(onFrame),
+      async start(onFrame) {
+        await source!.start(onFrame);
+        void level?.start();
+      },
       requestFrame: () => source!.requestFrame(),
       stop: () => source!.stop(),
+      readLevel: () => level?.read() ?? null,
+      inputSettings() {
+        const settings = audioTrack.getSettings();
+        return {
+          autoGainControl: settings.autoGainControl ?? null,
+          noiseSuppression: settings.noiseSuppression ?? null,
+          echoCancellation: settings.echoCancellation ?? null,
+        };
+      },
       dispose: () => source!.dispose(),
     };
   } catch (error) {

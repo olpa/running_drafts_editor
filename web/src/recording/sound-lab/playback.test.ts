@@ -27,6 +27,7 @@ const kinds: ScenarioKind[] = [
 function cues(): Cues {
   return {
     prepare() {},
+    setVolume() {},
     play() {},
     loopProblem() {
       return () => {};

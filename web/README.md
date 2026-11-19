@@ -175,9 +175,11 @@ and hidden behind the modal. Neither rendering duplicates alert or sound state.
 
 `openMicrophoneCapture` owns strict WebM/Opus capability checking, preferred-mono
 microphone acquisition, usable-track verification, recorder finalization, and
-resource release. `MediaRecorder` starts without a timeslice; the Section workflow
-requests each frame explicitly. Channel count and sample rate are not Capture
-acceptance gates.
+resource release. Its read-only level analyser observes the same stream without
+connecting microphone input to speaker output. Analysis failure leaves Capture
+running. `MediaRecorder` starts without a timeslice; the Section workflow requests
+each frame explicitly. Channel count and sample rate are not Capture acceptance
+gates.
 
 Styles: `src/style.css` holds design tokens and base styles; each component keeps
 its own layout in `<style scoped>`. `src/style.test.ts` checks the colour tokens
@@ -197,6 +199,10 @@ late boundary shifts the next request; it does not create a short catch-up frame
 A prominent green **Speak now** indicator and elapsed duration appear during
 microphone capture. They stop indicating capture as soon as capture stops,
 independently of pending uploads and backend work.
+The recording widget also keeps a neutral microphone meter visible. During
+Capture, the Section workflow samples it at 10 Hz and exposes a smoothed RMS
+percentage plus a short-held sample-peak marker; outside Capture it remains
+visibly inactive.
 
 The backend-reported effective allowance is authoritative. Client timing and
 captured byte counts provide advisory storage and per-Audio Asset duration
@@ -228,6 +234,13 @@ upload-concurrency, database, target-filesystem, and network failures retain the
 fixed automatic retry behavior instead of showing allowance or Plan messaging.
 
 ### Sound and visible feedback
+
+The recording widget's 0–100% **Cue volume** control sends all active and future
+Capture sounds through one master gain and peak-protection path. Fifty percent is
+unity gain, 100% adds 18 dB for loud-call headroom, and zero is a true mute.
+Microphone input and recorded-audio playback remain independent. The value lives
+with the page-lifetime Capture module and is not persisted across application
+reloads.
 
 - Capture starting plays the existing rising start cue. Failure before Capture
   begins shows a local error and raises no Capture alert.

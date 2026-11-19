@@ -32,6 +32,16 @@ failures, and allowances. Stories render production modules and Vue components
 over typed in-memory adapters; unexpected operations fail visibly and never
 reach an external service.
 
+Those deterministic stories intentionally leave **Microphone level** inactive
+because their simulated microphone has no signal. For opt-in real-device review,
+open **Capture → Microphone level → Live Microphone**. Select **Start**, grant
+microphone permission, and inspect the production meter with silence, quiet
+voice, ordinary speech, and loud input. The story uses the production browser
+Capture adapter with an in-memory acknowledging gateway: captured bytes are not
+saved or sent to a backend. After Start it also shows the automatic gain, noise
+suppression, and echo-cancellation settings reported by the browser. Select
+**Stop** before leaving the story.
+
 The **Capture view** toolbar menu switches every Capture story between two views
 over the same scenario modules and adapters:
 
