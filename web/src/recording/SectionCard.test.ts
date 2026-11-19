@@ -27,6 +27,7 @@ function snapshot(overrides: Partial<SectionSnapshot> = {}): SectionSnapshot {
     canRetryClose: false,
     awaitingSeal: false,
     capturedBytes: 0,
+    microphoneLevel: null,
     ...overrides,
   };
 }

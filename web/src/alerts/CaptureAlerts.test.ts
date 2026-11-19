@@ -29,6 +29,7 @@ it("shows active Capture problems and acknowledges all of them", async () => {
     startProblem: "",
     capturedBytes: 1,
     finalizingCapture: false,
+    microphoneLevel: null,
     sections: [
       {
         sectionId: "section-one",
@@ -55,6 +56,7 @@ it("shows active Capture problems and acknowledges all of them", async () => {
         canRetryClose: false,
         awaitingSeal: false,
         capturedBytes: 1,
+        microphoneLevel: null,
       },
     ],
   });

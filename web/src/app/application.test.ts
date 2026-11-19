@@ -168,7 +168,13 @@ function mountApplication(adapters: ApplicationAdapters = {}) {
       }),
     },
     confirmDiscardPending: () => true,
-    cues: { prepare() {}, play() {}, loopProblem: () => () => {}, dispose() {} },
+    cues: {
+      prepare() {},
+      setVolume() {},
+      play() {},
+      loopProblem: () => () => {},
+      dispose() {},
+    },
     environment: {
       scheduler: {
         now: () => performance.now(),
@@ -640,6 +646,7 @@ it("keeps Capture alerts across views, new Capture, and sign-out until explicit 
   const { root, application, captures } = mountApplication({
     cues: {
       prepare() {},
+      setVolume() {},
       play() {},
       dispose() {},
       loopProblem() {
@@ -716,6 +723,7 @@ it("plays completion when a signed-out Account's last retained Section seals", a
   const { application, root, captures, recordingGateway, backend } = mountApplication({
     cues: {
       prepare() {},
+      setVolume() {},
       play: (cue) => {
         played.push(cue);
       },

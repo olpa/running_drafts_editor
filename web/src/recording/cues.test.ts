@@ -21,11 +21,29 @@ class Source extends EventTarget {
   stop = vi.fn();
 }
 
+class Gain {
+  readonly gain = { value: 0 };
+  connect = vi.fn();
+  disconnect = vi.fn();
+}
+
+class Compressor {
+  readonly threshold = { value: 0 };
+  readonly knee = { value: 0 };
+  readonly ratio = { value: 0 };
+  readonly attack = { value: 0 };
+  readonly release = { value: 0 };
+  connect = vi.fn();
+  disconnect = vi.fn();
+}
+
 class Audio extends EventTarget {
   state = "running";
   sampleRate = 8000;
   destination = {};
   sources: Source[] = [];
+  gains: Gain[] = [];
+  compressors: Compressor[] = [];
   async resume() {}
   async close() {
     this.state = "closed";
@@ -38,6 +56,16 @@ class Audio extends EventTarget {
     const source = new Source();
     this.sources.push(source);
     return source;
+  }
+  createGain() {
+    const gain = new Gain();
+    this.gains.push(gain);
+    return gain;
+  }
+  createDynamicsCompressor() {
+    const compressor = new Compressor();
+    this.compressors.push(compressor);
+    return compressor;
   }
 }
 
@@ -93,6 +121,44 @@ describe("production sound feedback", () => {
     stop();
     stopAllowance();
     expect(context.sources[3]!.stop).toHaveBeenCalledOnce();
+    player.dispose();
+  });
+
+  it("changes active and future cues through one master gain", async () => {
+    const context = new Audio();
+    vi.stubGlobal("AudioContext", function () {
+      return context;
+    });
+    const player = new CuePlayer();
+    player.setVolume(100);
+    await player.prepare();
+    expect(context.gains[0]!.gain.value).toBeCloseTo(7.943, 3);
+    expect(context.gains[0]!.connect.mock.calls[0]![0]).toBe(context.compressors[0]);
+    expect(context.compressors[0]!.connect.mock.calls[0]![0]).toBe(context.destination);
+    expect(context.compressors[0]).toMatchObject({
+      threshold: { value: -3 },
+      knee: { value: 0 },
+      ratio: { value: 20 },
+      attack: { value: 0.003 },
+      release: { value: 0.1 },
+    });
+    player.setVolume(50);
+    player.play("capture-started");
+    const stop = player.loopProblem(() => {});
+
+    expect(context.gains).toHaveLength(1);
+    expect(context.gains[0]!.gain.value).toBe(1);
+    expect(
+      context.sources.every((source) => source.connect.mock.calls[0]![0] === context.gains[0]),
+    ).toBe(true);
+
+    player.setVolume(100);
+    expect(context.gains[0]!.gain.value).toBeCloseTo(7.943, 3);
+    player.setVolume(0);
+    expect(context.gains[0]!.gain.value).toBe(0);
+    expect(() => player.setVolume(101)).toThrow(/between 0 and 100/u);
+
+    stop();
     player.dispose();
   });
 

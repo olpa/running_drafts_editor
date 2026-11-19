@@ -107,6 +107,7 @@ const usage = createUsage({
 });
 const cues: Cues = {
   prepare() {},
+  setVolume() {},
   play(cue) {
     write(`ERR unexpected cue ${cue}`);
   },

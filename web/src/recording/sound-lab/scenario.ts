@@ -382,6 +382,8 @@ export function createLabScenario(options: {
 export type LabScenario = ReturnType<typeof createLabScenario>;
 
 class SimulatedMicrophone implements MicrophoneCapture {
+  // Intentionally omit readLevel(): deterministic scenario stories have no real
+  // microphone signal. The opt-in Live Microphone story owns that review path.
   private sink: ((frame: TransportFrame) => void) | null = null;
   private seq = 0;
   private last = 0;

@@ -12,6 +12,11 @@ delivery deadlines, retry coordination, and feedback timing. This keeps the
 decision about when captured audio should become durable in one place and makes
 the module's interface the production and test seam.
 
+The Capture modal's recording widget also exposes two surfaces over that
+workflow: one transient master Cue volume and one microphone-level indication.
+Cue volume changes feedback playback only. Microphone-level analysis observes
+Capture input without changing or replaying it.
+
 This ADR deliberately includes the agreed internal interfaces as an exception
 to keeping implementation detail in code. They preserve the ownership and
 recovery decisions made before implementation, so the refactor and the later
@@ -49,6 +54,15 @@ the application. Application creates and supplies it; `CaptureAndDelivery`
 acquires access before starting and releases it when microphone Capture ends.
 Delivery may continue after release. Browser microphone permission remains the
 browser recorder adapter's responsibility.
+
+Microphone-level analysis begins only after Capture starts and stops when
+Capture stops. It observes the same acquired input stream as the recorder,
+never opens a second stream, and never connects microphone input to speaker
+output. Analysis state is transient application UI state: do not persist it,
+send it to the backend, or include it in diagnostics or analytics. Analysis
+failure leaves Capture running and presents the meter as inactive. The browser
+adapter reports level observations through the Section Capture and Delivery
+seam; Vue components do not inspect media streams or browser audio APIs.
 
 A stale reservation must not permanently prevent Capture. If another holder
 exists, the existing Capture modal shows an inline blocking prompt offering
@@ -315,18 +329,25 @@ backend-enforced stops whose retained-audio outcome is reported by the Section
 workflow.
 
 The browser sound adapter uses one looping WebAudio source rather than repeated
-JavaScript timers or visibility checks. Playback failure remains visible; do not
-add production enable-sound, playback-retry, preference, rating, or persistent
-override controls. A late audio-failure callback from an earlier activation must
-not change a later activation's state.
+JavaScript timers or visibility checks. Playback failure remains visible. Do
+not add production enable-sound, playback-retry, sound-selection, rating, or
+persistent override controls. The recording widget's transient master **Cue
+volume** is the single production exception: it changes all active and future
+Capture cues through one shared output-gain and peak-protection path, including
+the repeating Problem and Allowance warning sounds. Zero is a true mute. Visible feedback
+remains unchanged while muted, and microphone input and recorded-audio playback
+are outside this control. The setting has no persistence guarantee, but its
+displayed value must always match the active gain. A late audio-failure callback
+from an earlier activation must not change a later activation's state.
 
 The production sound vocabulary is Capture-started, Healthy heartbeat,
 Allowance warning, Problem, and Capture-completed. Problem is the only
 acknowledgement-governed repeating role; Allowance warning is bounded to three
 seconds and temporarily reuses the Problem definition. The approved sounds are
 Triangle cadence for Healthy heartbeat, Morse Stop for Problem and Allowance
-warning, and Four-note triangle cadence for Capture-completed, all at 100%
-relative volume; the Capture-started cue remains unchanged. Morse Stop preserves
+warning, and Four-note triangle cadence for Capture-completed. Their definitions
+remain at 100% relative volume before the master Cue-volume gain; the
+Capture-started cue remains unchanged. Morse Stop preserves
 the selected Storybook definition and repeats with no added gap. The Storybook
 laboratory may replace sound and environmental adapters for deterministic
 exploration, but it uses the same production Capture-alert module, components,
@@ -352,6 +373,9 @@ and application wiring.
 - Normal cues and the repeating Problem sound report independent semantic
   outcomes and may overlap. Avoiding overlap is not an invariant and must not
   motivate a cue queue.
+- A user may intentionally mute the unattended Problem alarm. Capture alerts
+  remain visible and persistent, but the application does not override zero Cue
+  volume for a safety sound.
 - Capture alerts are deliberately limited to four failures that can arise during
   unattended Capture. They are not a generic notification framework.
 - Storybook remains a review and exploration workbench. Production tests own

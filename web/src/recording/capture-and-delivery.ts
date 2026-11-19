@@ -32,6 +32,11 @@ export interface OverdueFrame {
   readonly elapsedSeconds: number | null;
 }
 
+export interface MicrophoneLevelView {
+  readonly valuePercent: number;
+  readonly peakPercent: number;
+}
+
 export interface CaptureDeliveryView extends DeliveryView {
   readonly capturing: boolean;
   readonly finalizingCapture: boolean;
@@ -39,6 +44,7 @@ export interface CaptureDeliveryView extends DeliveryView {
   readonly hasUnsecuredAudio: boolean;
   readonly overdueFrames: readonly OverdueFrame[];
   readonly capturedBytes: number;
+  readonly microphoneLevel: Readonly<MicrophoneLevelView> | null;
 }
 
 export interface CaptureAndDelivery {
@@ -72,6 +78,7 @@ export function createCaptureAndDelivery(options: {
   const phase = shallowRef<"preparing" | "capturing" | "finalizing" | "ended">("preparing");
   const elapsedMs = shallowRef(0);
   const capturedBytes = shallowRef(0);
+  const microphoneLevel = shallowRef<Readonly<MicrophoneLevelView> | null>(null);
   const overdueFrames = shallowRef<readonly OverdueFrame[]>([]);
   const requested = reactive(
     new Map<number, { at: number; arrived: boolean; overdue: boolean; final: boolean }>(),
@@ -88,6 +95,8 @@ export function createCaptureAndDelivery(options: {
   let startedAt = 0;
   let nextFrame = 0;
   let forceFinalization: (() => void) | null = null;
+  let lastLevelAt: number | null = null;
+  let peakObservedAt = 0;
 
   function emit(event: SectionEvent): void {
     if (!disposed) options.onEvent(event);
@@ -174,6 +183,47 @@ export function createCaptureAndDelivery(options: {
     elapsedMs.value = scheduler.now() - startedAt;
     schedule(100, progress);
   }
+  function clearMicrophoneLevel(): void {
+    microphoneLevel.value = null;
+    lastLevelAt = null;
+    peakObservedAt = 0;
+  }
+  function sampleMicrophoneLevel(): void {
+    if (phase.value !== "capturing" || !microphone) {
+      clearMicrophoneLevel();
+      return;
+    }
+    const raw = microphone.readLevel?.() ?? null;
+    const now = scheduler.now();
+    if (raw === null || !Number.isFinite(raw.averagePercent) || !Number.isFinite(raw.peakPercent)) {
+      clearMicrophoneLevel();
+      schedule(100, sampleMicrophoneLevel);
+      return;
+    }
+    const sample = Math.min(100, Math.max(0, raw.averagePercent));
+    const samplePeak = Math.min(100, Math.max(0, raw.peakPercent));
+    const previous = microphoneLevel.value;
+    const elapsed = lastLevelAt === null ? 0 : Math.max(0, now - lastLevelAt);
+    const decay = (elapsed / 300) * 100;
+    const value = previous
+      ? sample >= previous.valuePercent
+        ? sample
+        : Math.max(sample, previous.valuePercent - decay)
+      : sample;
+    let peak = previous?.peakPercent ?? value;
+    if (!previous || samplePeak >= peak) {
+      peak = samplePeak;
+      peakObservedAt = now;
+    } else if (now - peakObservedAt > 500) {
+      peak = Math.max(value, peak - decay);
+    }
+    microphoneLevel.value = {
+      valuePercent: Math.round(value),
+      peakPercent: Math.round(Math.max(value, peak)),
+    };
+    lastLevelAt = now;
+    schedule(100, sampleMicrophoneLevel);
+  }
   function revoke(): void {
     revoked = true;
     // Stop is initiated as a user action, but forced resource cleanup does not
@@ -187,6 +237,7 @@ export function createCaptureAndDelivery(options: {
   async function stopCapture(reason: StopReason): Promise<void> {
     if (disposed || phase.value !== "capturing" || !microphone || !delivery) return;
     phase.value = "finalizing";
+    clearMicrophoneLevel();
     elapsedMs.value = scheduler.now() - startedAt;
     timing.stopFrameTicks();
     delivery.captureStopping(reason);
@@ -249,6 +300,7 @@ export function createCaptureAndDelivery(options: {
       hasUnsecuredAudio: running || requested.size > 0,
       overdueFrames: overdueFrames.value,
       capturedBytes: capturedBytes.value,
+      microphoneLevel: microphoneLevel.value,
     };
   });
   return {
@@ -355,6 +407,7 @@ export function createCaptureAndDelivery(options: {
         startedAt = scheduler.now();
         emit({ type: "captureStarted" });
         progress();
+        sampleMicrophoneLevel();
         schedule(timingValue.intervalMs, () => requestFrame(false));
       } catch (error) {
         microphone?.dispose();
@@ -384,6 +437,7 @@ export function createCaptureAndDelivery(options: {
       for (const cancel of timers) cancel();
       timers.clear();
       microphone?.dispose();
+      clearMicrophoneLevel();
       forceFinalization?.();
       reservation?.release();
       delivery?.dispose();

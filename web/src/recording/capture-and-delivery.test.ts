@@ -47,6 +47,7 @@ class Microphone implements MicrophoneCapture {
   startFailure = false;
   stopFailure = false;
   stalledStop = false;
+  level: { averagePercent: number; peakPercent: number } | null = null;
   readonly stopping = deferred<void>();
   constructor(
     readonly clock: ManualScheduler,
@@ -77,6 +78,9 @@ class Microphone implements MicrophoneCapture {
     if (this.stopFailure) throw new Error("finalization failed");
     if (this.finalBlob) this.emit();
     this.released = true;
+  }
+  readLevel(): { averagePercent: number; peakPercent: number } | null {
+    return this.level;
   }
   dispose(): void {
     this.released = true;
@@ -209,6 +213,44 @@ function harness(config: { frameIntervalMs?: number; secureDeadlineMs?: number }
 }
 
 describe("CaptureAndDelivery", () => {
+  it("samples, decays, holds, and clears microphone level without controlling Capture", async () => {
+    const h = harness();
+    const workflow = await h.start();
+    const microphone = h.microphones[0]!;
+    expect(workflow.view.value.microphoneLevel).toBeNull();
+
+    microphone.level = { averagePercent: 90, peakPercent: 98 };
+    await h.scheduler.advanceBy(100);
+    expect(workflow.view.value.microphoneLevel).toEqual({
+      valuePercent: 90,
+      peakPercent: 98,
+    });
+
+    microphone.level = { averagePercent: 0, peakPercent: 0 };
+    await h.scheduler.advanceBy(100);
+    expect(workflow.view.value.microphoneLevel).toEqual({
+      valuePercent: 57,
+      peakPercent: 98,
+    });
+    await h.scheduler.advanceBy(200);
+    expect(workflow.view.value.microphoneLevel).toEqual({
+      valuePercent: 0,
+      peakPercent: 98,
+    });
+    await h.scheduler.advanceBy(300);
+    expect(workflow.view.value.microphoneLevel).toEqual({
+      valuePercent: 0,
+      peakPercent: 65,
+    });
+
+    microphone.level = null;
+    await h.scheduler.advanceBy(100);
+    expect(workflow.view.value.microphoneLevel).toBeNull();
+    expect(workflow.view.value.capturing).toBe(true);
+
+    await workflow.stop();
+    expect(workflow.view.value.microphoneLevel).toBeNull();
+  });
   it("shares one securing budget between Blob production and HTTP acknowledgement", async () => {
     const h = harness();
     const workflow = await h.start();
