@@ -54,6 +54,12 @@ continuous recorder run. It receives that stream's ordered transport frames.
 Ending browser capture does not itself seal the Audio Asset; a later recorder
 run creates a new Section and Audio Asset.
 
+**Unfinished Audio Asset**:
+An Audio Asset that is not sealed. Its originating Capture may still exist or
+may have ended; secured audio is playable and the asset may still accept
+Transport Frames.
+_Avoid_: Active recording, unfinished Capture.
+
 **Playback snapshot**:
 An immutable playable view of one Audio Asset through a specific acknowledged
 transport-frame count. It excludes audio still retained only by the browser and
