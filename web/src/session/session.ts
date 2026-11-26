@@ -57,6 +57,7 @@ export interface Session {
   logout(successMessage?: string): Promise<void>;
   /** Start provider sign-in and return to the current page afterwards. */
   login(providerKey: string): void;
+  loginUrl(providerKey: string): string;
   /** Allow a recording to start only with a long enough Application Session. */
   authorizeRecordingStart(): boolean;
 }
@@ -157,8 +158,9 @@ export function createSession(
     requireLogin,
     logout: (successMessage = "Signed out.") => endSession(successMessage, true),
     login(providerKey) {
-      location.navigate(gateway.loginUrl(providerKey, location.current().path));
+      location.navigate(session.loginUrl(providerKey));
     },
+    loginUrl: (providerKey) => gateway.loginUrl(providerKey, location.current().path),
     authorizeRecordingStart() {
       const state = current.value;
       if (state.status !== "signedIn") return false;

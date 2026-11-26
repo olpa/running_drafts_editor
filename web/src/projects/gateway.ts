@@ -1,4 +1,4 @@
-import { ApiError, readProblemDetails, type ApiRequester } from "../shared/http.ts";
+import { ApiError, jsonHeaders, readProblemDetails, type ApiRequester } from "../shared/http.ts";
 import type { AudioAssetSummary, ProjectSummary } from "../shared/project-types.ts";
 
 export interface SectionSummary {
@@ -8,7 +8,13 @@ export interface SectionSummary {
 }
 
 export interface ProjectDetail extends ProjectSummary {
+  serverTime: string;
   document: { sections: SectionSummary[] };
+}
+
+export interface AudioAssetRead {
+  audioAsset: AudioAssetSummary;
+  serverTime: string;
 }
 
 export interface PlaybackProbeResult {
@@ -20,6 +26,8 @@ export interface PlaybackProbeResult {
 export interface ProjectsGateway {
   listProjects(): Promise<ProjectSummary[]>;
   getProjectDetail(projectId: string): Promise<ProjectDetail>;
+  getAudioAsset(audioAssetId: string): Promise<AudioAssetRead>;
+  confirmEnded(audioAssetId: string, frameCount: number): Promise<AudioAssetSummary>;
   audioDownloadUrl(audioAssetId: string): string;
   resolvePlaybackUrl(audioAssetId: string, signal: AbortSignal): Promise<string>;
   probePlayback(url: string, signal: AbortSignal): Promise<PlaybackProbeResult>;
@@ -28,6 +36,8 @@ export interface ProjectsGateway {
 export function createProjectsGateway(
   api: ApiRequester,
   request: typeof fetch = fetch.bind(window),
+  // Asset actions report session expiry inline on the selected card.
+  assetApi: ApiRequester = api,
 ): ProjectsGateway {
   async function playbackRequest(
     method: "HEAD" | "GET",
@@ -53,6 +63,12 @@ export function createProjectsGateway(
       return result.projects;
     },
     getProjectDetail: (projectId) => api.json("GET", `/projects/${encodeURIComponent(projectId)}`),
+    getAudioAsset: (id) => assetApi.json("GET", `/audio-assets/${encodeURIComponent(id)}`),
+    confirmEnded: (id, frameCount) =>
+      assetApi.json("POST", `/audio-assets/${encodeURIComponent(id)}/confirm-ended`, {
+        headers: jsonHeaders(),
+        body: JSON.stringify({ frameCount }),
+      }),
     audioDownloadUrl: (audioAssetId) =>
       api.url(`/audio-assets/${encodeURIComponent(audioAssetId)}/download`),
     async resolvePlaybackUrl(audioAssetId, signal) {

@@ -36,7 +36,8 @@ const sealed = (reason: "completed" | "interrupted"): AudioAssetSummary => ({
   mediaType: "audio/webm;codecs=opus",
   isSealed: true,
   sealReason: reason,
-  sealedAt: "now",
+  createdAt: "now",
+  updatedAt: "now",
   frameCount: 0,
   observedDurationMs: 0,
   storedBytes: 0,
@@ -64,7 +65,11 @@ function harness(options: { maxFrameBytes?: number } = {}) {
     suspended: 0,
   };
   const logs: string[] = [];
-  const state = { completeFails: 0, completeResult: sealed("completed") };
+  const state = {
+    completeFails: 0,
+    completeResult: sealed("completed"),
+    completeError: null as ApiError | null,
+  };
   const delivery = createSectionDelivery({
     audioAssetId: "asset",
     retryDelaysMs: [5_000, 10_000, 17_000],
@@ -78,6 +83,7 @@ function harness(options: { maxFrameBytes?: number } = {}) {
       },
       complete: async (_id, frameCount) => {
         calls.complete.push(frameCount);
+        if (state.completeError) throw state.completeError;
         if (state.completeFails-- > 0) throw new Error("complete unavailable");
         return state.completeResult;
       },
@@ -99,6 +105,50 @@ function harness(options: { maxFrameBytes?: number } = {}) {
 }
 
 describe("SectionDelivery", () => {
+  const sealConflict = () => new ApiError("POST", "/asset", 409, { code: "audio_asset_sealed" });
+
+  it("stops after a terminal frame conflict and retains every pending frame until discard", async () => {
+    const { delivery, sent, calls } = harness();
+    delivery.accept(frame(0));
+    sent[0]!.result.reject(sealConflict());
+    await settle();
+    delivery.captureStopping("conflict");
+    delivery.accept(frame(1));
+    delivery.captureEnded("conflict");
+    delivery.requestUpload();
+    await delivery.closeIfReady();
+    assert.deepEqual(calls.stops, ["conflict"]);
+    assert.equal(sent.length, 1);
+    assert.equal(delivery.view.value.pendingFrames, 2);
+    assert.equal(delivery.view.value.canUploadPending, false);
+    assert.match(delivery.view.value.problem, /Another session closed this audio/);
+    delivery.discard();
+    assert.equal(calls.interrupt, 0);
+  });
+
+  it("treats a late lifecycle conflict as terminal without offering completion retry", async () => {
+    const { delivery, calls, state } = harness();
+    state.completeError = sealConflict();
+    delivery.captureEnded("user");
+    await delivery.closeIfReady();
+    delivery.retryClose();
+    assert.deepEqual(calls.complete, [0]);
+    assert.equal(delivery.view.value.canRetryCompletion, false);
+    assert.equal(delivery.view.value.awaitingSeal, false);
+    assert.match(delivery.view.value.problem, /Another session closed this audio/);
+  });
+
+  it("attempts an interrupted seal when the user discards unsecured audio after Capture", async () => {
+    const { delivery, sent, calls } = harness();
+    delivery.accept(frame(0));
+    delivery.captureStopping("user");
+    delivery.captureEnded("user");
+    delivery.discard();
+    assert.equal(sent[0]!.signal.aborted, true);
+    assert.equal(calls.interrupt, 1);
+    assert.deepEqual(calls.complete, []);
+  });
+
   it("sends in order, tracks secured audio, and completes with the assigned frame count", async () => {
     const { delivery, sent, calls } = harness();
     delivery.accept(frame(0));

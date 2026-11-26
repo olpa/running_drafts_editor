@@ -1,7 +1,8 @@
 import { computed, inject, shallowRef, type InjectionKey, type Ref } from "vue";
 import { ApiError } from "../shared/http.ts";
 import type { ProjectSummary } from "../shared/project-types.ts";
-import type { ProjectDetail, ProjectsGateway } from "./gateway.ts";
+import type { AudioAssetRead, ProjectDetail, ProjectsGateway } from "./gateway.ts";
+import { createAssetResolution } from "./asset-resolution.ts";
 import { createSectionPlayback, type SectionPlayback } from "./section-playback.ts";
 
 export type ProjectLoad<T> =
@@ -25,6 +26,8 @@ export interface Projects {
   /** Forget all Account-owned data, for example when the Account signs out. */
   clear(): void;
   audioDownloadUrl(audioAssetId: string): string;
+  createAssetResolution: (initial: AudioAssetRead) => ReturnType<typeof createAssetResolution>;
+  signInUrl(): string | undefined;
   /** Create page-local playback state for one mounted Section. */
   createPlayback(audioAssetId: string): SectionPlayback;
 }
@@ -40,6 +43,7 @@ export function createProjects(
   gateway: ProjectsGateway,
   scheduler: ProjectsScheduler = browserScheduler,
   options: {
+    signInUrl?: () => string | undefined;
     signInAgain?: () => void;
     logPlayback?: (entry: Record<string, unknown>) => void;
   } = {},
@@ -107,6 +111,8 @@ export function createProjects(
       detail.value = { kind: "idle" };
     },
     audioDownloadUrl: (audioAssetId) => gateway.audioDownloadUrl(audioAssetId),
+    createAssetResolution: (initial) => createAssetResolution(gateway, initial),
+    signInUrl: () => options.signInUrl?.(),
     createPlayback: (audioAssetId) => {
       const playbackOptions: Parameters<typeof createSectionPlayback>[0] = {
         audioAssetId,

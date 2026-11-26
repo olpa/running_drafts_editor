@@ -31,7 +31,8 @@ function asset(id: string, sealReason: "completed" | "interrupted"): AudioAssetS
     mediaType: "audio/webm;codecs=opus",
     isSealed: true,
     sealReason,
-    sealedAt: "now",
+    createdAt: "now",
+    updatedAt: "now",
     frameCount: 0,
     observedDurationMs: 0,
     storedBytes: 0,
@@ -144,8 +145,15 @@ function mountApplication(adapters: ApplicationAdapters = {}) {
         title: "Existing",
         createdAt: "now",
         updatedAt: "now",
+        serverTime: "now",
         document: { sections: [] },
       }),
+      getAudioAsset: async () => {
+        throw new Error("Unexpected Audio Asset read");
+      },
+      confirmEnded: async () => {
+        throw new Error("Unexpected confirmation");
+      },
       audioDownloadUrl: (id) => `https://api.example.test/audio-assets/${id}/download`,
       resolvePlaybackUrl: async (id) => `https://api.example.test/audio-assets/${id}/snapshot`,
       probePlayback: async () => ({ status: 206, referenceId: null }),
@@ -392,7 +400,13 @@ describe("application", () => {
         },
         async getProjectDetail(projectId) {
           reads.push(`detail:${projectId}`);
-          return { ...summary, document: { sections: [] } };
+          return { ...summary, serverTime: "now", document: { sections: [] } };
+        },
+        getAudioAsset: async () => {
+          throw new Error("Unexpected Audio Asset read");
+        },
+        confirmEnded: async () => {
+          throw new Error("Unexpected confirmation");
         },
         audioDownloadUrl: (id) => `/audio-assets/${id}/download`,
         resolvePlaybackUrl: async (id) => `/audio-assets/${id}/snapshot`,
@@ -417,6 +431,12 @@ describe("application", () => {
         listProjects: async () => [],
         getProjectDetail: async () => {
           throw new ApiError("GET", "/projects/not-a-uuid", 404);
+        },
+        getAudioAsset: async () => {
+          throw new Error("Unexpected Audio Asset read");
+        },
+        confirmEnded: async () => {
+          throw new Error("Unexpected confirmation");
         },
         audioDownloadUrl: (id) => `/audio-assets/${id}/download`,
         resolvePlaybackUrl: async (id) => `/audio-assets/${id}/snapshot`,
@@ -468,7 +488,17 @@ describe("application", () => {
     const { root } = mountApplication({
       projectsGateway: {
         listProjects: async () => [summary],
-        getProjectDetail: async () => ({ ...summary, document: { sections: [] } }),
+        getProjectDetail: async () => ({
+          ...summary,
+          serverTime: "now",
+          document: { sections: [] },
+        }),
+        getAudioAsset: async () => {
+          throw new Error("Unexpected Audio Asset read");
+        },
+        confirmEnded: async () => {
+          throw new Error("Unexpected confirmation");
+        },
         audioDownloadUrl: (id) => `/audio-assets/${id}/download`,
         resolvePlaybackUrl: async (id) => `/audio-assets/${id}/snapshot`,
         probePlayback: async () => ({ status: 206, referenceId: null }),

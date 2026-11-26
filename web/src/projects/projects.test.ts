@@ -9,6 +9,7 @@ const detail: ProjectDetail = {
   title: "Canonical field notes",
   createdAt: "2026-10-26T10:00:00Z",
   updatedAt: "2026-10-26T10:01:00Z",
+  serverTime: "now",
   document: { sections: [] },
 };
 
@@ -16,6 +17,12 @@ function fakeGateway(overrides: Partial<ProjectsGateway> = {}): ProjectsGateway 
   return {
     listProjects: async () => [detail],
     getProjectDetail: async () => detail,
+    getAudioAsset: async () => {
+      throw new Error("Unexpected Audio Asset read");
+    },
+    confirmEnded: async () => {
+      throw new Error("Unexpected confirmation");
+    },
     audioDownloadUrl: (id) => `https://api.example.test/audio-assets/${id}/download`,
     resolvePlaybackUrl: async (id) => `https://api.example.test/audio-assets/${id}/snapshot`,
     probePlayback: async () => ({ status: 206, referenceId: null }),

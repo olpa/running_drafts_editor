@@ -47,7 +47,8 @@ function sealed(id: string, reason: "completed" | "interrupted"): AudioAssetSumm
     mediaType: "audio/webm;codecs=opus",
     isSealed: true,
     sealReason: reason,
-    sealedAt: "2026-10-21T14:32:00Z",
+    createdAt: "2026-10-21T14:32:00Z",
+    updatedAt: "2026-10-21T14:32:00Z",
     frameCount: 0,
     observedDurationMs: 0,
     storedBytes: 0,
@@ -413,7 +414,8 @@ it("an unsealed completion response remains retryable", async () => {
     ...sealed("asset-1", "completed"),
     isSealed: false,
     sealReason: null,
-    sealedAt: null,
+    createdAt: "now",
+    updatedAt: "now",
   };
   await controller.start();
   const stopping = controller.stop();

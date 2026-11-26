@@ -15,6 +15,12 @@ function gateway(overrides: Partial<ProjectsGateway> = {}): ProjectsGateway {
     getProjectDetail: async () => {
       throw new Error("unused");
     },
+    getAudioAsset: async () => {
+      throw new Error("Unexpected Audio Asset read");
+    },
+    confirmEnded: async () => {
+      throw new Error("Unexpected confirmation");
+    },
     audioDownloadUrl: () => "unused",
     resolvePlaybackUrl: async () => "https://api.example.test/snapshot/12",
     probePlayback: async () => ({ status: 206, referenceId: null }),
