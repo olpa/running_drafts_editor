@@ -95,6 +95,12 @@ function storyGateway(id: number): ProjectsGateway {
   return {
     listProjects: async () => [],
     getProjectDetail: unused,
+    getAudioAsset: async () => {
+      throw new Error("Unexpected Audio Asset read");
+    },
+    confirmEnded: async () => {
+      throw new Error("Unexpected confirmation");
+    },
     audioDownloadUrl: () => "#",
     async resolvePlaybackUrl(_audioAssetId, signal) {
       write(id, "HEAD latest sent");

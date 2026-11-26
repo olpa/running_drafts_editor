@@ -55,6 +55,7 @@ export interface CaptureAndDelivery {
   retryClose(): void;
   suspend(): void;
   resume(): void;
+  discard(): void;
   dispose(): void;
 }
 
@@ -431,6 +432,7 @@ export function createCaptureAndDelivery(options: {
       suspended = false;
       delivery?.resume();
     },
+    discard: () => delivery?.discard(),
     dispose() {
       disposed = true;
       timing.dispose();

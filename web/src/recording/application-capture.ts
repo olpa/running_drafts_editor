@@ -315,6 +315,7 @@ export function createApplicationCapture(options: ApplicationCaptureOptions): Ap
     },
     clearLog,
     discardAll() {
+      if (ownsCurrentSession.value) recorder.value?.discard();
       workspaceOpen = false;
       targetProjectId = undefined;
       resetRecorder();

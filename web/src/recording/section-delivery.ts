@@ -32,6 +32,7 @@ type CloseCommand =
   { readonly kind: "complete"; readonly frameCount: number } | { readonly kind: "interrupt" };
 type CloseLifecycle =
   | { kind: "open" }
+  | { kind: "sealedElsewhere" }
   | { kind: "closing"; command: CloseCommand }
   | {
       kind: "failed";
@@ -104,6 +105,7 @@ export interface SectionDelivery {
   /** The Application Session ended: stop sending and closing, keep every byte. */
   suspend(): void;
   resume(): void;
+  discard(): void;
   dispose(): void;
 }
 
@@ -160,8 +162,20 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     return state.phase === "ended" && state.reason !== null && isInterruptionReason(state.reason);
   }
 
+  function sealedElsewhere(error: ApiError): boolean {
+    if (error.status !== 409 || error.problem?.code !== "audio_asset_sealed") return false;
+    state.recovery = "blocked-target";
+    state.problem =
+      "Another session closed this audio. Any remaining unsecured audio stays on this page and cannot be uploaded.";
+    state.diagnosticDetails = problemDetails(error.problem);
+    state.close = { kind: "sealedElsewhere" };
+    frames.terminate();
+    options.requestCaptureStop("conflict");
+    return true;
+  }
+
   function handleFrameFailure(error: unknown): void {
-    if (!(error instanceof ApiError)) return;
+    if (!(error instanceof ApiError) || sealedElsewhere(error)) return;
     const code = error.problem?.code;
     if (code === "audio_storage_limit_exceeded" || code === "audio_asset_duration_limit_exceeded") {
       frames.freeze();
@@ -290,7 +304,7 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
         );
       options.log(command.kind === "complete" ? "complete sent" : "interrupt sent");
     } catch (error) {
-      if (disposed) return;
+      if (disposed || (error instanceof ApiError && sealedElsewhere(error))) return;
       const problem =
         command.kind === "complete"
           ? `Could not complete recording: ${errorMessage(error)}`
@@ -312,7 +326,7 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     }
     const closing = state.close;
     if (closing.kind === "open" || closing.kind === "closing") return "pending";
-    if (closing.command.kind !== "complete") return null;
+    if (closing.kind === "sealedElsewhere" || closing.command.kind !== "complete") return null;
     if (closing.kind === "failed") return "failed";
     return closing.result.isSealed && closing.result.sealReason === "completed"
       ? "succeeded"
@@ -352,7 +366,8 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
       canUploadPending: state.phase === "ended" && state.pendingFrames > 0 && !blocked(),
       closeProblem,
       canRetryClose: !!closeProblem,
-      awaitingSeal: state.phase === "ended" && closing.kind !== "closed",
+      awaitingSeal:
+        state.phase === "ended" && closing.kind !== "closed" && closing.kind !== "sealedElsewhere",
     };
   });
 
@@ -363,6 +378,10 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
     },
     accept(frame) {
       state.lastFrameEndMs = frame.endMs;
+      if (state.close.kind === "sealedElsewhere") {
+        frames.enqueue(frame);
+        return;
+      }
       state.assignedFrames++;
       if (frame.data.size > options.maxFrameBytes) {
         frames.freeze();
@@ -439,6 +458,22 @@ export function createSectionDelivery(options: SectionDeliveryOptions): SectionD
         frames.retry();
       }
       void closeIfReady();
+    },
+    discard() {
+      if (
+        disposed ||
+        state.suspended ||
+        state.phase !== "ended" ||
+        state.close.kind === "closed" ||
+        state.close.kind === "closing" ||
+        state.close.kind === "sealedElsewhere"
+      )
+        return;
+      state.suspended = true;
+      frames.terminate();
+      void options.gateway.interrupt(options.audioAssetId).catch((error: unknown) => {
+        options.log(`ERR Could not close discarded recording: ${errorMessage(error)}`);
+      });
     },
     dispose() {
       disposed = true;

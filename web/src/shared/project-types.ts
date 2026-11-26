@@ -9,8 +9,9 @@ export interface AudioAssetSummary {
   id: string;
   mediaType: string;
   isSealed: boolean;
-  sealReason: "completed" | "interrupted" | null;
-  sealedAt: string | null;
+  sealReason: "completed" | "interrupted" | "user_resolved" | null;
+  createdAt: string;
+  updatedAt: string;
   frameCount: number;
   observedDurationMs: number;
   storedBytes: number;

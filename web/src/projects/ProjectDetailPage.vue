@@ -1,29 +1,14 @@
 <script setup lang="ts">
 import { watchEffect } from "vue";
 import { RouterLink, useRoute } from "vue-router";
-import { formatDateTime } from "../shared/format.ts";
-import type { AudioAssetSummary } from "../shared/project-types.ts";
 import { useProjects } from "./projects.ts";
-import SectionAudioPlayer from "./SectionAudioPlayer.vue";
+import ProjectSectionCard from "./ProjectSectionCard.vue";
 
 const props = defineProps<{ projectId: string }>();
 defineEmits<{ recordMore: [projectId: string] }>();
 
 const projects = useProjects();
 const route = useRoute();
-
-function assetState(asset: AudioAssetSummary): string {
-  if (!asset.isSealed) return "Recording is still open and cannot be downloaded.";
-  return asset.sealReason === "interrupted"
-    ? "Interrupted audio is sealed and available to download."
-    : "Completed audio is sealed and available to download.";
-}
-
-function assetDiagnostics(asset: AudioAssetSummary): string {
-  const duration = (asset.observedDurationMs / 1_000).toFixed(1);
-  const sealed = asset.sealedAt ? ` · sealed ${formatDateTime(asset.sealedAt)}` : "";
-  return `${asset.frameCount} frames · ${asset.storedBytes} bytes · ${duration} seconds${sealed}`;
-}
 
 watchEffect(() => {
   const state = projects.detail.value;
@@ -77,36 +62,12 @@ watchEffect(() => {
         This Project has no Sections.
       </p>
       <ol v-else class="project-sections">
-        <li
+        <ProjectSectionCard
           v-for="section in projects.detail.value.value.document.sections"
-          :key="section.id"
-          data-testid="project-section"
-          :data-section-id="section.id"
-          :data-audio-asset-id="section.audioAsset.id"
-          :data-sealed="String(section.audioAsset.isSealed)"
-          :data-seal-reason="section.audioAsset.sealReason ?? 'open'"
-        >
-          <h3>Section {{ section.position + 1 }}</h3>
-          <p>{{ assetState(section.audioAsset) }}</p>
-          <p class="diagnostics">{{ assetDiagnostics(section.audioAsset) }}</p>
-          <SectionAudioPlayer
-            :audio-asset-id="section.audioAsset.id"
-            :frame-count="section.audioAsset.frameCount"
-            :section-number="section.position + 1"
-          />
-          <a
-            v-if="section.audioAsset.isSealed"
-            class="download-control"
-            data-testid="audio-download"
-            :href="projects.audioDownloadUrl(section.audioAsset.id)"
-          >
-            {{
-              section.audioAsset.sealReason === "interrupted"
-                ? "Download interrupted original audio"
-                : "Download original audio"
-            }}
-          </a>
-        </li>
+          :key="section.audioAsset.id"
+          :section="section"
+          :server-time="projects.detail.value.value.serverTime"
+        />
       </ol>
     </article>
   </section>
@@ -125,24 +86,6 @@ watchEffect(() => {
   gap: 0.75rem;
   padding: 0;
   list-style: none;
-}
-.project-sections > li {
-  padding: 1rem;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-.diagnostics {
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-.download-control {
-  display: inline-block;
-  padding: 0.55rem 0.85rem;
-  border-radius: 6px;
-  background: var(--accent);
-  color: white;
-  font-weight: 650;
-  text-decoration: none;
 }
 .route-skeleton {
   display: grid;

@@ -92,6 +92,7 @@ export interface Project {
   suspendForAuthentication(): void;
   resumeAfterAuthentication(accountId: string): void;
   /** Permanently finish the recorder and release every resource. */
+  discard(): void;
   dispose(): void;
 }
 
@@ -276,6 +277,9 @@ export function createProject(
       authenticationSuspended.value = false;
       preparing?.resume();
       for (const section of sections.value) section.captureAndDelivery.resume();
+    },
+    discard() {
+      for (const section of sections.value) section.captureAndDelivery.discard();
     },
     dispose() {
       disposed.value = true;

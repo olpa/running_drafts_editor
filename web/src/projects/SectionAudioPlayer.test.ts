@@ -10,6 +10,12 @@ function gateway(resolvePlaybackUrl = vi.fn(async () => "/snapshot/1")): Project
     getProjectDetail: async () => {
       throw new Error("unused");
     },
+    getAudioAsset: async () => {
+      throw new Error("Unexpected Audio Asset read");
+    },
+    confirmEnded: async () => {
+      throw new Error("Unexpected confirmation");
+    },
     audioDownloadUrl: () => "unused",
     resolvePlaybackUrl,
     probePlayback: async () => ({ status: 206, referenceId: null }),

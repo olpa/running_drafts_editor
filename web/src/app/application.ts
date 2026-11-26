@@ -123,9 +123,15 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
       session.requireLogin("Your Account is unavailable. Contact support for help."),
   });
   const projects = createProjects(
-    adapters.projectsGateway ?? createProjectsGateway(api),
+    adapters.projectsGateway ?? createProjectsGateway(api, undefined, createApiRequester()),
     undefined,
     {
+      signInUrl: () => {
+        const state = session.state.value;
+        return state.status === "signedIn"
+          ? session.loginUrl(state.session.provider.key)
+          : undefined;
+      },
       signInAgain: () => {
         const state = session.state.value;
         if (state.status === "signedIn") session.login(state.session.provider.key);
