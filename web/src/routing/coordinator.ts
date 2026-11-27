@@ -35,17 +35,16 @@ export function coordinateRoutes(
     watch(
       router.currentRoute,
       (route) => {
-        if (!route.meta.private || sessionStarted) return;
+        if ((!route.meta.private && route.name !== "landing") || sessionStarted) return;
         sessionStarted = true;
-        void session.start().then(async () => {
-          // Authentication owns and removes only its callback parameters. Its
-          // location adapter performs that cleanup synchronously; reflect the
-          // cleaned browser address in the router before later links are built.
-          const browserPath = `${globalThis.location.pathname}${globalThis.location.search}${globalThis.location.hash}`;
-          if (router.currentRoute.value.fullPath !== browserPath) {
-            await router.replace(browserPath);
-          }
-        });
+        void session.start();
+        // Authentication owns and removes only its callback parameters. Its
+        // location adapter performs that cleanup synchronously; reflect the
+        // cleaned browser address in the router before later links are built.
+        const browserPath = `${globalThis.location.pathname}${globalThis.location.search}${globalThis.location.hash}`;
+        if (route.path === globalThis.location.pathname && route.fullPath !== browserPath) {
+          void router.replace(browserPath);
+        }
       },
       { immediate: true, flush: "post" },
     ),
@@ -55,20 +54,26 @@ export function coordinateRoutes(
     watch(
       [router.currentRoute, session.state],
       ([route, state]) => {
+        if (route.name === "landing") {
+          document.title = "Running Drafts";
+          if (state.status === "signedIn") {
+            const query = { ...route.query };
+            delete query.authError;
+            delete query.referenceId;
+            void router.replace({ name: "projects", query, hash: route.hash });
+          }
+        }
         if (!route.meta.private) {
+          projects.clear();
+          return;
+        }
+        if (state.status !== "signedIn") {
+          document.title = "Running Drafts";
           projects.clear();
           return;
         }
         if (route.name === "projects") {
           document.title = "Projects — Running Drafts";
-        } else if (state.status !== "signedIn") {
-          document.title = "Running Drafts";
-        }
-        if (state.status !== "signedIn") {
-          projects.clear();
-          return;
-        }
-        if (route.name === "projects") {
           projects.clearDetail();
           void projects.loadList();
           return;

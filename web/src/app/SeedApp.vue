@@ -6,6 +6,7 @@ import { useProjects } from "../projects/projects.ts";
 import { useLeaveGuard } from "../recording/leave-guard.ts";
 import CaptureModal from "../recording/CaptureModal.vue";
 import { useApplicationCapture } from "../recording/application-capture.ts";
+import FirstRunPage from "../session/FirstRunPage.vue";
 import SessionPanel from "../session/SessionPanel.vue";
 import { useSession } from "../session/session.ts";
 import UsageSummary from "../usage/UsageSummary.vue";
@@ -86,8 +87,8 @@ watch(
 </script>
 
 <template>
-  <SessionPanel />
-  <template v-if="signedIn">
+  <main v-if="signedIn">
+    <SessionPanel />
     <UsageSummary />
     <ProjectNavigation @new-recording="openCapture()" />
     <div data-testid="projects-workspace">
@@ -95,25 +96,7 @@ watch(
         <component :is="Component" @record-more="openCapture" />
       </RouterView>
     </div>
-  </template>
-  <div
-    v-else-if="session.state.value.status === 'loading'"
-    class="private-skeleton"
-    aria-hidden="true"
-  >
-    <span></span><span></span><span></span>
-  </div>
+  </main>
+  <FirstRunPage v-else />
   <CaptureModal v-if="modalOpen" @close="closeCapture" @discard="discardPending" />
 </template>
-
-<style scoped>
-.private-skeleton {
-  display: grid;
-  gap: 0.75rem;
-}
-.private-skeleton span {
-  height: 4rem;
-  border-radius: 8px;
-  background: #eef2f7;
-}
-</style>

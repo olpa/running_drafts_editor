@@ -39,11 +39,8 @@ export function hasAuthenticationCallback(search: string): boolean {
 }
 
 export function authenticationMessage(error: AuthenticationError | null): string {
-  if (error === "cancelled") return "Sign-in was cancelled.";
-  if (error === "provider_unavailable") {
-    return "The sign-in provider is temporarily unavailable. Please try again.";
-  }
-  if (error === "authentication_failed") return "Sign-in could not be verified. Please try again.";
+  if (error === "cancelled") return "Sign-in canceled.";
+  if (error) return "We couldn’t sign you in. Please try again.";
   return "Sign in to continue.";
 }
 

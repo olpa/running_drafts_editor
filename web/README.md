@@ -57,7 +57,7 @@ remote or agent environment, run `npm run storybook -- --no-open` and forward
 the port over SSH. The short [Storybook operator guide](docs/storybook.md)
 contains the commands and browser instructions.
 
-The development page is split into two surfaces. Backend liveness and
+The signed-in development page is split into two surfaces. Backend liveness and
 database-backed readiness checks are on the left; the existing browser seed is
 kept on the right. Health checks use `http://localhost:18081` by default. A
 deployed environment serves `/config.js` before the application loads to set
@@ -74,9 +74,12 @@ the only entry, and the editor never asks the backend which providers exist.
 The current-session response names the provider by its stable key, and the
 editor resolves the visible name from the catalog. An unknown key is shown as
 received. Adding a provider needs a coordinated backend and editor release.
-Sign-in navigates the full page to the backend and returns to the current
-editor path and query. The signed-in summary shows the backend-reported session
-expiry in local date and time.
+At `/`, the editor checks the Application Session and sends signed-in
+visitors to `/projects`. Signed-out visitors see the same landing at `/` and
+at private URLs. **Continue with Google** starts a full-page navigation to the
+backend. The browser tab remembers the intended path, query, and fragment
+across the provider round trip. The signed-in summary shows the
+backend-reported session expiry in local date and time.
 
 `ProfileSummary.vue` in `src/session/` shows the display name, a verified email,
 the full Account ID, the provider, the session expiry, and a `Log out` button.
@@ -111,6 +114,9 @@ The production image is a static Vite build served by a non-root nginx process.
 It accepts only the browser-visible `BACKEND_BASE_URL` at runtime and exposes a
 frontend liveness check at `/health/live`. Build a tagged image with
 `IMAGE_TAG=0.1.0 make image`.
+
+The first-run footer links to the approved policy files staged for the build.
+See the [product public-page sources and staging instructions](../../running_drafts_product/public-site/README.md).
 
 Host scripts, target environment examples, Compose project names, ports,
 rollout, status, logs, and rollback are documented in
