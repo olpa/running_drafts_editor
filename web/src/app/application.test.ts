@@ -248,9 +248,7 @@ describe("application", () => {
     window.history.replaceState(null, "", "/projects/one?tab=record");
     const { application, root, captures, recordingGateway, backend } = mountApplication();
     await flushPromises();
-    expect(root.querySelector("time")?.getAttribute("datetime")).toBe(
-      (backend.current as CurrentSession).sessionExpiresAt,
-    );
+    expect(testId(root, "usage-summary")).toBeNull();
 
     testId(root, "record-more")!.click();
     await flushPromises();
@@ -310,7 +308,8 @@ describe("application", () => {
     expect(root.textContent).toMatch(/different Account/u);
   });
 
-  it("updates the session expiry after bootstrap and drops it on expiry or failure", async () => {
+  it("updates the session expiry on Account and drops it on expiry or failure", async () => {
+    window.history.replaceState(null, "", "/account");
     const { application, root, backend } = mountApplication();
     await flushPromises();
     const expiryOf = () => root.querySelector("time")?.getAttribute("datetime");
@@ -335,6 +334,27 @@ describe("application", () => {
     await application.session.bootstrap();
     await flushPromises();
     expect(expiryOf()).toBeUndefined();
+  });
+
+  it("preserves a signed-out Account URL and opens it when its session becomes available", async () => {
+    window.history.replaceState(null, "", "/account/?keep=1#notes");
+    const authentication = sessionBackend();
+    authentication.backend.current = "signedOut";
+    const { application, root } = mountApplication({ sessionGateway: authentication.gateway });
+    await flushPromises();
+
+    expect(button(root, "Sign in with Google")).not.toBeNull();
+    expect(testId(root, "account-page")).toBeNull();
+    expect(application.router.currentRoute.value.fullPath).toBe("/account/?keep=1#notes");
+
+    authentication.backend.current = session(ACCOUNT_A, 8 * HOUR);
+    await application.session.bootstrap();
+    await flushPromises();
+
+    expect(testId(root, "account-page")).not.toBeNull();
+    expect(application.router.currentRoute.value.fullPath).toBe("/account/?keep=1#notes");
+    expect(application.projects.list.value.kind).toBe("idle");
+    expect(application.projects.detail.value.kind).toBe("idle");
   });
 
   it("shows the landing before sign-in at both entry routes", async () => {
@@ -486,9 +506,8 @@ describe("application", () => {
       expect(link.querySelector('[aria-hidden="true"]')?.textContent).toBe("«");
       expect(link.textContent?.trim()).toMatch(/Back to all projects$/);
     }
-    const account = root.querySelector('aside[aria-labelledby="account-title"]');
-    expect(account?.querySelector('[data-testid="authentication"]')).not.toBeNull();
-    expect(detail.closest("main")?.contains(account)).toBe(false);
+    expect(testId(root, "authentication")).toBeNull();
+    expect(testId(root, "usage-summary")).toBeNull();
     expect(detail.firstElementChild).toBe(backLinks[0]);
     expect(detail.lastElementChild).toBe(backLinks[1]);
     expect(
@@ -504,6 +523,22 @@ describe("application", () => {
     );
     expect(window.location.pathname).toBe("/projects/Opaque-ID/");
     expect(globalThis.document.title).toBe("Canonical route title — Running Drafts");
+    const menu = root.querySelector<HTMLButtonElement>('button[aria-label="Account menu"]')!;
+    menu.click();
+    await flushPromises();
+    expect(menu.getAttribute("aria-expanded")).toBe("true");
+    const accountLink = root.querySelector<HTMLAnchorElement>('nav a[href="/account"]')!;
+    accountLink.click();
+    await flushPromises();
+
+    expect(window.location.pathname).toBe("/account");
+    expect(menu.getAttribute("aria-expanded")).toBe("false");
+    expect(globalThis.document.title).toBe("Account — Running Drafts");
+    expect(document.activeElement).toBe(root.querySelector("#account-title"));
+    expect(testId(root, "authentication")).not.toBeNull();
+    expect(testId(root, "usage-summary")).not.toBeNull();
+    expect(testId(root, "projects-workspace")).toBeNull();
+    expect(reads).toEqual(["detail:Opaque-ID"]);
   });
 
   it("keeps a rejected Project URL and renders the privacy-preserving state", async () => {

@@ -91,9 +91,12 @@ h1 {
   background: var(--panel);
 }
 .project-list a {
+  min-width: 0;
   color: var(--accent-dark);
+  overflow-wrap: anywhere;
 }
 .project-list time {
+  flex-shrink: 0;
   color: var(--muted);
   font-size: 0.85rem;
 }

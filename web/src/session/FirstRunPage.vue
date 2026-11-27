@@ -19,6 +19,15 @@ const [audioSaving, signInCopy] = landingDetails!.split("<!-- sign-in -->");
       <!-- The markup is a bundled, product-owned static source. -->
       <!-- eslint-disable-next-line vue/no-v-html -->
       <div class="landing-copy" v-html="introduction"></div>
+      <figure class="recording-workflow">
+        <img
+          :src="recordingWorkflow"
+          width="1536"
+          height="1024"
+          alt="Four panels show a person speaking into a clip-on mic connected to a pocketed phone, Running Drafts saving audio as they speak, an AI agent receiving saved audio through the Running Drafts API, and the person finishing the outline."
+        />
+        <figcaption>AI-generated</figcaption>
+      </figure>
       <!-- eslint-disable-next-line vue/no-v-html -->
       <div class="landing-copy" v-html="audioSaving"></div>
       <div class="sign-in" data-testid="authentication">
@@ -44,15 +53,6 @@ const [audioSaving, signInCopy] = landingDetails!.split("<!-- sign-in -->");
           <button v-if="state.logoutUnconfirmed" @click="session.logout()">Retry logout</button>
         </template>
       </div>
-      <figure class="recording-workflow">
-        <img
-          :src="recordingWorkflow"
-          width="1536"
-          height="1024"
-          alt="Four panels show a person speaking into a clip-on mic connected to a pocketed phone, Running Drafts saving audio as they speak, an AI agent receiving saved audio through the Running Drafts API, and the person finishing the outline."
-        />
-        <figcaption>AI-generated</figcaption>
-      </figure>
     </main>
     <LegalFooter class="policies" />
   </div>
@@ -92,6 +92,7 @@ const [audioSaving, signInCopy] = landingDetails!.split("<!-- sign-in -->");
   position: relative;
   margin: 1.5rem 0 1rem;
 }
+/* Keep the original responsive image sizing unless a resize is explicitly requested. */
 .recording-workflow img {
   display: block;
   width: 100%;

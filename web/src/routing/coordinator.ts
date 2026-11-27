@@ -13,7 +13,20 @@ export function coordinateRoutes(
 ): () => void {
   let sessionStarted = false;
   let restoringHistory = false;
+  let projectRead: Promise<void> | undefined;
   const stops: WatchStopHandle[] = [];
+
+  const scrollBehavior = router.options.scrollBehavior;
+  if (scrollBehavior) {
+    router.options.scrollBehavior = async (to, from, savedPosition) => {
+      // A loading skeleton can be shorter than the saved scroll position.
+      if (savedPosition?.top && to === router.currentRoute.value && projectRead) {
+        await projectRead;
+        await nextTick();
+      }
+      return scrollBehavior(to, from, savedPosition);
+    };
+  }
 
   const markHistoryNavigation = () => {
     restoringHistory = true;
@@ -54,6 +67,7 @@ export function coordinateRoutes(
     watch(
       [router.currentRoute, session.state],
       ([route, state]) => {
+        projectRead = undefined;
         if (route.name === "landing") {
           document.title = "Running Drafts";
           if (state.status === "signedIn") {
@@ -75,12 +89,17 @@ export function coordinateRoutes(
         if (route.name === "projects") {
           document.title = "Projects — Running Drafts";
           projects.clearDetail();
-          void projects.loadList();
+          projectRead = projects.loadList();
+          return;
+        }
+        if (route.name === "account") {
+          document.title = "Account — Running Drafts";
+          projects.clear();
           return;
         }
         if (route.name === "project-detail") {
           const projectId = String(route.params.projectId);
-          void projects.loadProject(projectId);
+          projectRead = projects.loadProject(projectId);
         }
       },
       { immediate: true, flush: "post" },
@@ -94,13 +113,14 @@ export function coordinateRoutes(
     void nextTick(() => {
       globalThis.document
         .querySelector<HTMLElement>(
-          '#projects-title, #project-detail-title, [data-testid="page-not-found"] h1',
+          '#projects-title, #project-detail-title, #account-title, [data-testid="page-not-found"] h1',
         )
         ?.focus({ preventScroll: true });
     });
   });
 
   return () => {
+    if (scrollBehavior) router.options.scrollBehavior = scrollBehavior;
     removeGuard();
     removeAfterEach();
     globalThis.removeEventListener("popstate", markHistoryNavigation);

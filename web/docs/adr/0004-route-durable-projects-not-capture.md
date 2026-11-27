@@ -13,8 +13,11 @@ without making transient, memory-only Capture look recoverable from navigation.
 
 Vue Router owns URL matching, browser history, scroll, and navigation guards.
 Authentication, Project reads, Capture, and retained audio remain owned by their
-application modules; the current route is the only list/detail destination
-state. A route change therefore refreshes authoritative Project data but never
+application modules. The current route is the only destination state.
+Entering a Project route refreshes the authoritative data for that view. The
+private `/account` route uses the current Application Session and usage
+without reading Projects. Browser history restoration waits for the routed
+Project content before applying a saved scroll position. Navigation never
 creates, binds, disposes, or restores Capture state.
 
 ## Considered alternatives
