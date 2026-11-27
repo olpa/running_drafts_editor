@@ -15,8 +15,6 @@ import {
 } from "../recording/microphone-access.ts";
 import { createApp, watch, type App } from "vue";
 import type { Router } from "vue-router";
-import { createHealth, healthKey } from "../health/health.ts";
-import { createHealthGateway, type HealthGateway } from "../health/gateway.ts";
 import { createProjectsGateway, type ProjectsGateway } from "../projects/gateway.ts";
 import { createProjects, projectsKey, type Projects } from "../projects/projects.ts";
 import { openMicrophoneCapture } from "../recording/capture.ts";
@@ -51,7 +49,6 @@ export interface ApplicationAdapters {
   sessionGateway?: SessionGateway;
   recordingGateway?: RecordingGateway;
   projectsGateway?: ProjectsGateway;
-  healthGateway?: HealthGateway;
   environment?: Partial<Omit<RecordingEnvironment, "gateway">>;
   cues?: Cues;
   microphoneAccess?: MicrophoneAccess;
@@ -139,7 +136,6 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
       logPlayback: (entry) => console.info("audio-playback", entry),
     },
   );
-  const health = createHealth(adapters.healthGateway ?? createHealthGateway());
   const router = adapters.router ?? createEditorRouter();
 
   // Private state follows the Account: recording is retained, everything else is dropped.
@@ -181,7 +177,6 @@ export function createApplication(adapters: ApplicationAdapters = {}): Applicati
   app.provide(applicationCaptureKey, recording);
   app.provide(projectsKey, projects);
   app.provide(usageKey, usage);
-  app.provide(healthKey, health);
   return {
     app,
     session,

@@ -80,7 +80,7 @@ export function coordinateRoutes(
         }
         if (route.name === "project-detail") {
           const projectId = String(route.params.projectId);
-          void Promise.all([projects.loadList(), projects.loadProject(projectId)]);
+          void projects.loadProject(projectId);
         }
       },
       { immediate: true, flush: "post" },

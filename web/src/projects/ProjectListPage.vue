@@ -3,13 +3,23 @@ import { RouterLink, useRoute } from "vue-router";
 import { formatDateTime } from "../shared/format.ts";
 import { useProjects } from "./projects.ts";
 
+defineEmits<{ newRecording: [] }>();
+
 const projects = useProjects();
 const route = useRoute();
 </script>
 
 <template>
   <section data-testid="project-list-page" aria-labelledby="projects-title">
-    <h2 id="projects-title" tabindex="-1">Projects</h2>
+    <h1 id="projects-title" tabindex="-1">Projects</h1>
+    <button
+      type="button"
+      class="primary"
+      data-testid="new-recording"
+      @click="$emit('newRecording')"
+    >
+      New recording
+    </button>
     <div v-if="projects.list.value.kind === 'loading'" class="route-skeleton" aria-hidden="true">
       <span></span><span></span><span></span>
     </div>
@@ -47,10 +57,23 @@ const route = useRoute();
         </li>
       </ol>
     </template>
+    <button
+      v-if="projects.list.value.kind === 'ready' && projects.list.value.value.length > 0"
+      type="button"
+      class="primary"
+      data-testid="new-recording-after-list"
+      @click="$emit('newRecording')"
+    >
+      New recording
+    </button>
   </section>
 </template>
 
 <style scoped>
+h1 {
+  margin-bottom: 0.75rem;
+  overflow-wrap: anywhere;
+}
 .project-list {
   display: grid;
   gap: 0.75rem;

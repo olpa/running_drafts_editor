@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
-import ProjectNavigation from "../projects/ProjectNavigation.vue";
 import { useProjects } from "../projects/projects.ts";
 import { useLeaveGuard } from "../recording/leave-guard.ts";
 import CaptureModal from "../recording/CaptureModal.vue";
@@ -19,6 +18,9 @@ const router = useRouter();
 useLeaveGuard(recording);
 
 const signedIn = computed(() => session.state.value.status === "signedIn");
+const projectNotFound = computed(
+  () => route.name === "project-detail" && projects.detail.value.kind === "notFound",
+);
 const modalOpen = ref(false);
 const attemptedCapture = ref(false);
 const targetProjectId = ref<string | undefined>();
@@ -45,7 +47,7 @@ async function closeCapture(): Promise<void> {
     });
     return;
   }
-  if (projectId) await Promise.all([projects.loadList(), projects.loadProject(projectId)]);
+  if (projectId) await projects.loadProject(projectId);
 }
 
 function discardPending(): void {
@@ -88,15 +90,36 @@ watch(
 
 <template>
   <main v-if="signedIn">
-    <SessionPanel />
-    <UsageSummary />
-    <ProjectNavigation @new-recording="openCapture()" />
     <div data-testid="projects-workspace">
       <RouterView v-slot="{ Component }">
-        <component :is="Component" @record-more="openCapture" />
+        <component :is="Component" @record-more="openCapture" @new-recording="openCapture()" />
       </RouterView>
     </div>
   </main>
   <FirstRunPage v-else />
+  <aside
+    v-if="signedIn && !projectNotFound"
+    class="account-summary"
+    aria-labelledby="account-title"
+  >
+    <h2 id="account-title">Account</h2>
+    <SessionPanel />
+    <UsageSummary />
+  </aside>
   <CaptureModal v-if="modalOpen" @close="closeCapture" @discard="discardPending" />
 </template>
+
+<style scoped>
+.account-summary {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: clamp(1.25rem, 4vw, 2.5rem);
+  padding: 1.25rem clamp(1rem, 3vw, 1.5rem);
+  border-top: 2px solid var(--line);
+  background: #edf0f4;
+}
+.account-summary h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+</style>

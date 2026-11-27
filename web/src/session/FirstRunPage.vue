@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import LegalFooter from "../app/LegalFooter.vue";
+import ProductHeader from "../app/ProductHeader.vue";
 import landingIntro from "./landing-intro.html?raw";
 import recordingWorkflow from "./recording-workflow-variant.png";
 import { useSession } from "./session.ts";
@@ -13,23 +14,11 @@ const [audioSaving, signInCopy] = landingDetails!.split("<!-- sign-in -->");
 
 <template>
   <div v-if="state.status !== 'signedIn'" class="landing">
-    <header class="brand">
-      <strong>Running Drafts</strong>
-      <span>Early preview</span>
-    </header>
+    <ProductHeader class="brand">Early preview</ProductHeader>
     <main class="intro" aria-labelledby="landing-title">
       <!-- The markup is a bundled, product-owned static source. -->
       <!-- eslint-disable-next-line vue/no-v-html -->
       <div class="landing-copy" v-html="introduction"></div>
-      <figure class="recording-workflow">
-        <img
-          :src="recordingWorkflow"
-          width="1536"
-          height="1024"
-          alt="Four panels show a person speaking into a clip-on mic connected to a pocketed phone, Running Drafts saving audio as they speak, an AI agent receiving saved audio through the Running Drafts API, and the person finishing the outline."
-        />
-        <figcaption>AI-generated</figcaption>
-      </figure>
       <!-- eslint-disable-next-line vue/no-v-html -->
       <div class="landing-copy" v-html="audioSaving"></div>
       <div class="sign-in" data-testid="authentication">
@@ -55,6 +44,15 @@ const [audioSaving, signInCopy] = landingDetails!.split("<!-- sign-in -->");
           <button v-if="state.logoutUnconfirmed" @click="session.logout()">Retry logout</button>
         </template>
       </div>
+      <figure class="recording-workflow">
+        <img
+          :src="recordingWorkflow"
+          width="1536"
+          height="1024"
+          alt="Four panels show a person speaking into a clip-on mic connected to a pocketed phone, Running Drafts saving audio as they speak, an AI agent receiving saved audio through the Running Drafts API, and the person finishing the outline."
+        />
+        <figcaption>AI-generated</figcaption>
+      </figure>
     </main>
     <LegalFooter class="policies" />
   </div>
@@ -72,19 +70,6 @@ const [audioSaving, signInCopy] = landingDetails!.split("<!-- sign-in -->");
 .policies {
   width: min(100%, 52rem);
   margin-inline: auto;
-}
-.brand {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5rem 1rem;
-}
-.brand strong {
-  font-size: 1.25rem;
-}
-.brand span {
-  color: #4c6054;
-  font-size: 0.875rem;
 }
 .intro {
   padding-block: clamp(2.75rem, 10vw, 7rem) 2.5rem;

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, ref, useId } from "vue";
 import { formatDateTime } from "../shared/format.ts";
 import type { SectionSummary } from "./gateway.ts";
 import { useProjects } from "./projects.ts";
@@ -27,6 +27,9 @@ const {
 } = resolution;
 const heading = ref<globalThis.HTMLElement | null>(null);
 const action = ref<globalThis.HTMLButtonElement | null>(null);
+const actions = ref<globalThis.HTMLButtonElement | null>(null);
+const actionsOpen = ref(false);
+const actionsId = useId();
 const empty = computed(() => asset.value.frameCount === 0);
 const metadataConflict = computed(() => {
   const reason = asset.value.sealReason;
@@ -45,6 +48,24 @@ const buttonLabel = computed(() => {
   return recent.value ? "Check again" : "Confirm recording has ended";
 });
 const signInUrl = computed(() => projects.signInUrl());
+
+function closeActions(restoreFocus = false): void {
+  if (!actionsOpen.value) return;
+  actionsOpen.value = false;
+  if (restoreFocus) actions.value?.focus();
+}
+
+function handleActionsFocusOut(event: globalThis.FocusEvent): void {
+  const container = event.currentTarget;
+  if (
+    container instanceof globalThis.HTMLElement &&
+    event.relatedTarget instanceof globalThis.Node &&
+    container.contains(event.relatedTarget)
+  ) {
+    return;
+  }
+  closeActions();
+}
 
 function activate(event: globalThis.MouseEvent): Promise<void> {
   return withSectionActionFocus(
@@ -66,10 +87,43 @@ onBeforeUnmount(resolution.dispose);
     :data-sealed="String(!open)"
     :data-seal-reason="asset.sealReason ?? (open ? 'open' : undefined)"
   >
-    <h3 ref="heading" tabindex="-1">Section {{ section.position + 1 }}</h3>
+    <h2 ref="heading" class="section-title" tabindex="-1">Section {{ section.position + 1 }}</h2>
+    <SectionAudioPlayer
+      v-if="!unavailable && !empty"
+      class="row-player"
+      :audio-asset-id="asset.id"
+      :frame-count="asset.frameCount"
+      :section-number="section.position + 1"
+    />
+    <div
+      v-if="!unavailable && asset.isSealed !== false && !empty"
+      class="section-actions"
+      @focusout="handleActionsFocusOut"
+      @keydown.esc.stop="closeActions(true)"
+    >
+      <button
+        ref="actions"
+        type="button"
+        :aria-label="`Actions for Section ${section.position + 1}`"
+        :aria-expanded="actionsOpen"
+        :aria-controls="actionsId"
+        @click="actionsOpen = !actionsOpen"
+      >
+        <span aria-hidden="true">⋮</span>
+      </button>
+      <div v-show="actionsOpen" :id="actionsId" class="actions-popup">
+        <a
+          data-testid="audio-download"
+          :href="projects.audioDownloadUrl(asset.id)"
+          @click="closeActions(true)"
+        >
+          Download
+        </a>
+      </div>
+    </div>
     <div v-if="(open && !unavailable) || message || buttonLabel" class="unfinished">
       <template v-if="open && !unavailable">
-        <h4>Unfinished audio</h4>
+        <h3>Unfinished audio</h3>
         <p>
           This recording may still be running in another browser, or its page may have closed before
           it finished.{{ empty ? "" : " Audio secured so far is available to play." }}
@@ -109,30 +163,77 @@ onBeforeUnmount(resolution.dispose);
       <p v-if="metadataConflict" class="asset-error" role="alert">
         Some audio status information could not be loaded.
       </p>
-      <p v-if="empty">No audio has been secured yet</p>
-      <SectionAudioPlayer
-        v-else
-        :audio-asset-id="asset.id"
-        :frame-count="asset.frameCount"
-        :section-number="section.position + 1"
-      />
-      <a
-        v-if="asset.isSealed !== false && !empty"
-        class="download-control"
-        data-testid="audio-download"
-        :href="projects.audioDownloadUrl(asset.id)"
-      >
-        Download original audio
-      </a>
+      <p v-if="empty" class="empty-audio">No audio has been secured yet</p>
     </template>
   </li>
 </template>
 
 <style scoped>
 .project-section {
-  padding: 1rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5rem 3rem;
+  align-items: center;
+  column-gap: 0.5rem;
+  padding: 0.35rem 0.65rem;
   border: 1px solid var(--line);
   border-radius: 8px;
+  background: var(--panel);
+}
+.section-title {
+  grid-area: 1 / 1;
+  margin: 0;
+  padding-inline-start: 0.25rem;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+.row-player {
+  display: contents;
+}
+.row-player :deep(.play-audio) {
+  grid-area: 1 / 2;
+  justify-self: stretch;
+}
+.row-player :deep(.playback-controls),
+.unfinished,
+.asset-error,
+.empty-audio {
+  grid-column: 1 / -1;
+  margin-block: 0.5rem;
+}
+.section-actions {
+  position: relative;
+  grid-area: 1 / 3;
+}
+.section-actions button {
+  width: 100%;
+  min-height: 48px;
+  padding: 0;
+  font-size: 1.35rem;
+}
+.actions-popup {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: calc(100% + 0.25rem);
+  inset-inline-end: 0;
+  min-width: 8rem;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.actions-popup a {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding-inline: 0.75rem;
+  border-radius: 4px;
+  color: var(--accent-dark);
+  text-decoration: none;
+}
+.actions-popup a:hover,
+.actions-popup a:focus-visible {
+  background: #e8f1ff;
 }
 .unfinished {
   padding: 0.75rem;
@@ -141,7 +242,7 @@ onBeforeUnmount(resolution.dispose);
   margin-bottom: 0.5rem;
   overflow-wrap: anywhere;
 }
-.unfinished h4 {
+.unfinished h3 {
   margin-top: 0;
 }
 .unfinished p:last-child {
@@ -159,14 +260,5 @@ onBeforeUnmount(resolution.dispose);
   height: 1px;
   overflow: hidden;
   clip-path: inset(50%);
-}
-.download-control {
-  display: inline-block;
-  padding: 0.55rem 0.85rem;
-  border-radius: 6px;
-  background: var(--accent);
-  color: white;
-  font-weight: 650;
-  text-decoration: none;
 }
 </style>

@@ -158,7 +158,6 @@ function mountApplication(adapters: ApplicationAdapters = {}) {
       resolvePlaybackUrl: async (id) => `https://api.example.test/audio-assets/${id}/snapshot`,
       probePlayback: async () => ({ status: 206, referenceId: null }),
     } satisfies ProjectsGateway,
-    healthGateway: { check: async () => Promise.reject(new Error("unused")) },
     usageGateway: {
       current: async (): Promise<UsageSnapshot> => ({
         plan: "free",
@@ -253,7 +252,9 @@ describe("application", () => {
       (backend.current as CurrentSession).sessionExpiresAt,
     );
 
-    await openNewCapture(root);
+    testId(root, "record-more")!.click();
+    await flushPromises();
+    expect(testId(root, "capture-modal")).not.toBeNull();
     testId(root, "start")!.click();
     await flushPromises();
     const capture = captures[0]!;
@@ -434,13 +435,16 @@ describe("application", () => {
     await flushPromises();
 
     expect(testId(root, "page-not-found")).not.toBeNull();
+    expect(root.querySelector("header")?.textContent).toBe("Running Drafts");
+    expect(root.querySelector('a[href="/projects?keep=1#fragment"]')).not.toBeNull();
+    expect(testId(root, "projects-workspace")).toBeNull();
     expect(authentication.backend.currentAttempts).toBe(0);
     expect(window.location.pathname + window.location.search + window.location.hash).toBe(
       "/record?keep=1#fragment",
     );
   });
 
-  it("loads a direct opaque Project route and its compact navigation in parallel", async () => {
+  it("loads only the requested Project on a direct opaque Project route", async () => {
     window.history.replaceState(null, "", "/projects/Opaque-ID/");
     const reads: string[] = [];
     const summary = {
@@ -472,10 +476,31 @@ describe("application", () => {
     });
     await flushPromises();
 
-    expect(reads).toEqual(["list", "detail:Opaque-ID"]);
+    expect(reads).toEqual(["detail:Opaque-ID"]);
     expect(testId(root, "project-detail")?.getAttribute("data-project-id")).toBe("Opaque-ID");
-    expect(root.querySelector('[aria-current="page"]')?.textContent).toContain(
-      "Canonical route title",
+    expect(testId(root, "new-recording")).toBeNull();
+    const detail = testId(root, "project-detail")!;
+    const backLinks = detail.querySelectorAll('a[href="/projects"]');
+    expect(backLinks).toHaveLength(2);
+    for (const link of backLinks) {
+      expect(link.querySelector('[aria-hidden="true"]')?.textContent).toBe("«");
+      expect(link.textContent?.trim()).toMatch(/Back to all projects$/);
+    }
+    const account = root.querySelector('aside[aria-labelledby="account-title"]');
+    expect(account?.querySelector('[data-testid="authentication"]')).not.toBeNull();
+    expect(detail.closest("main")?.contains(account)).toBe(false);
+    expect(detail.firstElementChild).toBe(backLinks[0]);
+    expect(detail.lastElementChild).toBe(backLinks[1]);
+    expect(
+      detail
+        .querySelector(".empty-sections")
+        ?.nextElementSibling?.contains(button(detail, "Record more")),
+    ).toBe(true);
+    expect(button(detail, "Record more")?.getAttribute("aria-describedby")).toBe(
+      "record-more-help",
+    );
+    expect(detail.querySelector("#record-more-help")?.textContent).toBe(
+      "Adds audio to this Project.",
     );
     expect(window.location.pathname).toBe("/projects/Opaque-ID/");
     expect(globalThis.document.title).toBe("Canonical route title — Running Drafts");
@@ -503,6 +528,10 @@ describe("application", () => {
     await flushPromises();
 
     expect(testId(root, "project-not-found")).not.toBeNull();
+    expect(root.querySelector("header")?.textContent).toBe("Running Drafts");
+    expect(button(root, "Log out")).toBeNull();
+    expect(testId(root, "new-recording")).toBeNull();
+    expect(testId(root, "project-not-found")?.querySelector('a[href="/projects"]')).not.toBeNull();
     expect(window.location.pathname).toBe("/projects/not-a-uuid");
     expect(globalThis.document.title).toBe("Project not found — Running Drafts");
   });
@@ -522,7 +551,6 @@ describe("application", () => {
     await flushPromises();
 
     expect(window.location.pathname).toBe("/projects");
-    expect(testId(root, "private-navigation")).not.toBeNull();
     expect(testId(root, "projects-workspace")).not.toBeNull();
     expect(root.textContent).toContain("No Projects yet.");
 
@@ -563,7 +591,16 @@ describe("application", () => {
     });
     await flushPromises();
 
-    const link = root.querySelector<HTMLAnchorElement>('[data-testid="project-list"] a')!;
+    const list = testId(root, "project-list")!;
+    expect(list.previousElementSibling).toBe(testId(root, "new-recording"));
+    expect(list.nextElementSibling).toBe(testId(root, "new-recording-after-list"));
+    testId(root, "new-recording-after-list")!.click();
+    await flushPromises();
+    expect(testId(root, "capture-modal")).not.toBeNull();
+    testId(root, "close-capture")!.click();
+    await flushPromises();
+
+    const link = list.querySelector<HTMLAnchorElement>("a")!;
     expect(link.getAttribute("href")).toBe("/projects/project-link?keep=1#notes");
     link.click();
     await flushPromises();
@@ -624,9 +661,11 @@ describe("application", () => {
     testId(root, "start")!.click();
     await flushPromises();
 
-    expect(testId(root, "private-navigation")).not.toBeNull();
+    expect(root.querySelector("main")?.inert).toBe(true);
     expect(testId(root, "capture-modal")).not.toBeNull();
-    expect(root.textContent).toContain("Backend health");
+    expect(root.textContent).not.toMatch(
+      /Development tools|Browser seed|Backend health|Database readiness/,
+    );
     const blocked = application.router.push({
       name: "project-detail",
       params: { projectId: "another" },
@@ -640,7 +679,6 @@ describe("application", () => {
     expect(captures[0]!.disposed).toBe(true);
     expect(testId(root, "capture-modal")).toBeNull();
     expect(window.location.pathname).toBe("/projects/project-a");
-    expect(testId(root, "private-navigation")).not.toBeNull();
   });
 
   it("drops private Project data when the user signs out", async () => {
@@ -649,7 +687,6 @@ describe("application", () => {
 
     await application.session.logout();
     await flushPromises();
-    expect(testId(root, "private-navigation")).toBeNull();
     expect(testId(root, "projects-workspace")).toBeNull();
     expect(application.projects.list.value).toEqual({ kind: "idle" });
     expect(application.projects.detail.value).toEqual({ kind: "idle" });
@@ -757,6 +794,9 @@ it("keeps Capture alerts across views, new Capture, and sign-out until explicit 
   expect(testId(root, "capture-alerts")).not.toBeNull();
   testId(root, "close-capture")!.click();
   await flushPromises();
+  await application.router.push({ name: "projects" });
+  await flushPromises();
+  expect(testId(root, "capture-alerts")).not.toBeNull();
   await openNewCapture(root);
   testId(root, "start")!.click();
   await flushPromises();
