@@ -36,7 +36,7 @@ There is no Pinia store. Reconsider it when several independent Vue branches mus
 change or react to the same long-lived state, when forwarding layers appear, or
 when duplicated state needs synchronising.
 
-Source is organised by feature (`session/`, `recording/`, `projects/`, `health/`,
+Source is organised by feature (`session/`, `recording/`, `projects/`,
 `app/`). The `routing/` coordination boundary owns URL and history integration,
 not application state; [ADR 0004](0004-route-durable-projects-not-capture.md)
 records why durable Project views are routed while Capture is not. Code moves

@@ -57,12 +57,9 @@ remote or agent environment, run `npm run storybook -- --no-open` and forward
 the port over SSH. The short [Storybook operator guide](docs/storybook.md)
 contains the commands and browser instructions.
 
-The signed-in development page is split into two surfaces. Backend liveness and
-database-backed readiness checks are on the left; the existing browser seed is
-kept on the right. Health checks use `http://localhost:18081` by default. A
-deployed environment serves `/config.js` before the application loads to set
-its public backend URL through `window.__BACKEND_BASE_URL__`. Health and
-application API paths are derived from that one URL.
+Deployment and sandbox tooling check liveness and readiness directly. A deployed
+environment serves `/config.js` before the application loads to set its public
+backend URL through `window.__BACKEND_BASE_URL__`.
 
 ## Browser authentication
 
@@ -134,14 +131,13 @@ organised by feature, each owning its module, gateway, components, and tests:
 - `recording/`: the page-lifetime recording module, one recorder per Project and
   Account, capture, delivery queues, cues, and the recording panel.
 - `projects/`: the Project list and detail browser with original-audio downloads.
-- `health/`: the development health checks.
 - `app/`: the page layout, private workspace, and the composition root.
 - `routing/`: browser paths, history behavior, and route-to-module coordination.
 - `shared/`: configuration, HTTP transport, and formatting used by several features.
 
 `src/app/application.ts` is the only place that creates production adapters. It
 builds the gateways, passes them as plain arguments to the module factories
-(`createSession`, `createApplicationCapture`, `createProjects`, `createHealth`), and
+(`createSession`, `createApplicationCapture`, `createProjects`), and
 provides the finished modules to components with typed `InjectionKey`s. Components
 only inject modules (`useSession()`, `useApplicationCapture()`, and so on); they never call
 HTTP or browser APIs directly. Tests and Storybook replace an adapter or a whole

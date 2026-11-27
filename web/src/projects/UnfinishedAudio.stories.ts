@@ -113,7 +113,7 @@ export const RecentActivity: Story = {
     docs: {
       description: {
         story:
-          "Play the sample if you like, then choose Check again and Confirm recording has ended. The confirmation box disappears and the download link appears.",
+          "Play the sample if you like, then choose Check again and Confirm recording has ended. The confirmation box disappears. Open the Section actions to download.",
       },
     },
   },

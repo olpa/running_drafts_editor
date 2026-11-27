@@ -63,14 +63,14 @@ onBeforeUnmount(() => playback.dispose());
     <button
       v-else-if="!state.activated"
       type="button"
-      class="primary"
+      class="play-audio"
       :aria-label="`Play audio for Section ${sectionNumber}`"
       @click="playback.activate()"
     >
-      Play audio
+      Play
     </button>
 
-    <template v-else>
+    <div v-else class="playback-controls">
       <Transition name="player-reload" mode="out-in">
         <audio
           v-if="state.url"
@@ -210,15 +210,29 @@ onBeforeUnmount(() => playback.dispose());
           </button>
         </div>
       </section>
-    </template>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .section-player {
+  margin: 0.9rem 0;
+}
+.playback-controls {
   display: grid;
   gap: 0.65rem;
-  margin: 0.9rem 0;
+  min-width: 0;
+}
+.play-audio {
+  justify-self: start;
+  min-height: 48px;
+  border-color: #aabfdb;
+  background: var(--panel);
+  color: var(--accent-dark);
+}
+.play-audio:hover {
+  border-color: var(--accent-dark);
+  background: #e8f1ff;
 }
 .native-player {
   width: 100%;
