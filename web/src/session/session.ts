@@ -6,6 +6,7 @@ import {
   hasAuthenticationCallback,
   withoutAuthenticationCallback,
   type AuthenticationCallback,
+  type AuthenticationError,
 } from "./callback.ts";
 import type { CurrentSession, SessionGateway } from "./gateway.ts";
 import { AUTH_PROVIDERS, type AuthProvider } from "./providers.ts";
@@ -18,6 +19,7 @@ export type SessionState =
       logoutUnconfirmed: boolean;
       loginAllowed: boolean;
       referenceId: string | null;
+      signInError?: Exclude<AuthenticationError, "cancelled">;
     }
   | { status: "signedIn"; session: CurrentSession }
   | { status: "failure"; message: string; referenceId: string | null };
@@ -32,16 +34,62 @@ export interface SessionLocation {
   replace(url: string): void;
 }
 
+const SIGN_IN_RETURN = "running-drafts.sign-in-return";
+
 export function browserLocation(): SessionLocation {
+  restoreSignInReturn();
   return {
     current: () => ({
       path: `${window.location.pathname}${window.location.search}`,
       search: window.location.search,
       href: window.location.href,
     }),
-    navigate: (url) => window.location.assign(url),
-    replace: (url) => window.history.replaceState(null, "", url),
+    navigate(url) {
+      try {
+        const { pathname, search, hash } = window.location;
+        window.sessionStorage.setItem(SIGN_IN_RETURN, pathname + search + hash);
+      } catch {
+        // Sign-in remains available when the browser disables storage.
+      }
+      window.location.assign(url);
+    },
+    replace: (url) => window.history.replaceState(window.history.state, "", url),
   };
+}
+
+/** A backend return omits the fragment. Expected provider failures use /login. */
+function restoreSignInReturn(): void {
+  try {
+    const savedPath = window.sessionStorage.getItem(SIGN_IN_RETURN);
+    if (!savedPath?.startsWith("/") || savedPath.startsWith("//")) return;
+
+    const returned = new URL(window.location.href);
+    const intended = new URL(savedPath, returned.origin);
+    if (intended.origin !== returned.origin) return;
+
+    const hasCallback = hasAuthenticationCallback(returned.search);
+    const fallback = returned.pathname === "/login" && hasCallback;
+    const cleanReturn = new URL(withoutAuthenticationCallback(returned.href), returned.origin);
+    if (
+      !fallback &&
+      (cleanReturn.pathname !== intended.pathname ||
+        cleanReturn.searchParams.toString() !== intended.searchParams.toString())
+    )
+      return;
+
+    window.sessionStorage.removeItem(SIGN_IN_RETURN);
+    for (const name of ["authError", "referenceId"]) {
+      for (const value of returned.searchParams.getAll(name))
+        intended.searchParams.append(name, value);
+    }
+    window.history.replaceState(
+      window.history.state,
+      "",
+      intended.pathname + intended.search + intended.hash,
+    );
+  } catch {
+    // An unavailable browser store does not prevent the normal session check.
+  }
 }
 
 /** Application Session and sign-in state. */
@@ -76,6 +124,8 @@ export function createSession(
 ): Session {
   const current = shallowRef<SessionState>({ status: "loading" });
   let requestId = 0;
+  const noCallback: AuthenticationCallback = { error: null, referenceId: null };
+  let pendingCallback = noCallback;
 
   function signedOut(
     message: string,
@@ -83,6 +133,7 @@ export function createSession(
       logoutUnconfirmed?: boolean;
       loginAllowed?: boolean;
       referenceId?: string | null;
+      signInError?: Exclude<AuthenticationError, "cancelled">;
     } = {},
   ): SessionState {
     return {
@@ -91,6 +142,7 @@ export function createSession(
       logoutUnconfirmed: options.logoutUnconfirmed ?? false,
       loginAllowed: options.loginAllowed ?? true,
       referenceId: options.referenceId ?? null,
+      ...(options.signInError && { signInError: options.signInError }),
     };
   }
 
@@ -102,19 +154,30 @@ export function createSession(
     };
   }
 
-  async function bootstrap(
-    callback: AuthenticationCallback = { error: null, referenceId: null },
-  ): Promise<void> {
+  async function bootstrap(callback = pendingCallback): Promise<void> {
+    pendingCallback = callback;
     const id = ++requestId;
     current.value = { status: "loading" };
     try {
       const session = await gateway.current();
-      if (id === requestId) current.value = { status: "signedIn", session };
+      if (id === requestId) {
+        pendingCallback = noCallback;
+        current.value = { status: "signedIn", session };
+      }
     } catch (error) {
       if (id !== requestId) return;
       if (isAuthenticationRequired(error)) {
+        pendingCallback = noCallback;
+        const signInError = callback.error === "cancelled" ? null : callback.error;
+        if (signInError) {
+          console.warn("Running Drafts sign-in failed", {
+            code: signInError,
+            requestId: callback.referenceId,
+          });
+        }
         current.value = signedOut(authenticationMessage(callback.error), {
           referenceId: callback.referenceId,
+          ...(signInError && { signInError }),
         });
       } else {
         fail(error);
@@ -124,6 +187,7 @@ export function createSession(
 
   function requireLogin(message = "Sign in to continue."): void {
     ++requestId;
+    pendingCallback = noCallback;
     current.value = signedOut(message);
   }
 

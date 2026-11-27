@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import HealthPanel from "../health/HealthPanel.vue";
+import { useSession } from "../session/session.ts";
+import LegalFooter from "./LegalFooter.vue";
 import SeedApp from "./SeedApp.vue";
+const session = useSession();
 </script>
 
 <template>
-  <main class="private-app-shell">
-    <header class="topbar">
+  <div :class="{ 'private-app-shell': session.state.value.status === 'signedIn' }">
+    <header v-if="session.state.value.status === 'signedIn'" class="topbar">
       <div>
         <h1>Running Drafts</h1>
         <p>Development tools</p>
@@ -13,8 +16,12 @@ import SeedApp from "./SeedApp.vue";
       <span class="environment-badge">Development</span>
     </header>
 
-    <div class="workspace">
-      <section class="workspace-pane health-surface" aria-labelledby="health-title">
+    <div :class="{ workspace: session.state.value.status === 'signedIn' }">
+      <section
+        v-if="session.state.value.status === 'signedIn'"
+        class="workspace-pane health-surface"
+        aria-labelledby="health-title"
+      >
         <header class="section-heading">
           <p class="eyebrow">Environment</p>
           <h2 id="health-title">Backend health</h2>
@@ -23,16 +30,17 @@ import SeedApp from "./SeedApp.vue";
         <HealthPanel />
       </section>
 
-      <section class="workspace-pane seed-surface" aria-labelledby="seed-title">
-        <header class="section-heading">
+      <div :class="{ 'workspace-pane': session.state.value.status === 'signedIn' }">
+        <header v-if="session.state.value.status === 'signedIn'" class="section-heading">
           <p class="eyebrow">Browser seed</p>
           <h2 id="seed-title">Projects</h2>
           <p>Record audio and browse private Projects.</p>
         </header>
         <SeedApp />
-      </section>
+      </div>
     </div>
-  </main>
+    <LegalFooter v-if="session.state.value.status === 'signedIn'" class="private-footer" />
+  </div>
 </template>
 
 <style scoped>
@@ -73,6 +81,10 @@ import SeedApp from "./SeedApp.vue";
   border-radius: 8px;
   background: var(--panel);
   box-shadow: var(--shadow);
+}
+.private-footer {
+  width: min(1440px, 100%);
+  padding-block: 1rem;
 }
 .workspace-pane {
   min-width: 0;

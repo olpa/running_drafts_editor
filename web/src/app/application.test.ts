@@ -223,6 +223,7 @@ afterEach(() => {
   for (const application of mounted.splice(0)) application.app.unmount();
   for (const root of roots.splice(0)) root.remove();
   window.history.replaceState(null, "", "/");
+  window.sessionStorage.clear();
 });
 
 function button(root: HTMLElement, label: string): HTMLButtonElement | null {
@@ -280,7 +281,7 @@ describe("application", () => {
     expect(application.session.authorizeRecordingStart()).toBe(false);
     await flushPromises();
 
-    expect(button(root, "Continue with Google")).not.toBeNull();
+    expect(button(root, "Sign in with Google")).not.toBeNull();
     expect(root.querySelector("time")).toBeNull();
     expect(testId(root, "capture-modal")).not.toBeNull();
     expect(capture.disposed).toBe(true);
@@ -335,6 +336,62 @@ describe("application", () => {
     expect(expiryOf()).toBeUndefined();
   });
 
+  it("shows the landing before sign-in at both entry routes", async () => {
+    const authentication = sessionBackend();
+    authentication.backend.current = "signedOut";
+    const { application, root } = mountApplication({ sessionGateway: authentication.gateway });
+    await flushPromises();
+
+    expect(application.router.currentRoute.value.fullPath).toBe("/");
+    const main = root.querySelector("main")!;
+    expect(main.querySelector("h1")?.textContent).toBe("Speak now, organize later.");
+    expect(main.textContent).toContain("Sign in to keep your recordings private");
+    expect(button(main, "Sign in with Google")).not.toBeNull();
+    expect(root.textContent).not.toContain("Backend health");
+
+    await application.router.push("/projects/Opaque/?keep=1&keep=2#notes");
+    await flushPromises();
+    expect(application.router.currentRoute.value.fullPath).toBe(
+      "/projects/Opaque/?keep=1&keep=2#notes",
+    );
+    expect(root.querySelector("main h1")?.textContent).toBe("Speak now, organize later.");
+    expect(testId(root, "projects-workspace")).toBeNull();
+    expect(authentication.backend.currentAttempts).toBe(1);
+  });
+
+  it("reuses the current session when redirecting from the landing", async () => {
+    window.history.replaceState(null, "", "/?keep=1&keep=2#notes");
+    const authentication = sessionBackend();
+    const { application } = mountApplication({ sessionGateway: authentication.gateway });
+    await flushPromises();
+
+    expect(application.router.currentRoute.value.fullPath).toBe("/projects?keep=1&keep=2#notes");
+    expect(authentication.backend.currentAttempts).toBe(1);
+  });
+
+  it.each([
+    ["/login?authError=cancelled", "signedOut", "Sign-in canceled."],
+    ["/login?authError=provider_unavailable", "signedOut", "We couldn’t sign you in."],
+    [
+      "/projects/Opaque/?keep=1&keep=2&authError=authentication_failed",
+      "signedOut",
+      "We couldn’t sign you in.",
+    ],
+    ["/projects/Opaque/?keep=1&keep=2", "signedIn", "Existing"],
+  ] as const)("restores the intended private URL after %s", async (returned, status, message) => {
+    const intended = "/projects/Opaque/?keep=1&keep=2#notes";
+    window.history.replaceState(null, "", returned);
+    window.sessionStorage.setItem("running-drafts.sign-in-return", intended);
+    const authentication = sessionBackend();
+    if (status === "signedOut") authentication.backend.current = status;
+    const { application, root } = mountApplication({ sessionGateway: authentication.gateway });
+    await flushPromises();
+
+    expect(application.router.currentRoute.value.fullPath).toBe(intended);
+    expect(root.textContent).toContain(message);
+    expect(window.sessionStorage.getItem("running-drafts.sign-in-return")).toBeNull();
+  });
+
   it("turns ambiguous callback fields into a generic failure and removes every reserved value", async () => {
     window.history.replaceState(
       null,
@@ -348,8 +405,8 @@ describe("application", () => {
     await mounted[0]!.session.bootstrap({ error: "authentication_failed", referenceId: null });
     await flushPromises();
 
-    expect(root.textContent).toMatch(/Sign-in could not be verified/u);
-    expect(root.textContent).not.toMatch(/cancelled|attacker|Reference:/u);
+    expect(root.textContent).toMatch(/We couldn’t sign you in/u);
+    expect(root.textContent).not.toMatch(/cancelled|attacker|Request ID:/u);
     expect(window.location.pathname + window.location.search).toBe("/projects?keep=1&keep=2");
   });
 
@@ -364,10 +421,10 @@ describe("application", () => {
     const { application, root } = mountApplication({ sessionGateway: sessionGateway.gateway });
     await flushPromises();
 
-    expect(root.textContent).toMatch(/Reference: safe_REF-42/u);
+    expect(root.textContent).toMatch(/Request ID: safe_REF-42/u);
     expect(window.location.pathname + window.location.search).toBe("/projects?keep=1");
     expect(application.router.currentRoute.value.fullPath).toBe("/projects?keep=1");
-    expect(button(root, "Continue with Google")).not.toBeNull();
+    expect(button(root, "Sign in with Google")).not.toBeNull();
   });
 
   it("renders unknown paths without bootstrapping private authentication", async () => {

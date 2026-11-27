@@ -5,6 +5,7 @@ import {
   type Router,
   type RouterHistory,
 } from "vue-router";
+import FirstRunPage from "../session/FirstRunPage.vue";
 import NotFoundPage from "../app/NotFoundPage.vue";
 import PrivateAppShell from "../app/PrivateAppShell.vue";
 import ProjectDetailPage from "../projects/ProjectDetailPage.vue";
@@ -13,7 +14,8 @@ import ProjectListPage from "../projects/ProjectListPage.vue";
 const routes: RouteRecordRaw[] = [
   {
     path: "/",
-    redirect: (to) => ({ name: "projects", query: to.query, hash: to.hash }),
+    name: "landing",
+    component: FirstRunPage,
   },
   {
     path: "/projects",

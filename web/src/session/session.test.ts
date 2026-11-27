@@ -188,7 +188,7 @@ describe("session module", () => {
     await signedOut.bootstrap({ error: "cancelled", referenceId: null });
     expect(signedOut.state.value).toEqual({
       status: "signedOut",
-      message: "Sign-in was cancelled.",
+      message: "Sign-in canceled.",
       logoutUnconfirmed: false,
       loginAllowed: true,
       referenceId: null,
@@ -231,7 +231,7 @@ describe("session module", () => {
     expect(replacements).toEqual(["/projects/one?keep=1"]);
     expect(session.state.value).toMatchObject({
       status: "signedOut",
-      message: "Sign-in was cancelled.",
+      message: "Sign-in canceled.",
     });
   });
 
