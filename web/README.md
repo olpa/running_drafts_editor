@@ -73,10 +73,15 @@ editor resolves the visible name from the catalog. An unknown key is shown as
 received. Adding a provider needs a coordinated backend and editor release.
 At `/`, the editor checks the Application Session and sends signed-in
 visitors to `/projects`. Signed-out visitors see the same landing at `/` and
-at private URLs. **Continue with Google** starts a full-page navigation to the
+at private URLs. **Sign in with Google** starts a full-page navigation to the
 backend. The browser tab remembers the intended path, query, and fragment
-across the provider round trip. The signed-in summary shows the
-backend-reported session expiry in local date and time.
+across the provider round trip.
+
+The signed-in wordmark links to `/projects`. The Account menu offers
+**Projects**, **Account**, and **Log out**. The Account page at `/account`
+shows the current identity, Plan, usage, session expiry in local time, and
+a **Log out** button.
+A direct Account link stays on that URL through sign-in.
 
 `ProfileSummary.vue` in `src/session/` shows the display name, a verified email,
 the full Account ID, the provider, the session expiry, and a `Log out` button.

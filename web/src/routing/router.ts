@@ -5,6 +5,7 @@ import {
   type Router,
   type RouterHistory,
 } from "vue-router";
+import AccountPage from "../session/AccountPage.vue";
 import FirstRunPage from "../session/FirstRunPage.vue";
 import NotFoundPage from "../app/NotFoundPage.vue";
 import PrivateAppShell from "../app/PrivateAppShell.vue";
@@ -31,6 +32,12 @@ const routes: RouteRecordRaw[] = [
         props: true,
       },
     ],
+  },
+  {
+    path: "/account",
+    component: PrivateAppShell,
+    meta: { private: true },
+    children: [{ path: "", name: "account", component: AccountPage }],
   },
   {
     path: "/:pathMatch(.*)*",
